@@ -15,6 +15,7 @@ import {
   CONCEPT_BY_ID,
   correspondences,
   createProtoLanguages,
+  isCognate,
   createRegistry,
   deriveLanguage,
   describeLanguage,
@@ -138,7 +139,7 @@ if (sections.has("compare")) {
     let row = CONCEPT_BY_ID[c].en.padEnd(10);
     for (const l of cols) {
       const lx = l.lexicon[c];
-      const inherited = l.depth === 0 || lx.origin.kind === "inherited";
+      const inherited = l.depth === 0 || isCognate(l, root, c);
       const s = (l.depth === 0 ? "*" : "") + romanizeWord(l.orthography, lx.form) + (inherited ? "" : "†");
       row += s.padEnd(width);
     }

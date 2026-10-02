@@ -6,15 +6,16 @@ import { buildSphereMesh } from "../core/sphere";
 import { Rng } from "../core/rng";
 import { DEFAULT_PARAMS, type PhysicalWorld, type WorldParams } from "../world/types";
 import { buildPlates } from "./plates";
-import { buildElevation } from "./elevation";
+import { buildElevation, liftInteriors } from "./elevation";
 import { chooseSeaLevel, fillShallowPockets, matchOceanFraction, resolveDepressions } from "./sealevel";
-import { cellAreasKm2, edgeLengthsKm, hopDistance } from "./util";
-import { erode } from "./erosion";
+import { cellAreasKm2, edgeLengthsKm, hopDistance, smoothstep } from "./util";
+import { carveFjords, erode } from "./erosion";
 import { buildClimate } from "./climate";
 import { buildHydrology } from "./hydrology";
 import { classifyBiomes, localRelief } from "./biomes";
 import { computeFertility, placeResources, type ResourceInputs } from "./resources";
 import { extractFeatures } from "./features";
+import { drawStyle } from "./style";
 
 export function generatePhysical(
   params: WorldParams,
@@ -28,20 +29,29 @@ export function generatePhysical(
   const n = mesh.n;
   const edgeLen = edgeLengthsKm(mesh, p.radiusKm);
 
+  const style = drawStyle(rng.fork("style"));
+
   progress("plates", 0.08);
-  const tect = buildPlates(mesh, p.plates, 1 - p.oceanFraction, p.radiusKm, edgeLen, rng.fork("plates"));
+  const tect = buildPlates(mesh, p.plates, 1 - p.oceanFraction, p.radiusKm, edgeLen, rng.fork("plates"), style);
 
   progress("elevation", 0.16);
-  const elev = buildElevation(mesh, tect, p.radiusKm, edgeLen, p.oceanFraction, rng.fork("elevation"));
+  const elev = buildElevation(mesh, tect, p.radiusKm, edgeLen, p.oceanFraction, rng.fork("elevation"), style);
   const elevation = elev.elevation;
 
   progress("erosion", 0.28);
   const areaKm2 = cellAreasKm2(mesh, p.radiusKm);
   {
     const pre = chooseSeaLevel(mesh, elevation, p.oceanFraction).seaLevel;
+    liftInteriors(mesh, elevation, pre, edgeLen, p.radiusKm, rng.fork("lift"), style);
     const erodibility = new Float32Array(n);
     for (let i = 0; i < n; i++) erodibility[i] = 0.6 + 0.8 * Math.min(1, elev.orogeny[i] / 2 + elev.oldOrogen[i]);
-    if (!(globalThis as { __NOERODE?: boolean }).__NOERODE) erode(mesh, elevation, pre, areaKm2, { iterations: 5, K: 0.016, m: 0.5, talus: 0.055, erodibility });
+    erode(mesh, elevation, pre, areaKm2, { iterations: 5, K: 0.016, m: 0.5, talus: 0.055, erodibility });
+    // Glacial troughs at high latitudes (colder worlds glaciate further towards the equator).
+    const coldLat = 60 + 1.6 * p.temperatureOffset;
+    carveFjords(mesh, elevation, pre, (i) => {
+      const a = Math.abs(mesh.lat[i]) * 57.29578;
+      return smoothstep(coldLat - 12, coldLat + 2, a);
+    });
   }
 
   progress("sea level", 0.36);

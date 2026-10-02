@@ -79,7 +79,14 @@ function attempt(ph: Phonology, rng: Rng, n: number, opts: GenOpts): Word {
       }
     } else {
       const prevCoda = !isVowel(w[w.length - 1]);
-      if (ph.hiatus && !prevCoda && rng.chance(0.06)) {
+      if (!prevCoda && ph.pGeminate && rng.chance(ph.pGeminate)) {
+        // a geminate (kk, tt, ll) straddles the syllable boundary
+        const c = pickFrom(t.onsetPick, rng);
+        if (c) {
+          if (c !== "h" && c !== "ʔ" && c !== "j" && c !== "w") w.push(c);
+          w.push(c);
+        }
+      } else if (ph.hiatus && !prevCoda && rng.chance(0.06)) {
         // hiatus
       } else if (ph.pCluster > 0 && t.onsetClusterPick.items.length && rng.chance(ph.pCluster * (prevCoda ? 0.2 : 0.6))) {
         w.push(...pickFrom(t.onsetClusterPick, rng)!);
@@ -88,14 +95,20 @@ function attempt(ph: Phonology, rng: Rng, n: number, opts: GenOpts): Word {
         if (c) w.push(c);
       }
     }
+    // the final syllable decides on its coda first, so an open final can use the language's favourite final vowels
+    let finalCoda = false;
+    if (last) {
+      const pf = n === 1 && ph.pFinalCoda > 0 ? Math.max(ph.pFinalCoda, 0.6) : ph.pFinalCoda;
+      finalCoda = !opts.openFinal && pf > 0 && rng.chance(pf);
+    }
     // nucleus
-    const v = pickFrom(t.harmonyPick[cls] ?? t.vowelPick, rng)!;
+    const vp = last && !finalCoda && n > 1 ? t.finalVowelPick[cls] : t.harmonyPick[cls];
+    const v = pickFrom(vp ?? t.vowelPick, rng)!;
     w.push(v);
     if (cls === 0 && ph.harmony !== "none") cls = harmonyClassOf(ph.harmony, v);
     // coda
     if (last) {
-      const pf = n === 1 && ph.pFinalCoda > 0 ? Math.max(ph.pFinalCoda, 0.6) : ph.pFinalCoda;
-      if (!opts.openFinal && pf > 0 && rng.chance(pf)) {
+      if (finalCoda) {
         if (ph.pCodaCluster > 0 && t.finalClusterPick.items.length && rng.chance(ph.pCodaCluster)) w.push(...pickFrom(t.finalClusterPick, rng)!);
         else {
           const c = pickFrom(t.finalPick, rng);

@@ -82,7 +82,7 @@ export class BakeContext {
     this.warp = buildWarpLattice(mesh, this.seedRng.fork("warp"));
     this.coastNoise = new Noise3(this.seedRng.fork("coast"));
     this.coastFreq = 1 / (0.9 * mesh.meanSpacing);
-    // Octaves down to ≈ 1/10 of a cell spacing.
+    // Octaves down to ≈ 1/10 of a cell spacing (bakers may use fewer at low resolution).
     this.coastOctaves = 4;
   }
 
@@ -134,27 +134,40 @@ export class BakeContext {
    * Signed land field at q inside triangle t with weights `bary`:
    * > 0 is land, < 0 water. Pure triangles never consult noise.
    */
-  coastField(qx: number, qy: number, qz: number, t: number, bary: Float64Array): number {
+  coastField(qx: number, qy: number, qz: number, t: number, bary: Float64Array, octaves = this.coastOctaves): number {
     const tri = this.mesh.triangles;
     const f = this.field;
     const fa = f[tri[3 * t]], fb = f[tri[3 * t + 1]], fc = f[tri[3 * t + 2]];
     const g = bary[0] * fa + bary[1] * fb + bary[2] * fc;
     if ((fa > 0) === (fb > 0) && (fb > 0) === (fc > 0)) return g;
-    return g + this.coastNoiseAt(qx, qy, qz);
+    return g + this.coastNoiseAt(qx, qy, qz, octaves);
   }
 
-  /** Bounded fractal noise for coastlines, in (−COAST_NOISE_MAX, COAST_NOISE_MAX). */
-  coastNoiseAt(x: number, y: number, z: number): number {
+  /**
+   * Bounded fractal noise for coastlines, in (−COAST_NOISE_MAX, COAST_NOISE_MAX).
+   * Bakers pass fewer octaves at low resolution (sub-pixel detail is invisible);
+   * images of the same size always agree.
+   */
+  coastNoiseAt(x: number, y: number, z: number, octaves = this.coastOctaves): number {
     const fr = this.coastFreq;
     const nz = this.coastNoise;
     let amp = 1, freq = fr, sum = 0;
-    for (let o = 0; o < this.coastOctaves; o++) {
+    for (let o = 0; o < octaves; o++) {
       sum += amp * nz.noise(x * freq, y * freq, z * freq);
       freq *= 2.03;
       amp *= 0.55;
     }
     // Soft clamp keeps the shapes, bounds the amplitude.
     return COAST_NOISE_MAX * Math.tanh(sum * 0.95);
+  }
+
+  /**
+   * Coast noise octaves worth evaluating for an equirectangular image of
+   * height H: down to a wavelength of ≈ 1.5 px. Bakes of the same size agree.
+   */
+  coastOctavesFor(H: number): number {
+    const wl0 = (0.9 * this.mesh.meanSpacing) / (Math.PI / H); // px
+    return Math.max(2, Math.min(this.coastOctaves, 1 + Math.ceil(Math.log2(wl0 / 1.5) / Math.log2(2.03))));
   }
 
   /**
@@ -228,37 +241,84 @@ export interface WarpLattice {
 
 function buildWarpLattice(mesh: SphereMesh, rng: Rng): WarpLattice {
   const spacing = mesh.meanSpacing;
-  // ≈ 4 lattice texels per cell spacing (resolves the fine octave), clamped to a sane size.
+  // ≈ 4 lattice texels per cell spacing (smooth under GPU bilinear filtering),
+  // clamped to a sane size; even, so the coarse grid below is exactly half.
   let height = Math.round(Math.PI / (spacing / 4));
   height = Math.max(128, Math.min(1024, height));
+  height += height & 1;
   const width = 2 * height;
   // Two octaves: a broad one that bends groups of cells, and a fine one that
   // makes each boundary wiggle. Amplitudes keep |∂warp/∂p| well below 1 so the
   // mapping never folds (no mirrored fragments, and it stays invertible).
   const ampA = 0.15 * spacing, fA = 1 / (3.2 * spacing);
-  const ampB = 0.085 * spacing, fB = 1 / (1.05 * spacing);
+  const ampB = 0.085 * spacing, fB = 1 / (1.2 * spacing);
   const amp = ampA + ampB;
   const nx = new Noise3(rng.fork("x"));
   const ny = new Noise3(rng.fork("y"));
   const nz = new Noise3(rng.fork("z"));
+  // The noise is evaluated on a half-resolution grid (≈ 2 samples per cell
+  // spacing) and upsampled ×2 with Catmull–Rom, which is 4× cheaper than
+  // evaluating every texel and indistinguishable at the scale of a border.
+  const hc = height / 2, wc = width / 2;
+  const coarse = new Float32Array(3 * wc * hc);
+  for (let j = 0; j < hc; j++) {
+    const lat = Math.PI / 2 - ((j + 0.5) / hc) * Math.PI;
+    const cl = Math.cos(lat), sl = Math.sin(lat);
+    for (let i = 0; i < wc; i++) {
+      const lon = -Math.PI + ((i + 0.5) / wc) * 2 * Math.PI;
+      const x = cl * Math.cos(lon), y = cl * Math.sin(lon), z = sl;
+      const o = 3 * (j * wc + i);
+      coarse[o] = ampA * Math.tanh(nx.noise(x * fA, y * fA, z * fA) * 1.3) + ampB * Math.tanh(nx.noise(x * fB + 9.7, y * fB, z * fB) * 1.3);
+      coarse[o + 1] = ampA * Math.tanh(ny.noise(x * fA, y * fA, z * fA) * 1.3) + ampB * Math.tanh(ny.noise(x * fB + 9.7, y * fB, z * fB) * 1.3);
+      coarse[o + 2] = ampA * Math.tanh(nz.noise(x * fA, y * fA, z * fA) * 1.3) + ampB * Math.tanh(nz.noise(x * fB + 9.7, y * fB, z * fB) * 1.3);
+    }
+  }
+  // Fine texel 2k sits at coarse coordinate k − 1/4, texel 2k+1 at k + 1/4:
+  // fixed Catmull–Rom weights (t = 3/4 from k−1, t = 1/4 from k).
+  const WE = [-0.0234375, 0.2265625, 0.8671875, -0.0703125]; // taps k−2 … k+1
+  const WO = [-0.0703125, 0.8671875, 0.2265625, -0.0234375]; // taps k−1 … k+2
+  const mid = new Float32Array(3 * width * hc);
+  for (let j = 0; j < hc; j++) {
+    const row = 3 * j * wc;
+    for (let i = 0; i < width; i++) {
+      const k = i >> 1;
+      const odd = i & 1;
+      const w = odd ? WO : WE;
+      const first = odd ? k - 1 : k - 2;
+      const o = 3 * (j * width + i);
+      let a = 0, b = 0, c = 0;
+      for (let t = 0; t < 4; t++) {
+        let ci = first + t;
+        if (ci < 0) ci += wc;
+        else if (ci >= wc) ci -= wc;
+        const s = row + 3 * ci;
+        a += w[t] * coarse[s];
+        b += w[t] * coarse[s + 1];
+        c += w[t] * coarse[s + 2];
+      }
+      mid[o] = a; mid[o + 1] = b; mid[o + 2] = c;
+    }
+  }
   const rgba = new Uint8Array(width * height * 4);
   const vec = new Float32Array(width * height * 3);
-  const comps = [0, 0, 0];
   for (let j = 0; j < height; j++) {
-    const lat = Math.PI / 2 - ((j + 0.5) / height) * Math.PI;
-    const cl = Math.cos(lat), sl = Math.sin(lat);
+    const k = j >> 1;
+    const odd = j & 1;
+    const w = odd ? WO : WE;
+    const first = odd ? k - 1 : k - 2;
     for (let i = 0; i < width; i++) {
-      const lon = -Math.PI + ((i + 0.5) / width) * 2 * Math.PI;
-      const x = cl * Math.cos(lon), y = cl * Math.sin(lon), z = sl;
       const o = j * width + i;
-      comps[0] = ampA * Math.tanh(nx.noise(x * fA, y * fA, z * fA) * 1.3) + ampB * Math.tanh(nx.noise(x * fB + 9.7, y * fB, z * fB) * 1.3);
-      comps[1] = ampA * Math.tanh(ny.noise(x * fA, y * fA, z * fA) * 1.3) + ampB * Math.tanh(ny.noise(x * fB + 9.7, y * fB, z * fB) * 1.3);
-      comps[2] = ampA * Math.tanh(nz.noise(x * fA, y * fA, z * fA) * 1.3) + ampB * Math.tanh(nz.noise(x * fB + 9.7, y * fB, z * fB) * 1.3);
-      for (let c = 0; c < 3; c++) {
-        const v = Math.max(-1, Math.min(1, comps[c] / amp));
-        const q = Math.round(127.5 + 127.5 * v);
-        rgba[4 * o + c] = q;
-        vec[3 * o + c] = ((q - 127.5) / 127.5) * amp;
+      for (let comp = 0; comp < 3; comp++) {
+        let v = 0;
+        for (let t = 0; t < 4; t++) {
+          let rj = first + t;
+          rj = rj < 0 ? 0 : rj >= hc ? hc - 1 : rj;
+          v += w[t] * mid[3 * (rj * width + i) + comp];
+        }
+        const u = Math.max(-1, Math.min(1, v / amp));
+        const q = Math.round(127.5 + 127.5 * u);
+        rgba[4 * o + comp] = q;
+        vec[3 * o + comp] = ((q - 127.5) / 127.5) * amp;
       }
       rgba[4 * o + 3] = 255;
     }

@@ -465,7 +465,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "chain-shift",
-    weight: (c) => (plainStops(c, true).length >= 2 && plainStops(c, false).length >= 2 ? 0.5 : 0),
+    weight: (c) => (plainStops(c, true).length >= 2 && plainStops(c, false).length >= 2 ? 0.28 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       for (const p of plainStops(c, false)) {
@@ -709,7 +709,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "fronting",
-    weight: (c) => (has(c, "u") && !has(c, "y") ? 0.5 : 0.1),
+    weight: (c) => (has(c, "u") && !has(c, "y") ? 0.22 : 0.06),
     build: (c) => {
       const pairs: [string, Word][] = [];
       if (c.rng.chance(0.6)) {
@@ -1269,9 +1269,186 @@ const TEMPLATES: Template[] = [
     weight: (c) => (count(c, (w) => w[w.length - 1] === "m") >= 3 ? 0.5 : 0),
     build: () => makeChange("final-m", "Final m > n", "Word-final m became n.", [["m", ["n"]]], [], ["#"]),
   },
+  {
+    id: "polynesian-shift",
+    weight: (c) => (has(c, "k") && has(c, "t") && !has(c, "ʔ") ? 0.25 : has(c, "k") && has(c, "ʔ") ? 0.15 : 0),
+    build: (c) => {
+      // Hawaiian-like chain: k > ʔ, then t > k (simultaneous mapping keeps the two distinct)
+      const pairs: [string, Word][] = [["k", ["ʔ"]]];
+      const chain = c.rng.chance(0.6);
+      if (chain) pairs.push(["t", ["k"]]);
+      if (has(c, "ʔ")) pairs.push(["ʔ", []]);
+      return makeChange(
+        "polynesian-shift",
+        chain ? "Velar–dental chain shift" : "Glottalisation of k",
+        chain ? "In a chain shift, k became a glottal stop and t moved back to take its place as k." : "k weakened to a glottal stop.",
+        pairs,
+        [],
+        [],
+      );
+    },
+  },
+  {
+    id: "s-debuccalization",
+    weight: (c) => (has(c, "s") && !has(c, "h") ? 0.5 : has(c, "s") ? 0.15 : 0),
+    build: (c) =>
+      makeChange("s-debuccalization", "s > h", "s weakened to h before vowels, except after other consonants.", [["s", ["h"]]], ["NC"], ["V"]),
+  },
+  {
+    id: "gradation",
+    weight: (c) => (count(c, (w, i) => isStop(w[i]) && isVowel(w[i - 1] ?? "") && isVowel(w[i + 1] ?? "") && !!w[i + 2] && !isVowel(w[i + 2]) && !isVowel(w[i + 3] ?? "")) >= 4 ? 0.6 : 0),
+    build: (c) => {
+      const pairs: [string, Word][] = [];
+      if (has(c, "p")) pairs.push(["p", [has(c, "v") || c.rng.chance(0.5) ? "v" : "β"]]);
+      if (has(c, "t")) pairs.push(["t", ["d"]]);
+      if (has(c, "k")) pairs.push(["k", c.rng.chance(0.6) ? [] : ["ɣ"]]);
+      const ch = makeChange("gradation", "Consonant gradation", "Stops weakened at the start of a closed syllable (the 'weak grade': p > v, t > d, k > ∅).", pairs, ["V"], ["V", "C", "NV"]);
+      if (ch) ch.notation = `*${pairs.map(([a]) => a).join(" ")} > ${pairs.map(([, b]) => b.join("") || "∅").join(" ")} / V_VC{C,#}`;
+      return ch;
+    },
+  },
+  {
+    id: "spirantization-high",
+    weight: (c) => (count(c, (w, i) => isStop(w[i]) && ["i", "u", "iː", "uː"].includes(w[i + 1] ?? "")) >= 6 ? 0.18 : 0),
+    build: (c) => {
+      const pairs: [string, Word][] = [];
+      if (has(c, "k")) pairs.push(["k", ["s"]]);
+      if (has(c, "t")) pairs.push(["t", ["s"]]);
+      if (has(c, "p")) pairs.push(["p", ["f"]]);
+      if (has(c, "g") && c.rng.chance(0.6)) pairs.push(["g", ["z"]]);
+      if (has(c, "d") && c.rng.chance(0.6)) pairs.push(["d", ["z"]]);
+      if (has(c, "b") && c.rng.chance(0.6)) pairs.push(["b", ["v"]]);
+      const hi = ["i", "iː"].filter((p) => has(c, p));
+      return makeChange("spirantization-high", "Spirantisation before i", "Stops became fricatives before i.", pairs, [], [hi]);
+    },
+  },
+  {
+    id: "lenition",
+    weight: (c) => (plainStops(c, false).length >= 2 && plainStops(c, true).length >= 2 ? 0.45 : 0),
+    build: (c) => {
+      // Celtic-like mutation fossilised: every intervocalic consonant weakens one step.
+      const pairs: [string, Word][] = [];
+      for (const p of plainStops(c, true)) {
+        const q = lenitedFricative(p, c.rng);
+        if (q) pairs.push([p, [q]]);
+      }
+      for (const p of plainStops(c, false)) {
+        const q = modify(p, { voice: true });
+        if (q) pairs.push([p, [q]]);
+      }
+      if (has(c, "m") && c.rng.chance(0.5)) pairs.push(["m", ["v"]]);
+      if (has(c, "s") && c.rng.chance(0.4)) pairs.push(["s", ["h"]]);
+      return makeChange("lenition", "Lenition", "Between vowels every consonant weakened one step: voiceless stops became voiced, voiced stops became fricatives.", pairs, ["V"], ["V"]);
+    },
+  },
+  {
+    id: "final-raising",
+    weight: (c) => (count(c, (w, i) => i === w.length - 1 && (w[i] === "e" || w[i] === "o")) >= 6 ? 0.8 : 0),
+    build: (c) => {
+      const pairs: [string, Word][] = [];
+      if (has(c, "e") && has(c, "i")) pairs.push(["e", ["i"]]);
+      if (has(c, "o") && has(c, "u")) pairs.push(["o", ["u"]]);
+      return makeChange("final-raising", "Final raising", "Unstressed final e and o were raised to i and u.", pairs, [], ["#"], { stress: "unstressed" });
+    },
+  },
+  {
+    id: "r-lowering",
+    weight: (c) => ((has(c, "r") || has(c, "ɾ")) && count(c, (w, i) => (w[i] === "e" || w[i] === "i") && (w[i + 1] === "r" || w[i + 1] === "ɾ")) >= 5 ? 0.5 : 0),
+    build: (c) => {
+      const r = ["r", "ɾ"].filter((p) => has(c, p));
+      const pairs: [string, Word][] = [];
+      if (has(c, "e")) pairs.push(["e", ["a"]]);
+      if (has(c, "i") && has(c, "e") && c.rng.chance(0.5)) pairs.push(["i", ["e"]]);
+      if (has(c, "u") && has(c, "o") && c.rng.chance(0.5)) pairs.push(["u", ["o"]]);
+      return makeChange("r-lowering", "Lowering before r", "Vowels were lowered before r in closed syllables (er > ar).", pairs, [], [r, "NV"]);
+    },
+  },
+  {
+    id: "d-flapping",
+    weight: (c) => (has(c, "d") && (has(c, "r") || has(c, "ɾ") || has(c, "l")) ? 0.35 : 0),
+    build: (c) => {
+      const to = has(c, "ɾ") ? "ɾ" : c.rng.chance(0.6) && has(c, "r") ? "r" : "l";
+      return makeChange("d-flapping", `d > ${to}`, `d became ${to} between vowels.`, [["d", [to]]], ["V"], ["V"]);
+    },
+  },
+  {
+    id: "nasal-velarization",
+    weight: (c) => (count(c, (w) => w[w.length - 1] === "n") >= 6 && !has(c, "ŋ") ? 0.35 : count(c, (w) => w[w.length - 1] === "n") >= 6 ? 0.15 : 0),
+    build: () => makeChange("nasal-velarization", "Final n > ŋ", "Word-final n became velar ŋ.", [["n", ["ŋ"]]], ["V"], ["#"]),
+  },
+  {
+    id: "assibilation-u",
+    weight: (c) => (count(c, (w, i) => w[i] === "t" && (w[i + 1] === "u" || w[i + 1] === "uː")) >= 4 ? 0.35 : 0),
+    build: (c) => {
+      const pairs: [string, Word][] = [["t", ["ts"]]];
+      if (has(c, "d") && c.rng.chance(0.6)) pairs.push(["d", ["dz"]]);
+      const u = ["u", "uː", "ɯ"].filter((p) => has(c, p));
+      return makeChange("assibilation-u", "Assibilation before u", "t became ts before u.", pairs, [], [u]);
+    },
+  },
+  {
+    id: "l-palatalization",
+    weight: (c) => (has(c, "l") && count(c, (w, i) => w[i] === "l" && (w[i + 1] === "i" || w[i + 1] === "j")) >= 5 ? 0.3 : 0),
+    build: (c) => {
+      const pairs: [string, Word][] = [["l", ["ʎ"]]];
+      if (has(c, "n")) pairs.push(["n", ["ɲ"]]);
+      return makeChange("l-palatalization", "Palatalisation of sonorants", "l and n became palatal before i and j.", pairs, [], [["i", "iː", "j"].filter((p) => has(c, p))]);
+    },
+  },
+  {
+    id: "vowel-lowering",
+    weight: (c) => (has(c, "i") && has(c, "e") && has(c, "u") && has(c, "o") ? 0.35 : 0),
+    build: (c) => {
+      const closed = c.rng.chance(0.6);
+      const pairs: [string, Word][] = [
+        ["i", ["e"]],
+        ["u", ["o"]],
+      ];
+      return makeChange(
+        "vowel-lowering",
+        closed ? "Lowering in closed syllables" : "Lowering of short high vowels",
+        closed ? "Short i and u were lowered to e and o in closed syllables." : "Unstressed i and u were lowered to e and o.",
+        pairs,
+        [],
+        closed ? ["C", "NV"] : [],
+        closed ? {} : { stress: "unstressed" },
+      );
+    },
+  },
+  {
+    id: "diphthongization",
+    weight: (c) => (vows(c).some((v) => v === "eː" || v === "oː") ? 0.6 : 0),
+    build: (c) => {
+      const pairs: [string, Word][] = [];
+      const falling = c.rng.chance(0.5);
+      if (has(c, "eː")) pairs.push(["eː", falling ? ["e", "j"] : ["j", "e"]]);
+      if (has(c, "oː")) pairs.push(["oː", falling ? ["o", "w"] : ["w", "o"]]);
+      return makeChange(
+        "diphthongization",
+        "Diphthongisation",
+        falling ? "Long mid vowels became falling diphthongs (eː > ei, oː > ou)." : "Long mid vowels became rising diphthongs (eː > ie, oː > uo).",
+        pairs,
+        [],
+        [],
+      );
+    },
+  },
 ];
 
 const TEMPLATE_BY_ID: Record<string, Template> = Object.fromEntries(TEMPLATES.map((t) => [t.id, t]));
+
+/** Changes that are redundant with, or would undo, each other within one split. */
+const CONFLICT_GROUPS: string[][] = [
+  ["lenition", "intervocalic-voicing", "intervocalic-spirantization", "chain-shift", "voiceless-spirantization", "gradation"],
+  ["vowel-raising", "vowel-lowering"],
+  ["final-raising", "final-reduction", "apocope"],
+  ["fronting", "unrounding"],
+  ["breaking", "diphthongization", "monophthongization"],
+  ["spirantization-high", "assibilation", "velar-palatalization"],
+  ["unstressed-reduction", "vowel-lowering"],
+];
+const CONFLICTS = new Map<string, Set<string>>();
+for (const g of CONFLICT_GROUPS) for (const a of g) for (const b of g) if (a !== b) (CONFLICTS.get(a) ?? CONFLICTS.set(a, new Set()).get(a)!).add(b);
 
 // ---------------------------------------------------------------------------
 // Quality assessment of a candidate change
@@ -1338,13 +1515,62 @@ export interface GeneratedChanges {
  * Generate an ordered list of 3–8 plausible sound changes for a split,
  * evaluated against the current forms of the lexicon (`corpus`).
  */
+export interface ChangeOptions {
+  min?: number;
+  max?: number;
+  /** Style tendencies: multipliers on template weights by template id. */
+  drift?: Record<string, number>;
+  /** Minimum share of words a split must alter (default 0.3). */
+  minImpact?: number;
+}
+
+/** Repairs real languages make after other changes: palatal + j absorption, glide + homorganic vowel, identical vowels in hiatus. */
+function repairs(ctx: ChangeCtx): SoundChange[] {
+  const out: SoundChange[] = [];
+  const pal = (p: string | undefined) => {
+    const pl = p ? cf(p)?.place : undefined;
+    return pl === "palatal" || pl === "postalveolar" || pl === "alveolopalatal";
+  };
+  const seq = new Map<string, [string, string]>();
+  for (const w of ctx.corpus) for (let i = 0; i + 1 < w.length; i++) if (w[i + 1] === "j" && pal(w[i])) seq.set(w[i] + "+j", [w[i], "j"]);
+  if (seq.size) {
+    const ch = makeChange("glide-absorption", "Glide absorption", "j was absorbed after palatal consonants (šj > š).", [...seq].map(([k, [a]]) => [k, [a]] as [string, Word]), [], [], {}, 2);
+    if (ch) {
+      ch.notation = "*Cj > C (C palatal)";
+      out.push(ch);
+    }
+  }
+  const gl: [string, Word][] = [];
+  for (const v of vows(ctx)) {
+    const f = vf(v)!;
+    if (f.height <= 1 && f.back === 0 && !f.round && has(ctx, "j")) gl.push(["j+" + v, [v]]);
+    if (f.height <= 1 && f.back === 2 && f.round && has(ctx, "w")) gl.push(["w+" + v, [v]]);
+  }
+  if (gl.length && count(ctx, (w, i) => gl.some(([k]) => k === w[i] + "+" + w[i + 1])) >= 1) {
+    const ch = makeChange("glide-loss", "Glide loss", "j and w were lost before i and u.", gl, [], [], {}, 2);
+    if (ch) {
+      ch.notation = "*ji wu > i u";
+      out.push(ch);
+    }
+  }
+  if (count(ctx, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? "") && vowelQuality(w[i]) === vowelQuality(w[i + 1])) >= 2 && !ctx.used.has("contraction")) {
+    const ch = TEMPLATE_BY_ID.contraction.build(ctx);
+    if (ch) out.push(ch);
+  }
+  return out;
+}
+
+/**
+ * Generate an ordered list of 3–8 plausible sound changes for a split,
+ * evaluated against the current forms of the lexicon (`corpus`).
+ */
 export function generateChanges(
   rng: Rng,
   corpus: Word[],
   inventory: string[],
   stress: StressRule,
   ancestral: string[] = [],
-  opts: { min?: number; max?: number } = {},
+  opts: ChangeOptions = {},
 ): GeneratedChanges {
   const target = rng.weighted<number>([
     [3, 0.8],
@@ -1355,22 +1581,37 @@ export function generateChanges(
     [8, 0.35],
   ]);
   const n = Math.max(opts.min ?? 3, Math.min(opts.max ?? 8, target));
+  const hardMax = Math.max(n, opts.max ?? 8);
+  const minImpact = opts.minImpact ?? 0.3;
+  const drift = opts.drift ?? {};
   // Evaluate candidates on a deterministic sample of the lexicon (speed).
   const step = Math.max(1, Math.floor(corpus.length / 130));
   const sample = corpus.filter((_, i) => i % step === 0).map((w) => w.slice());
+  const origKeys = sample.map((w) => key(w));
   const ctx: ChangeCtx = { rng, inv: new Set(inventory), stress, corpus: sample, used: new Set(), ancestral: new Set(ancestral) };
   for (const w of corpus) for (const p of w) ctx.inv.add(p);
   const changes: SoundChange[] = [];
   let base = stats(ctx.corpus);
   let tries = 0;
   let weights: number[] | null = null;
-  while (changes.length < n && tries++ < 80) {
+  const impact = () => {
+    let k = 0;
+    for (let i = 0; i < ctx.corpus.length; i++) if (key(ctx.corpus[i]) !== origKeys[i]) k++;
+    return k / Math.max(1, ctx.corpus.length);
+  };
+  const minChanged = Math.max(3, ctx.corpus.length * 0.025);
+  while (tries++ < 100) {
+    const enough = changes.length >= n;
+    if (enough && (changes.length >= hardMax || impact() >= minImpact)) break;
     weights ??= TEMPLATES.map((t) => {
       let w = typeof t.weight === "number" ? t.weight : t.weight(ctx);
+      w *= drift[t.id] ?? 1;
       if (ctx.used.has(t.id)) w *= 0.03;
+      for (const u of CONFLICTS.get(t.id) ?? []) if (ctx.used.has(u)) w *= 0.12;
       if (ctx.ancestral.has(t.id)) w *= 0.5;
       return w;
     });
+    if (weights.every((w) => w <= 0)) break;
     const ti = rng.weightedIndex(weights);
     const t = TEMPLATES[ti];
     if (weights[ti] <= 0) continue;
@@ -1380,6 +1621,10 @@ export function generateChanges(
       continue;
     }
     if (ch.newStress) {
+      if (enough) {
+        weights[ti] = 0;
+        continue;
+      }
       changes.push(ch);
       ctx.used.add(ch.id);
       ctx.stress = ch.newStress;
@@ -1396,7 +1641,7 @@ export function generateChanges(
     const next = ctx.corpus.map((w) => applyChange(ch, w, ctx.stress).word);
     let changed = 0;
     for (let i = 0; i < next.length; i++) if (next[i] !== ctx.corpus[i]) changed++;
-    if (changed < Math.max(2, ctx.corpus.length * 0.012)) {
+    if (changed < minChanged) {
       reject();
       continue;
     }
@@ -1421,13 +1666,10 @@ export function generateChanges(
     for (const out of Object.values(ch.map)) for (const p of out) ctx.inv.add(p);
     if (ch.span === 1 && ch.left.length === 0 && ch.right.length === 0 && !ch.stress && !ch.notAfter) for (const k of Object.keys(ch.map)) ctx.inv.delete(k);
   }
-  // Repairs that real languages make: contract identical vowels in hiatus.
-  if (TEMPLATE_BY_ID.contraction && count(ctx, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? "") && vowelQuality(w[i]) === vowelQuality(w[i + 1])) >= 2) {
-    const ch = TEMPLATE_BY_ID.contraction.build(ctx);
-    if (ch && !ctx.used.has("contraction")) {
-      changes.push(ch);
-      ctx.corpus = ctx.corpus.map((w) => applyChange(ch, w, ctx.stress).word);
-    }
+  for (const ch of repairs(ctx)) {
+    changes.push(ch);
+    ctx.used.add(ch.id);
+    ctx.corpus = ctx.corpus.map((w) => applyChange(ch, w, ctx.stress).word);
   }
   return { changes, stress: ctx.stress };
 }

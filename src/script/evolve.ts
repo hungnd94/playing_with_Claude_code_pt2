@@ -36,6 +36,7 @@ import {
 } from "./create";
 import { driftStyle, TOOL_SUCCESSORS } from "./style";
 import { mutateShape, mutationWeights, isHeadline, type MutationOp } from "./mutate";
+import { differentiate } from "./marks";
 import { rasterize, maxSimilarity, type Raster } from "./raster";
 import { genMark, VOWEL_OPS, addDiacritic } from "./marks";
 import { fitStrokes, type Shape } from "./families";
@@ -147,7 +148,13 @@ function glyph(s: Script, id: number): Glyph | undefined {
  * letters whose sounds are gone for the nearest missing sounds, then derive
  * new letters for the rest. Returns the letters that became free (unused).
  */
-function adaptLetters(b: Builder, needed: string[], allowVowelFromConsonant: boolean, vowelSeat?: string): number[] {
+/**
+ * `vowelFromConsonant`: how far (phonetic distance) a freed consonant letter
+ * may be from a vowel to be taken over for it — 0 never, ~3.4 for glides and
+ * laryngeals only, ∞ when an abjad becomes an alphabet (as Greek took over
+ * every Phoenician letter it had no use for).
+ */
+function adaptLetters(b: Builder, needed: string[], vowelFromConsonant: number, vowelSeat?: string): number[] {
   const s = b.script;
   const o = s.ortho;
   const old = { ...o.letters };
@@ -191,7 +198,7 @@ function adaptLetters(b: Builder, needed: string[], allowVowelFromConsonant: boo
       const pv = classify(p).vowel;
       const qv = classify(q).vowel;
       const d = phonDistance(p, q);
-      const lim = pv === qv ? 1.55 : allowVowelFromConsonant && pv && !qv ? 3.4 : 0;
+      const lim = pv === qv ? 1.55 : pv && !qv ? vowelFromConsonant : 0;
       if (d < lim) pairs.push([d + b.rng.range(0, 0.15), p, q, id]);
     }
   pairs.sort((x, y) => x[0] - y[0]);
@@ -216,11 +223,17 @@ function adaptLetters(b: Builder, needed: string[], allowVowelFromConsonant: boo
   const rest = missing.filter((p) => !takenP.has(p));
   if (rest.length) {
     const needs = planLetters(b, rest, false);
+    // New letters are made from near ones — but not all from the same base.
+    const uses = new Map<string, number>();
     const conv: Need[] = needs.map((n) => {
       if (n.how !== "indep" || b.rng.chance(0.22)) return n;
       const v = classify(n.ph).vowel;
-      const cands = Object.keys(o.letters).filter((q) => q !== "∅" && classify(q).vowel === v);
-      let from = cands.sort((x, y) => phonDistance(n.ph, x) - phonDistance(n.ph, y))[0];
+      const cands = Object.keys(o.letters).filter((q) => q !== "∅" && (classify(q).vowel === v || v));
+      const cost = (q: string): number => phonDistance(n.ph, q) + 1.2 * (uses.get(q) ?? 0);
+      let from = cands.sort((x, y) => cost(x) - cost(y))[0];
+      // When every near letter has already lent its shape, invent one (Greek Φ, Χ, Ψ, Ω).
+      if (from && cost(from) > 3 && b.rng.chance(0.7)) return n;
+      if (from) uses.set(from, (uses.get(from) ?? 0) + 1);
       if (!from && v && vowelSeat && o.letters[vowelSeat] !== undefined) from = vowelSeat;
       if (!from) return n;
       const diacs = s.morph.diacritics;
@@ -492,7 +505,7 @@ function adaptSyllabary(b: Builder, inv: Inventory): void {
 }
 
 /** Adapt a script's orthography to an inventory, in place. */
-function adaptInPlace(b: Builder, inv: Inventory, keepUnused: boolean): void {
+function adaptInPlace(b: Builder, inv: Inventory, keepUnused: boolean, vowelFromConsonant = 3.4): void {
   const s = b.script;
   const o = s.ortho;
   const cons = uniq(inv.consonants);
@@ -500,22 +513,22 @@ function adaptInPlace(b: Builder, inv: Inventory, keepUnused: boolean): void {
   let freed: number[] = [];
   switch (s.kind) {
     case "alphabet":
-      freed = adaptLetters(b, [...cons, ...vows], true);
+      freed = adaptLetters(b, [...cons, ...vows], vowelFromConsonant);
       break;
     case "abjad":
-      freed = adaptLetters(b, cons, false);
+      freed = adaptLetters(b, cons, 0);
       adaptAbjadVowels(b, inv);
       break;
     case "abugida":
-      if (o.vowelMode === "sign") freed = adaptLetters(b, [...cons, ...vows.filter((v) => classify(v).secondary.length === 0 || o.letters[v] !== undefined)], false, "ʔ");
-      else freed = adaptLetters(b, cons, false);
+      if (o.vowelMode === "sign") freed = adaptLetters(b, [...cons, ...vows.filter((v) => classify(v).secondary.length === 0 || o.letters[v] !== undefined)], 0, "ʔ");
+      else freed = adaptLetters(b, cons, 0);
       adaptAbugidaVowels(b, inv);
       break;
     case "syllabary":
       adaptSyllabary(b, inv);
       break;
     case "featural":
-      freed = adaptLetters(b, [...cons, ...vows], false);
+      freed = adaptLetters(b, [...cons, ...vows], 0);
       if (o.carrier < 0 || !glyph(s, o.carrier)) o.carrier = carrierFor(b);
       break;
   }
@@ -597,93 +610,190 @@ function toAbugida(b: Builder): void {
 // Glyph mutation pass
 // ---------------------------------------------------------------------------
 
+interface Habit {
+  op: MutationOp;
+  /** Strength passed to the op. */
+  k: number;
+  /** Fraction of eligible letters that take it up. */
+  frac: number;
+}
+
+/** Script-wide habits a hand tends to acquire with each tool (weights). */
+const TOOL_HABITS: Record<Tool, [MutationOp, number][]> = {
+  needle: [["roundify", 3], ["startLoops", 1.2], ["close", 0.4], ["wide", 0.6], ["hooks", 0.6]],
+  brush: [["roundify", 1.4], ["cursivize", 1.4], ["hooks", 1], ["tails", 0.6], ["flags", 0.5], ["narrow", 0.4]],
+  pen: [["cursivize", 1], ["feet", 1], ["flags", 1], ["openTop", 0.7], ["narrow", 0.6], ["tails", 0.6], ["roundify", 0.5]],
+  reed: [["openTop", 1], ["feet", 1], ["squarify", 1], ["tails", 0.8], ["cursivize", 0.5], ["flags", 0.6]],
+  chisel: [["angularize", 1], ["squarify", 0.8], ["wide", 0.6], ["close", 0.5]],
+  knife: [["deHorizontal", 1], ["angularize", 1], ["narrow", 0.5]],
+  stylus: [["angularize", 1], ["simplify", 0.6]],
+};
+
+const HABIT_NOTES: Partial<Record<MutationOp, string>> = {
+  roundify: "letters grew round, straight strokes bowing into curves",
+  squarify: "letters squared off into a blocky book hand",
+  angularize: "curves were broken into straight cuts",
+  deHorizontal: "horizontal strokes, which split along the grain, came to slant",
+  openTop: "the closed heads of letters opened",
+  feet: "stems grew feet along the line",
+  flags: "stems were crowned with small flags",
+  tails: "several letters grew tails below the line",
+  startLoops: "strokes came to begin with small loops",
+  hooks: "stems ended in hooked turns",
+  cursivize: "letters came to be made with fewer lifts of the hand",
+  narrow: "letters grew narrower",
+  wide: "letters grew broader",
+  close: "open bowls closed into loops",
+  simplify: "signs were simplified, losing strokes",
+  rotateAll: "signs were turned on their sides",
+  headline: "letters came to hang from a headline",
+};
+
+function chooseHabits(rng: Rng, s: Script, fromTool: Tool, drift: number): Habit[] {
+  const toTool = s.style.tool;
+  const fam = s.morph.family;
+  const joins = s.style.joins;
+  const changed = fromTool !== toTool;
+  const soft = (t: Tool): boolean => t === "pen" || t === "brush" || t === "reed" || t === "needle";
+  const out: Habit[] = [];
+  const add = (op: MutationOp, k: number, frac: number): void => {
+    if (!out.some((h) => h.op === op)) out.push({ op, k, frac });
+  };
+  if (fam === "tally" || fam === "featural") return rng.chance(drift * 0.5) ? [{ op: rng.pick(["narrow", "wide"] as MutationOp[]), k: 1, frac: 1 }] : [];
+  if (fam === "wedge" && toTool === "stylus") {
+    if (rng.chance(0.3 + drift * 0.5)) add("simplify", 1, 0.45);
+    if (rng.chance(0.12 + drift * 0.2)) add("rotateAll", 1, 1);
+    return out;
+  }
+  let pool = TOOL_HABITS[toTool].slice();
+  if (joins) pool = pool.filter(([op]) => op === "roundify" || op === "angularize" || op === "tails" || op === "narrow" || op === "wide");
+  if (!s.style.headline && s.kind === "abugida" && s.direction === "ltr" && soft(toTool) && !joins) pool.push(["headline", 1.4]);
+  if (s.style.headline) pool = pool.filter(([op]) => op !== "flags" && op !== "openTop");
+  // A new tool imposes its habit first.
+  if (changed) {
+    if (toTool === "knife") add("deHorizontal", 1, 1);
+    else if (toTool === "stylus" || (toTool === "chisel" && soft(fromTool))) add("angularize", 1, 1);
+    else if (toTool === "needle") {
+      add("roundify", 0.75 + drift * 0.25, 0.95);
+      if (rng.chance(0.55)) add("startLoops", 1, 0.6);
+    }
+    else if (!soft(fromTool) && !joins) add(rng.chance(0.5) ? "cursivize" : "roundify", 0.5 + drift * 0.3, 0.9);
+  }
+  // Every new tool leaves its mark; an unchanged hand drifts more slowly.
+  const n = (changed ? (out.length ? 0 : 1) : rng.chance(0.35 + drift * 0.55) ? 1 : 0) + (rng.chance(0.25 + drift * 0.5) ? 1 : 0) + (rng.chance(drift * 0.25) ? 1 : 0);
+  for (let i = 0; i < n; i++) {
+    const cand = pool.filter(([op]) => !out.some((h) => h.op === op));
+    if (!cand.length) break;
+    const op = rng.weighted(cand);
+    const frac = op === "tails" ? 0.45 : op === "flags" ? 0.75 : op === "simplify" ? 0.35 : op === "startLoops" ? 0.7 : 0.9;
+    const k = op === "roundify" ? (toTool === "needle" ? 0.7 : 0.35) + drift * 0.3 : 1;
+    add(op, k, frac);
+  }
+  // Mutually exclusive pairs: keep the first.
+  const clash: [MutationOp, MutationOp][] = [["roundify", "squarify"], ["roundify", "angularize"], ["narrow", "wide"], ["squarify", "cursivize"], ["openTop", "close"]];
+  return out.filter((h, i) => !clash.some(([a, b]) => (h.op === b && out.slice(0, i).some((x) => x.op === a)) || (h.op === a && out.slice(0, i).some((x) => x.op === b))));
+}
+
+/** Per-letter mutation weights (rarer, idiosyncratic changes). */
+function letterWeights(s: Script): [MutationOp, number][] {
+  const w = mutationWeights(s.style.tool, s.style.tool).filter(([op]) => op !== "cursivize" && op !== "loopify" && op !== "deHorizontal" && op !== "angularize");
+  let out = w;
+  if (s.style.joins) out = out.filter(([op]) => ["jitter", "simplify", "lean", "stretch", "addStroke"].includes(op));
+  if (s.style.headline) out = out.filter(([op]) => op !== "rotate" && op !== "elongate");
+  if (s.morph.family === "tally" || s.morph.family === "featural") out = out.filter(([op]) => op === "jitter" || op === "stretch");
+  return out;
+}
+
 function mutateGlyphs(b: Builder, fromTool: Tool, drift: number): number {
   const s = b.script;
   const rng = b.rng;
-  const toTool = s.style.tool;
-  const toolChanged = fromTool !== toTool;
-  const joins = s.style.joins;
-  let weights = mutationWeights(fromTool, toTool);
-  if (joins) weights = weights.filter(([op]) => ["jitter", "simplify", "lean", "stretch", "addStroke", "cursivize", "loopify", "angularize"].includes(op));
-  if (s.style.headline) weights = weights.filter(([op]) => op !== "rotate" && op !== "elongate");
-  if (s.morph.family === "tally" || s.morph.family === "featural") weights = weights.filter(([op]) => op === "jitter" || op === "lean" || op === "stretch");
   const glyphs = s.glyphs.filter((g) => LETTERISH(g));
-  const rasters = new Map<number, Raster>();
-  for (const g of glyphs) rasters.set(g.id, rasterize(g.strokes, g.w));
-  const thresh = b.factory.thresh;
-  const pMut = 0.35 + 0.55 * drift;
-  const forced: MutationOp[] = [];
-  if (toolChanged) {
-    if (toTool === "knife") forced.push("deHorizontal");
-    else if (toTool === "stylus") forced.push("angularize");
-    else if ((fromTool === "knife" || fromTool === "stylus" || fromTool === "chisel") && !joins && rng.chance(0.7)) forced.push("cursivize");
-  }
-  // Script-wide habits: coherent changes that sweep through the whole letter set.
-  const simple = !joins && s.morph.family !== "tally" && s.morph.family !== "featural" && s.morph.family !== "wedge";
-  const habits: [MutationOp, number][] = simple
-    ? [
-        ["narrow", 0.5],
-        ["wide", 0.4],
-        ["feet", toTool === "pen" || toTool === "brush" || toTool === "reed" ? 0.7 : 0.2],
-        ["hooks", toTool === "brush" || toTool === "needle" || toTool === "pen" ? 0.6 : 0.1],
-        ["loopify", toTool === "needle" || toTool === "brush" ? 0.6 : 0.1],
-        ["cursivize", toTool !== "knife" && toTool !== "stylus" && toTool !== "chisel" ? 0.6 : 0],
-        ["headline", !s.style.headline && s.kind === "abugida" && s.direction === "ltr" && toTool !== "knife" && toTool !== "stylus" ? 1.2 : 0],
-      ]
-    : [];
-  const nHabits = simple ? (rng.chance(0.3 + drift * 0.6) ? 1 : 0) + (rng.chance(drift * 0.4) ? 1 : 0) : 0;
-  const habitOps: MutationOp[] = [];
-  for (let i = 0; i < nHabits; i++) {
-    const h = rng.weighted(habits.filter(([op]) => !habitOps.includes(op)));
-    if (h) habitOps.push(h);
-  }
-  if (habitOps.includes("headline")) {
+  const habits = chooseHabits(rng, s, fromTool, drift);
+  if (habits.some((h) => h.op === "headline")) {
     s.style.headline = true;
     s.style.spacing = 0.02;
-    s.history.push("letters came to hang from a headline");
   }
-  forced.push(...habitOps);
-  let changed = 0;
-  const ctx = { tool: toTool, headline: s.style.headline, diffs: b.diffs, footDir: rng.chance(0.5) ? 1 : -1 };
-  for (const g of rng.shuffle(glyphs.slice())) {
-    const others = (): Raster[] => [...rasters.entries()].filter(([id]) => id !== g.id).map(([, r]) => r);
+  const ctx = {
+    tool: s.style.tool,
+    headline: s.style.headline,
+    diffs: b.diffs,
+    footDir: rng.chance(0.5) ? 1 : -1,
+    flagDir: rng.chance(0.6) ? -1 : 1,
+    joins: s.style.joins,
+  };
+  for (const h of habits) {
+    const note = HABIT_NOTES[h.op];
+    if (note) s.history.push(note + (h.op === "roundify" && s.style.tool === "needle" ? ", as straight cuts would split the palm leaf" : ""));
+  }
+  const weights = letterWeights(s);
+  const pMut = 0.18 + 0.42 * drift;
+  const thresh = b.factory.thresh;
+  // 1. Restyle every letter: the script's habits, then the odd idiosyncratic change.
+  const plans = new Map<number, { styled: Shape; final: Shape; ops: MutationOp[] }>();
+  for (const g of glyphs) {
     let shape: Shape = shapeOf(g);
-    const ops: MutationOp[] = forced.length ? forced.filter((op) => op === "headline" || rng.chance(0.85)) : [];
-    if (rng.chance(pMut)) ops.push(rng.weighted(weights));
-    if (rng.chance(pMut * 0.5)) ops.push(rng.weighted(weights));
-    if (!ops.length) continue;
-    // Always a little hand drift.
-    let accepted = false;
-    for (let attempt = 0; attempt < 3 && !accepted; attempt++) {
-      let cand = shape;
-      for (const op of ops) cand = mutateShape(cand, op, rng, ctx, 0.5 + drift);
-      cand = mutateShape(cand, "jitter", rng, ctx, 0.25 + drift * 0.4);
-      if (g.entry && cand.w !== g.w) {
-        cand.entry = [cand.w, g.entry[1]];
-        if (g.exit) cand.exit = [g.exit[0] * (cand.w / g.w), g.exit[1]];
+    const applied: MutationOp[] = [];
+    for (const h of habits) {
+      if (h.op !== "headline" && !rng.chance(h.frac)) continue;
+      const next = mutateShape(shape, h.op, rng, ctx, h.k);
+      if (next !== shape) applied.push(h.op);
+      shape = next;
+    }
+    const styled = shape;
+    const ops: MutationOp[] = [];
+    if (weights.length && rng.chance(pMut)) ops.push(rng.weighted(weights));
+    if (weights.length && rng.chance(pMut * 0.35)) ops.push(rng.weighted(weights));
+    for (const op of ops) shape = mutateShape(shape, op, rng, ctx, 0.5 + drift);
+    shape = mutateShape(shape, "jitter", rng, ctx, 0.15 + drift * 0.3);
+    plans.set(g.id, { styled, final: shape, ops: [...applied, ...ops] });
+  }
+  // 2. Resolve letters that converged: fall back to the plainly restyled form,
+  //    then mark the newcomer with one of the script's differentiators.
+  const accepted: Raster[] = [];
+  let changed = 0;
+  for (const g of rng.shuffle(glyphs.slice())) {
+    const plan = plans.get(g.id)!;
+    const candidates: Shape[] = [plan.final, plan.styled];
+    for (const d of b.diffs) candidates.push(differentiate(plan.styled, d, rng));
+    let chosen: Shape | null = null;
+    let chosenR: Raster | null = null;
+    for (const c of candidates) {
+      const r = rasterize(c.strokes, c.w);
+      if (maxSimilarity(r, accepted, thresh) < thresh) {
+        chosen = c;
+        chosenR = r;
+        break;
       }
-      const r = rasterize(cand.strokes, cand.w);
-      if (maxSimilarity(r, others(), thresh) < thresh) {
-        const t = tidy(cand);
-        g.strokes = t.strokes;
-        g.w = t.w;
-        if (t.entry) g.entry = t.entry;
-        if (t.exit) g.exit = t.exit;
-        g.origin = "mutated";
-        rasters.set(g.id, r);
-        accepted = true;
-        changed++;
-      } else if (ops.length && ops[ops.length - 1] !== "headline") ops.splice(ops.length - 1, 1, rng.weighted(weights));
     }
-    if (!accepted && ops.includes("headline")) {
-      // the headline is a script-wide habit: apply it even if it makes letters more alike
-      const cand = mutateShape(shape, "headline", rng, ctx);
-      g.strokes = tidy(cand).strokes;
-      g.origin = "mutated";
+    if (!chosen) {
+      chosen = plan.final;
+      chosenR = rasterize(chosen.strokes, chosen.w);
     }
+    accepted.push(chosenR!);
+    const t = tidy(chosen);
+    if (g.entry) t.entry = [t.w, g.entry[1]];
+    if (g.exit) t.exit = [g.exit[0] * (t.w / g.w), g.exit[1]];
+    g.strokes = t.strokes;
+    g.w = t.w;
+    if (t.entry) g.entry = t.entry;
+    if (t.exit) g.exit = t.exit;
+    if (g.origin === "inherited") g.origin = "mutated";
+    const idio = plan.ops.filter((op) => ["rotate", "reflect", "simplify", "addStroke", "elongate", "open", "close"].includes(op) && !habits.some((h) => h.op === op));
+    if (idio.length) g.note = OP_NOTES[idio[0]] ?? g.note;
+    changed++;
   }
   return changed;
 }
+
+const OP_NOTES: Partial<Record<MutationOp, string>> = {
+  rotate: "turned on its side",
+  reflect: "reversed",
+  simplify: "lost a stroke",
+  addStroke: "gained a mark",
+  elongate: "lengthened its stem",
+  open: "opened",
+  close: "closed into a loop",
+};
 
 function reflectAll(s: Script, rng: Rng): void {
   for (const g of s.glyphs) {
@@ -755,7 +865,7 @@ export function deriveScript(parent: Script, rng: Rng, opts: DeriveOptions = {})
 
   // Language.
   const inv = opts.inventory ?? parent.inventory;
-  adaptInPlace(b, inv, false);
+  adaptInPlace(b, inv, false, parent.kind === "abjad" && child.kind === "alphabet" ? Infinity : 3.4);
   computeOrder(child, r.fork("order"));
   child.history.unshift(
     `derived from ${parent.id}${child.kind !== parent.kind ? ` and became ${article(child.kind)} ${child.kind}` : ""}`,

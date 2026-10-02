@@ -24,12 +24,15 @@ import {
 } from "./camera";
 import { compileProgram, createTexture, halveRGBA, parseColor, Uniforms } from "./gl";
 import { LabelLayer, type Box, type GlobeLabel, type LabelTheme } from "./labels";
-import { FULLSCREEN_VS, GLOBE_FS, MARKER_FS, MARKER_VS, RIVER_FS, RIVER_VS } from "./shaders";
+import { buildLineGeometry, LINE_STRIDE, type GlobeLine } from "./lines";
+import { FULLSCREEN_VS, GLOBE_FS, LINE_FS, LINE_VS, MARKER_FS, MARKER_VS, RIVER_FS, RIVER_VS } from "./shaders";
 
 export type { GlobeLabel, LabelStyleName, LabelTheme } from "./labels";
+export type { GlobeLine, LineStyle } from "./lines";
 export type { ViewState, ProjectionMode } from "./camera";
 
-export type ColorLike = string | readonly number[];
+export type { ColorLike } from "./lines";
+import type { ColorLike } from "./lines";
 
 export interface GlobeOptions {
   /** Initial view (degrees; zoom 1 = whole globe). */
@@ -67,6 +70,18 @@ export interface GlobeOptions {
   labelTheme?: LabelTheme;
   /** Enable mouse/touch interaction (default true). */
   interactive?: boolean;
+  /**
+   * Honour the user's `prefers-reduced-motion` setting (default true): no
+   * auto-rotation, near-instant flyTo, no animated line flow.
+   */
+  respectReducedMotion?: boolean;
+}
+
+export interface HighlightCellsOptions {
+  /** Highlight colour (default warm gold). */
+  color?: ColorLike;
+  /** Strength 0..1 (default 1). */
+  strength?: number;
 }
 
 export interface OverlayOptions {
@@ -129,14 +144,27 @@ export class GlobeView {
   private rbuf: WebGLBuffer;
   private ribuf: WebGLBuffer;
   private riverIndexCount = 0;
-  private riverColor: [number, number, number] = [30 / 255, 74 / 255, 112 / 255];
+  private riverColor: [number, number, number] = [42 / 255, 92 / 255, 134 / 255];
   private riverWidth = 1;
   private markerList: GlobeMarker[] = [];
+  private lprog: WebGLProgram;
+  private lu: Uniforms;
+  private lvao: WebGLVertexArrayObject;
+  private lbuf: WebGLBuffer;
+  private libuf: WebGLBuffer;
+  private lineIndexCount = 0;
+  private lineAnimated = false;
+  private lineList: GlobeLine[] = [];
+  private hlCellsOn = false;
+  private hlColor: [number, number, number, number] = [1, 0.8, 0.45, 1];
+  private hlBuf: Uint8Array | null = null;
+  private reducedMotion = false;
+  private t0 = typeof performance !== "undefined" ? performance.now() : 0;
   /** Drawn marker positions (after inverse warp) + size, for label collision. */
   private markerScreen: [number, number, number, number][] = [];
 
   private tex: Record<string, WebGLTexture | null> = {
-    terrain: null, ids: null, warp: null, sites: null, adjStart: null, adj: null, ovColor: null, ovGroup: null,
+    terrain: null, ids: null, warp: null, sites: null, adjStart: null, adj: null, ovColor: null, ovGroup: null, hlCells: null,
   };
   private terrainSize: [number, number] = [1, 1];
   private idSize: [number, number] = [1, 1];
@@ -159,7 +187,7 @@ export class GlobeView {
   private ownsLabelCanvas: boolean;
   private labels: LabelLayer;
 
-  private opts: Required<Omit<GlobeOptions, "labelCanvas" | "view" | "sun" | "fontFamily" | "labelTheme">> & { sun: { mode: "camera" | "world"; dir: V3 } };
+  private opts: Required<Omit<GlobeOptions, "labelCanvas" | "view" | "sun" | "fontFamily" | "labelTheme" | "respectReducedMotion">> & { sun: { mode: "camera" | "world"; dir: V3 } };
   private state: ViewState;
   private mode: ProjectionMode;
   private cssW = 1;
@@ -179,6 +207,8 @@ export class GlobeView {
   private ro: ResizeObserver | null = null;
   private cleanup: (() => void)[] = [];
   private maxTex: number;
+  /** Cyclone centres + twists for the cloud field (see shaders.ts). */
+  private cyclones = makeCyclones(1);
 
   constructor(canvas: HTMLCanvasElement, options: GlobeOptions = {}) {
     this.canvas = canvas;
@@ -202,15 +232,27 @@ export class GlobeView {
       interactive: options.interactive ?? true,
       sun: options.sun ?? { mode: "camera", dir: [-0.55, 0.42, 0.72] },
     };
-    this.autoRotate = ar;
+    // Reduced motion: no auto-rotation or flowing lines, near-instant flights.
+    if (options.respectReducedMotion !== false && typeof matchMedia === "function") {
+      const mq = matchMedia("(prefers-reduced-motion: reduce)");
+      this.reducedMotion = mq.matches;
+      const onMq = (): void => {
+        this.reducedMotion = mq.matches;
+        if (this.reducedMotion) this.autoRotate = 0;
+        this.requestRender();
+      };
+      mq.addEventListener?.("change", onMq);
+      this.cleanup.push(() => mq.removeEventListener?.("change", onMq));
+    }
+    this.autoRotate = this.reducedMotion ? 0 : ar;
     this.mode = this.opts.mode;
     this.state = { lat: options.view?.lat ?? 18, lon: options.view?.lon ?? 0, zoom: options.view?.zoom ?? 1 };
 
     // GL objects (re-created after a context loss).
-    this.prog = this.mprog = this.rprog = null as unknown as WebGLProgram;
-    this.u = this.mu = this.ru = null as unknown as Uniforms;
-    this.vao = this.mvao = this.rvao = null as unknown as WebGLVertexArrayObject;
-    this.mbuf = this.rbuf = this.ribuf = null as unknown as WebGLBuffer;
+    this.prog = this.mprog = this.rprog = this.lprog = null as unknown as WebGLProgram;
+    this.u = this.mu = this.ru = this.lu = null as unknown as Uniforms;
+    this.vao = this.mvao = this.rvao = this.lvao = null as unknown as WebGLVertexArrayObject;
+    this.mbuf = this.rbuf = this.ribuf = this.lbuf = this.libuf = null as unknown as WebGLBuffer;
     this.initGL();
 
     // Label canvas.
@@ -270,6 +312,7 @@ export class GlobeView {
     mesh?: [SphereMesh, Uint8Array | undefined];
     overlay?: OverlayOptions | null;
     rivers?: RiverGeometry | null;
+    hlCells?: [ArrayLike<number> | null, HighlightCellsOptions | undefined];
   } = {};
 
   private initGL(): void {
@@ -289,6 +332,12 @@ export class GlobeView {
     this.rbuf = gl.createBuffer()!;
     this.ribuf = gl.createBuffer()!;
     this.setupRiverVAO();
+    this.lprog = compileProgram(gl, LINE_VS, LINE_FS);
+    this.lu = new Uniforms(gl, this.lprog);
+    this.lvao = gl.createVertexArray()!;
+    this.lbuf = gl.createBuffer()!;
+    this.libuf = gl.createBuffer()!;
+    this.setupLineVAO();
   }
 
   private restoreGL(): void {
@@ -301,7 +350,9 @@ export class GlobeView {
     if (i.mesh) this.setMesh(...i.mesh);
     if (i.overlay) this.setOverlay(i.overlay);
     if (i.rivers) this.setRivers(i.rivers);
+    if (i.hlCells) this.setHighlightCells(...i.hlCells);
     this.setMarkers(this.markerList);
+    this.setLines(this.lineList);
     this.requestRender();
   }
 
@@ -359,6 +410,7 @@ export class GlobeView {
     }
     this.warpLattice = { width, height, amp, rgba, vec };
     this.setMarkers(this.markerList);
+    if (this.lineList.length) this.setLines(this.lineList);
     this.requestRender();
   }
 
@@ -465,6 +517,9 @@ export class GlobeView {
     this.tex.ovColor = createTexture(gl, DATA_W, rows, this.ovColorBuf, { internalFormat: gl.RGBA8, format: gl.RGBA, type: gl.UNSIGNED_BYTE, ...nearest }, this.tex.ovColor);
     this.tex.ovGroup = createTexture(gl, DATA_W, rows, this.ovGroupBuf, { internalFormat: gl.RG32UI, format: gl.RG_INTEGER, type: gl.UNSIGNED_INT, ...nearest }, this.tex.ovGroup);
     this.bfsQueue = new Int32Array(n);
+    this.hlBuf = new Uint8Array(DATA_W * rows);
+    this.tex.hlCells = createTexture(gl, DATA_W, rows, this.hlBuf, { internalFormat: gl.R8, format: gl.RED, type: gl.UNSIGNED_BYTE, ...nearest }, this.tex.hlCells);
+    this.hlCellsOn = false;
     this.requestRender();
   }
 
@@ -561,6 +616,75 @@ export class GlobeView {
     this.requestRender();
   }
 
+  /** Hide the overlay (same as `setOverlay(null)`). */
+  clearOverlay(): void {
+    this.setOverlay(null);
+  }
+
+  /**
+   * Highlight a set of cells (a selection, search results, a river basin…),
+   * independently of any overlay: a warm wash with a luminous inner glow and a
+   * bright hairline around the set. `cells` lists cell indices; or pass a
+   * Float32Array/Uint8Array of length n with per-cell strengths (0..1 / 0..255)
+   * via `{ strength }`-less call: values > 0 are highlighted. `null` clears.
+   */
+  setHighlightCells(cells: ArrayLike<number> | null, opts?: HighlightCellsOptions): void {
+    this.inputs.hlCells = [cells, opts];
+    if (!this.mesh || !this.hlBuf) throw new Error("GlobeView.setHighlightCells: call setMesh/setWorld first");
+    const n = this.mesh.n;
+    const buf = this.hlBuf;
+    buf.fill(0);
+    if (!cells || cells.length === 0) {
+      this.hlCellsOn = false;
+      this.requestRender();
+      return;
+    }
+    const perCell = cells.length === n && (cells instanceof Uint8Array || cells instanceof Float32Array || cells instanceof Float64Array);
+    if (perCell) {
+      const scale = cells instanceof Uint8Array ? 1 : 255;
+      for (let i = 0; i < n; i++) buf[i] = Math.max(0, Math.min(255, Math.round(cells[i] * scale)));
+    } else {
+      for (let k = 0; k < cells.length; k++) {
+        const c = cells[k];
+        if (c >= 0 && c < n) buf[c] = 255;
+      }
+    }
+    const c = parseColor(opts?.color, [1, 0.82, 0.48, 1]);
+    this.hlColor = [c[0] ** 2.2, c[1] ** 2.2, c[2] ** 2.2, Math.max(0, Math.min(1, opts?.strength ?? 1))];
+    const gl = this.gl;
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex.hlCells);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, DATA_W, Math.ceil(n / DATA_W), gl.RED, gl.UNSIGNED_BYTE, buf);
+    this.hlCellsOn = true;
+    this.requestRender();
+  }
+
+  /**
+   * Polylines (trade routes, campaigns, war fronts, borders of a selection…)
+   * with constant screen width, casing, dashes/dots, optional arrowheads and
+   * animated flow. Positions are in cell space like markers (mapped through
+   * the inverse warp). `null` or `[]` clears.
+   */
+  setLines(list: readonly GlobeLine[] | null): void {
+    this.lineList = list ? list.slice() : [];
+    const tmp = new Float64Array(3);
+    const wl = this.warpLattice;
+    const geo = buildLineGeometry(this.lineList, wl ? (x, y, z) => {
+      unwarp(wl, x, y, z, tmp);
+      return [tmp[0], tmp[1], tmp[2]];
+    } : undefined);
+    const gl = this.gl;
+    gl.bindVertexArray(this.lvao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.lbuf);
+    gl.bufferData(gl.ARRAY_BUFFER, geo.verts, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.libuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geo.indices, gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(null);
+    this.lineIndexCount = geo.indices.length;
+    this.lineAnimated = geo.animated;
+    this.requestRender();
+  }
+
   /** Point markers drawn in GL (hidden on the far side of the globe). */
   setMarkers(list: readonly GlobeMarker[]): void {
     this.markerList = list.slice();
@@ -627,6 +751,7 @@ export class GlobeView {
   /** Degrees per second; 0 stops. */
   setAutoRotate(speed: number | boolean): void {
     this.autoRotate = speed === true ? 3 : speed === false ? 0 : speed;
+    if (this.reducedMotion) this.autoRotate = 0;
     this.requestRender();
   }
 
@@ -643,10 +768,14 @@ export class GlobeView {
     const from = { ...this.state };
     const to = this.clamp({ lat, lon, zoom: zoom ?? from.zoom });
     const ang = angularDistance(from.lat, from.lon, to.lat, to.lon);
-    const dur = durationMs ?? Math.min(2600, 700 + 900 * ang + 250 * Math.abs(Math.log(to.zoom / from.zoom)));
+    let dur = durationMs ?? Math.min(2600, 700 + 900 * ang + 250 * Math.abs(Math.log(to.zoom / from.zoom)));
     const maxZ = Math.max(from.zoom, to.zoom);
     // Zoom out mid-flight in proportion to distance (more when we start/end close in).
-    const bump = Math.min(maxZ - 1, maxZ * Math.min(1, ang / 1.2)) * 0.8;
+    let bump = Math.min(maxZ - 1, maxZ * Math.min(1, ang / 1.2)) * 0.8;
+    if (this.reducedMotion) {
+      dur = Math.min(dur, 160);
+      bump = 0;
+    }
     this.fly = { t0: performance.now(), dur, from, to, bump: Math.max(0, bump) };
     this.zoomAnim = null;
     this.requestRender();
@@ -707,6 +836,10 @@ export class GlobeView {
     gl.deleteProgram(this.mprog);
     gl.deleteBuffer(this.mbuf);
     gl.deleteProgram(this.rprog);
+    gl.deleteProgram(this.lprog);
+    gl.deleteBuffer(this.lbuf);
+    gl.deleteBuffer(this.libuf);
+    gl.deleteVertexArray(this.lvao);
     gl.deleteBuffer(this.rbuf);
     gl.deleteBuffer(this.ribuf);
     gl.deleteVertexArray(this.rvao);
@@ -825,6 +958,10 @@ export class GlobeView {
       } else if (!this.dragging) {
         this.velocity = { lon: 0, lat: 0 };
       }
+      if (this.lineAnimated && this.lineIndexCount > 0 && !this.reducedMotion && !(typeof document !== "undefined" && document.hidden)) {
+        animating = true;
+        this.dirty = true;
+      }
       if (this.autoRotate && !this.dragging && this.mode === "globe") {
         this.state = this.clamp({ ...this.state, lon: this.state.lon + (this.autoRotate * dt) / 1000 });
         animating = true;
@@ -880,6 +1017,9 @@ export class GlobeView {
     bind(5, "uAdj", this.tex.adj);
     bind(6, "uOvColor", this.tex.ovColor);
     bind(7, "uOvGroup", this.tex.ovGroup);
+    bind(8, "uHlCells", this.tex.hlCells);
+    u.i("uHlOn", this.hlCellsOn && !!this.tex.ids && !!this.tex.sites ? 1 : 0);
+    u.f("uHlColor", ...this.hlColor);
     u.i("uHasTerrain", this.tex.terrain ? 1 : 0);
     u.f("uTerrainSize", this.terrainSize[0], this.terrainSize[1]);
     u.i("uIdSize", this.idSize[0], this.idSize[1]);
@@ -919,9 +1059,30 @@ export class GlobeView {
         gl.bindTexture(gl.TEXTURE_2D, this.tex.terrain);
         r.i("uTerrain", 0);
         gl.bindVertexArray(this.rvao);
-        gl.drawElements(gl.TRIANGLES, this.riverIndexCount, gl.UNSIGNED_INT, 0);
+        for (const sh of this.mode === "globe" ? [0] : [-2 * Math.PI, 0, 2 * Math.PI]) {
+          r.f("uLonShift", sh);
+          gl.drawElements(gl.TRIANGLES, this.riverIndexCount, gl.UNSIGNED_INT, 0);
+        }
         gl.disable(gl.BLEND);
       }
+    }
+
+    // Lines (routes, fronts, arrows).
+    if (this.lineIndexCount > 0) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(this.lprog);
+      const l = this.lu;
+      this.commonUniforms(l, f, W, H);
+      l.f("uTime", this.reducedMotion ? 0 : (performance.now() - this.t0) / 1000);
+      gl.bindVertexArray(this.lvao);
+      // The flat map repeats horizontally: draw the copies that can be on screen.
+      const shifts = this.mode === "globe" ? [0] : [-2 * Math.PI, 0, 2 * Math.PI];
+      for (const sh of shifts) {
+        l.f("uLonShift", sh);
+        gl.drawElements(gl.TRIANGLES, this.lineIndexCount, gl.UNSIGNED_INT, 0);
+      }
+      gl.disable(gl.BLEND);
     }
 
     // Markers.
@@ -985,6 +1146,35 @@ export class GlobeView {
     gl.bindVertexArray(null);
   }
 
+  private setupLineVAO(): void {
+    const gl = this.gl;
+    gl.bindVertexArray(this.lvao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.lbuf);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.libuf);
+    const stride = LINE_STRIDE * 4;
+    const attr = (name: string, size: number, offset: number): void => {
+      const loc = gl.getAttribLocation(this.lprog, name);
+      if (loc < 0) return;
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, offset * 4);
+    };
+    attr("aPos", 3, 0);
+    attr("aPrev", 3, 3);
+    attr("aNext", 3, 6);
+    attr("aSide", 1, 9);
+    attr("aDist", 1, 10);
+    attr("aColor", 4, 11);
+    attr("aWidth", 1, 15);
+    attr("aCasing", 1, 16);
+    attr("aStyle", 1, 17);
+    attr("aKind", 1, 18);
+    attr("aLonU", 1, 19);
+    attr("aFlow", 1, 20);
+    attr("aCaseA", 1, 21);
+    attr("aAnchor", 1, 22);
+    gl.bindVertexArray(null);
+  }
+
   /** Uniforms shared by the globe and river programs. */
   private commonUniforms(u: Uniforms, f: Frame, W: number, H: number): void {
     const dpr = this.dpr;
@@ -1004,9 +1194,15 @@ export class GlobeView {
     u.f("uAtmos", this.opts.atmosphere);
     u.f("uExposure", this.opts.exposure);
     u.f("uSpacing", this.mesh ? this.mesh.meanSpacing : 0.02);
-    u.f("uGlint", 1 / (1 + 0.6 * Math.max(0, this.state.zoom - 1)));
+    // Sun glint: a planetary-scale highlight; it would read as a smudge in close-ups.
+    u.f("uGlint", 1 - 0.88 * smoothstepJS(1, 3, this.state.zoom));
     const zf = 1 - smoothstepJS(1.25, 2.6, this.state.zoom);
     u.f("uClouds", this.opts.clouds * zf * (this.overlay.on ? 0.12 : 1));
+    const cl = u.loc("uCyclones");
+    if (cl) {
+      this.gl.uniform4fv(cl, this.cyclones);
+      u.i("uCycloneCount", this.cyclones.length / 4);
+    }
   }
 
   private setupMarkerVAO(): void {
@@ -1250,6 +1446,28 @@ export class GlobeView {
       for (const h of this.hoverHandlers) h(cell, hit ? hit.lat : NaN, hit ? hit.lon : NaN);
     });
   }
+}
+
+/** A few mid-latitude cyclones (counter-clockwise in the north, clockwise in the south). */
+function makeCyclones(seed: number): Float32Array {
+  let st = (seed * 2654435761) >>> 0 || 1;
+  const rnd = (): number => {
+    st ^= st << 13; st >>>= 0;
+    st ^= st >>> 17;
+    st ^= st << 5; st >>>= 0;
+    return st / 4294967296;
+  };
+  const out = new Float32Array(4 * 7);
+  for (let i = 0; i < 7; i++) {
+    const north = i % 2 === 0;
+    const lat = (north ? 1 : -1) * (0.55 + 0.45 * rnd());
+    const lon = rnd() * 2 * Math.PI;
+    out[4 * i] = Math.cos(lat) * Math.cos(lon);
+    out[4 * i + 1] = Math.cos(lat) * Math.sin(lon);
+    out[4 * i + 2] = Math.sin(lat);
+    out[4 * i + 3] = (north ? 1 : -1) * (1.3 + 1.1 * rnd());
+  }
+  return out;
 }
 
 function smoothstepJS(a: number, b: number, x: number): number {

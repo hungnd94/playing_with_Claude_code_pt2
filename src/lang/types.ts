@@ -75,6 +75,16 @@ export interface Phonology {
   stress: StressRule;
   /** Short descriptor of the syllable canon, e.g. "(C)(C)V(C)". */
   canon: string;
+  /** Sound style the proto-language was grown from (see styles.ts); inherited by daughters. */
+  style?: string;
+  /** Relative weights of word-final consonants (defaults to `wCoda`). */
+  wFinal?: Record<string, number>;
+  /** Multipliers for word-final vowel qualities (e.g. Latin-like -a, Japanese-like -o/-i). */
+  wFinalV?: Record<string, number>;
+  /** Banned consonant + vowel-quality sequences (e.g. Japanese-like *ti, *tu, *si). */
+  banned?: [string, string][];
+  /** Probability that a medial syllable boundary is a geminate (kk, tt, ll). */
+  pGeminate?: number;
 }
 
 export type AffixKind =
@@ -244,6 +254,12 @@ export type LexOrigin =
 export interface Lexeme {
   form: Word;
   origin: LexOrigin;
+  /**
+   * Id of the language in which this word's line of descent began (the proto-language
+   * for inherited roots; a daughter for words it coined, borrowed or re-derived).
+   * Two languages' words for a concept are cognate when they share `since`.
+   */
+  since?: string;
 }
 
 export interface NamingCulture {
@@ -269,6 +285,10 @@ export interface NamingCulture {
   reuse: number;
   /** Two-word place names ("Nova Kesh") vs compounds. */
   phrasal: number;
+  /** Clipped combining forms of favourite settlement heads (like -stan from stāna), by concept id. */
+  headForms?: Record<string, Word>;
+  /** A characteristic ending of men's names (like -us, -os, -as), applied to simple names. */
+  maleEnding?: Word;
 }
 
 export interface Language {

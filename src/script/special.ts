@@ -7,7 +7,7 @@
 import type { Rng } from "../core/rng";
 import type { Stroke } from "./types";
 import { classify, phonDistance, type PlaceGroup } from "./ipa";
-import { circle, dot, line, poly, smooth, transformStrokes, strokesBBox } from "./geom";
+import { circle, dot, line, poly, smooth, transformStrokes, strokesBBox, type P } from "./geom";
 import { COMPONENT_SHAPES, cursiveSkeleton, addDots, CURSIVE_SKELETONS, fitStrokes, type CursiveSkel, type GenCtx, type Shape } from "./families";
 import { GlyphFactory } from "./factory";
 import { orient } from "./marks";
@@ -65,7 +65,8 @@ function featureStroke(kind: string, k: number): Stroke[] {
     case "sideDot":
       return [dot(0.98, 0.25 + k * 0.2, 0.055)];
     case "slash":
-      return [line(0.2 + k * 0.15, 0.95, 0.45 + k * 0.15, 0.4)];
+      // a short stroke springing from the lower right, like a tail
+      return [line(0.8 - k * 0.12, 0.95, 1.0 - k * 0.12, 0.66)];
     case "topTick":
       return [line(0.5 - k * 0.1, 0.0, 0.5 - k * 0.1, 0.24)];
   }
@@ -112,13 +113,17 @@ export function featuralConsonant(design: FeaturalDesign, ph: string): Shape {
 }
 
 /**
- * Featural vowels. Style 0 (Hangul-like): a long stroke, vertical if unrounded
- * and horizontal if rounded, with ticks on the front/back side counting height.
- * Style 1 (arc-and-dot): a hook whose opening shows backness, a ring for
- * rounding, dots counting height.
+ * Featural vowels.
+ *  Style 0 (Hangul-like): a long stroke, vertical if unrounded and horizontal
+ *    if rounded, with 1–n short ticks on the front/back side counting height.
+ *  Style 2: the same system with dots instead of ticks (as Middle Korean
+ *    wrote its vowels with dots).
+ *  Style 1 (hooked stems): the stem's orientation shows rounding, a hook at
+ *    its head (front) or foot (back) shows backness, crossbars count openness.
  */
 export function featuralVowels(vowels: string[], style = 0): Map<string, Shape> {
-  if (style === 1) return arcVowels(vowels);
+  if (style === 1) return hookVowels(vowels);
+  const dots = style === 2;
   const out = new Map<string, Shape>();
   // Group by (round, back) and rank by height to get tick counts.
   const classes = new Map<string, string[]>();
@@ -144,18 +149,20 @@ export function featuralVowels(vowels: string[], style = 0): Map<string, Shape> 
         st.push(line(0.5, 0.0, 0.5, 1.0));
         for (let t = 0; t < n; t++) {
           const y = 0.5 + (t - (n - 1) / 2) * 0.24;
-          if (side === 0) st.push(line(0.3, y, 0.7, y));
+          if (dots) st.push(dot(side === 0 ? 0.3 : 0.5 + side * 0.2, y, 0.06));
+          else if (side === 0) st.push(line(0.3, y, 0.7, y));
           else st.push(line(0.5, y, 0.5 + side * 0.32, y));
         }
       } else {
         st.push(line(0.0, 0.62, 1.0, 0.62));
         for (let t = 0; t < n; t++) {
           const x = 0.5 + (t - (n - 1) / 2) * 0.26;
-          if (side === 0) st.push(line(x, 0.44, x, 0.8));
+          if (dots) st.push(dot(x, side === 0 ? 0.8 : 0.62 - side * 0.2, 0.06));
+          else if (side === 0) st.push(line(x, 0.44, x, 0.8));
           else st.push(line(x, 0.62, x, 0.62 - side * 0.3));
         }
       }
-      if (i.secondary.includes("long")) st.push(dot(round ? 0.85 : 0.82, round ? 0.3 : 0.12, 0.055));
+      if (i.secondary.includes("long")) st.push(round ? line(0.1, 0.92, 0.9, 0.92) : line(0.85, 0.15, 0.85, 0.85));
       if (i.secondary.includes("nasal")) st.push(smooth([[0.62, 0.95], [0.75, 0.85], [0.88, 0.95]]));
       out.set(v, { strokes: st, w: 1 });
     }
@@ -163,25 +170,35 @@ export function featuralVowels(vowels: string[], style = 0): Map<string, Shape> 
   return out;
 }
 
-function arcVowels(vowels: string[]): Map<string, Shape> {
+function hookVowels(vowels: string[]): Map<string, Shape> {
   const out = new Map<string, Shape>();
-  const bases = [...new Set(vowels.map((v) => classify(v).base))];
   for (const v of vowels) {
     const i = classify(v);
     const st: Stroke[] = [];
-    // backness: front opens right, back opens left, central is a closed bowl
-    if (i.back === 0) st.push(smooth([[0.62, 0.12], [0.3, 0.2], [0.22, 0.6], [0.4, 0.95], [0.62, 0.9]]));
-    else if (i.back === 2) st.push(smooth([[0.3, 0.12], [0.62, 0.2], [0.7, 0.6], [0.52, 0.95], [0.3, 0.9]]));
-    else st.push(line(0.45, 0.05, 0.45, 0.98), line(0.25, 0.62, 0.65, 0.62));
-    if (i.round) st.push(circle(0.46, 0.55, 0.11));
-    // height: number of dots (close = 1 … open = 3)
-    const n = i.height <= 1 ? 1 : i.height <= 3 ? 2 : 3;
-    for (let k = 0; k < n; k++) st.push(dot(0.84, 0.15 + k * 0.22, 0.05));
-    if (i.secondary.includes("long")) st.push(line(0.1, 0.98, 0.8, 0.98));
+    const bars = i.height <= 1 ? 0 : i.height <= 3 ? 1 : 2;
+    if (!i.round) {
+      // Vertical stem; front: hook at the head turning right; back: foot turning left.
+      const pts: P[] = [];
+      if (i.back === 0) pts.push([0.78, 0.12], [0.62, 0.0], [0.45, 0.12]);
+      pts.push([0.45, i.back === 0 ? 0.3 : 0.0], [0.45, i.back === 2 ? 0.7 : 1.0]);
+      if (i.back === 2) pts.push([0.45, 0.88], [0.3, 1.0], [0.14, 0.9]);
+      st.push(smooth(pts));
+      for (let b = 0; b < bars; b++) st.push(line(0.25, 0.42 + b * 0.2, 0.65, 0.42 + b * 0.2));
+      if (i.back === 1) st.push(dot(0.72, 0.5, 0.06));
+    } else {
+      // Horizontal stem; front: hook rising at the right end; back: hook falling at the left.
+      const pts: P[] = [];
+      if (i.back === 2) pts.push([0.1, 0.85], [0.0, 0.7], [0.12, 0.6]);
+      pts.push([i.back === 2 ? 0.2 : 0.0, 0.6], [i.back === 0 ? 0.8 : 1.0, 0.6]);
+      if (i.back === 0) pts.push([0.9, 0.6], [1.0, 0.48], [0.9, 0.35]);
+      st.push(smooth(pts));
+      for (let b = 0; b < bars; b++) st.push(line(0.4 + b * 0.2, 0.42, 0.4 + b * 0.2, 0.78));
+      if (i.back === 1) st.push(dot(0.5, 0.3, 0.06));
+    }
+    if (i.secondary.includes("long")) st.push(i.round ? line(0.15, 0.95, 0.85, 0.95) : line(0.9, 0.2, 0.9, 0.8));
     if (i.secondary.includes("nasal")) st.push(smooth([[0.12, 0.0], [0.25, -0.08], [0.38, 0.0]]));
     out.set(v, { strokes: st, w: 1 });
   }
-  void bases;
   return out;
 }
 
@@ -323,11 +340,12 @@ export function tallyVowels(n: number, notch: boolean): Shape[] {
     const m = ((k - 1) % 5) + 1;
     const extra = Math.floor((k - 1) / 5);
     for (let i = 0; i < m; i++) {
-      const x = 0.08 + i * 0.12;
-      st.push(notch ? dot(x, 0.5, 0.05) : line(x, 0.36, x, 0.64));
+      const x = 0.08 + i * 0.13;
+      // Notches must clearly cross the stem line (drawn over them at the same weight).
+      st.push(notch ? dot(x, 0.5, 0.065) : line(x, 0.27, x, 0.73));
     }
-    for (let i = 0; i < extra; i++) st.push(circle(0.08 + m * 0.12 + 0.05 + i * 0.2, 0.5, 0.08));
-    out.push({ strokes: st, w: 0.12 + m * 0.12 + extra * 0.2 });
+    for (let i = 0; i < extra; i++) st.push(circle(0.08 + m * 0.13 + 0.05 + i * 0.2, 0.5, 0.08));
+    out.push({ strokes: st, w: 0.12 + m * 0.13 + extra * 0.2 });
   }
   return out;
 }

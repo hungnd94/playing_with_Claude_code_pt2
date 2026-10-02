@@ -10,6 +10,8 @@ export interface Ctx {
   id: string;
   pal: Palette;
   defs: Map<string, string>;
+  /** Def-key → element id, for sharing one <defs> entry between many <use>s. */
+  ids: Map<string, string>;
   n: number;
   /** Pixels per shield unit (for deciding how much detail to draw). */
   px: number;
@@ -17,6 +19,11 @@ export interface Ctx {
   ow: number;
   /** Paint metals with gradients. */
   shading: boolean;
+  /**
+   * Engraved rendering: tinctures shown by Petra Sancta hatching in `ink` on
+   * `paper` instead of colour (seals, line-art plates).
+   */
+  hatch?: { ink: string; paper: string };
 }
 
 let globalCounter = 0;
@@ -39,6 +46,7 @@ export function defsMarkup(ctx: Ctx): string {
 
 /** Fill for a large region (field, ordinary): metals get a soft diagonal sheen. */
 export function regionFill(ctx: Ctx, t: Tint, furScale = 1): string {
+  if (ctx.hatch) return hatchFill(ctx, t, 1, furScale);
   if (isFur(t)) return `url(#${furPattern(ctx, t, furScale)})`;
   const paint = ctx.pal.tinctures[t];
   if (!ctx.shading || (t !== "or" && t !== "argent")) return paint.base;
@@ -58,8 +66,12 @@ export function regionFill(ctx: Ctx, t: Tint, furScale = 1): string {
   return `url(#${id})`;
 }
 
-/** Fill for a charge, in the charge's own coordinate box (userSpaceOnUse so all parts share one sweep). */
-export function chargeFill(ctx: Ctx, t: Tint, box: BBox): string {
+/**
+ * Fill for a charge, in the charge's own coordinate box (userSpaceOnUse so all parts share one sweep).
+ * `k` is the scale at which the charge is drawn (used to keep hatching at a constant pitch).
+ */
+export function chargeFill(ctx: Ctx, t: Tint, box: BBox, k = 1): string {
+  if (ctx.hatch) return hatchFill(ctx, t, k, (box.x1 - box.x0) / 160);
   if (isFur(t)) return `url(#${furPattern(ctx, t, (box.x1 - box.x0) / 160)})`;
   const paint = ctx.pal.tinctures[t];
   if (!ctx.shading) return paint.base;
@@ -85,8 +97,68 @@ export function flatColor(ctx: Ctx, t: Tint): string {
 
 /** Contour colour to use for detail lines on a given tincture. */
 export function detailColor(ctx: Ctx, t: Tint): string {
+  if (ctx.hatch) return t === "sable" || t === "ermines" || t === "pean" ? ctx.hatch.paper : ctx.hatch.ink;
   const dark = t === "sable" || t === "ermines" || t === "pean";
   return dark ? ctx.pal.contourOnDark : ctx.pal.contour;
+}
+
+// ---------------------------------------------------------------------------
+// Hatching (Petra Sancta): or dotted, argent plain, gules palewise lines,
+// azure fesswise, vert bendwise, purpure bendwise sinister, sable crossed
+// pale- and fesswise, tenné bendwise sinister crossed fesswise, sanguine
+// crossed bendwise both ways.
+
+/** Pixel pitch of the hatching lines for this context. */
+function hatchPitch(ctx: Ctx): number {
+  const shieldPx = ctx.px * 200;
+  return Math.max(2.5, Math.min(5.6, shieldPx / 48)) / ctx.px;
+}
+
+export function hatchFill(ctx: Ctx, t: Tint, k: number, furScale: number): string {
+  const h = ctx.hatch!;
+  if (t === "argent") return h.paper;
+  const sp = hatchPitch(ctx) / k;
+  const key = `ht-${t}-${f(sp)}`;
+  const id = `${ctx.id}-${key.replace(/\./g, "_")}`;
+  if (ctx.defs.has(key)) return `url(#${id})`;
+  const lw = f(sp * 0.26);
+  const L = (d: string) => `<path d="${d}" stroke="${h.ink}" stroke-width="${lw}" stroke-linecap="square"/>`;
+  const S = f(sp);
+  const bg = `<rect width="${S}" height="${S}" fill="${h.paper}"/>`;
+  let body = "";
+  let size = sp;
+  switch (t) {
+    case "or":
+      body = `<circle cx="${f(sp / 2)}" cy="${f(sp / 2)}" r="${f(sp * 0.17)}" fill="${h.ink}"/>`;
+      break;
+    case "gules":
+      body = L(`M${f(sp / 2)} 0V${S}`);
+      break;
+    case "azure":
+      body = L(`M0 ${f(sp / 2)}H${S}`);
+      break;
+    case "vert":
+      body = L(`M0 0L${S} ${S}M${f(-sp / 2)} ${f(sp / 2)}L${f(sp / 2)} ${f(sp * 1.5)}M${f(sp / 2)} ${f(-sp / 2)}L${f(sp * 1.5)} ${f(sp / 2)}`);
+      break;
+    case "purpure":
+      body = L(`M${S} 0L0 ${S}M${f(sp * 1.5)} ${f(sp / 2)}L${f(sp / 2)} ${f(sp * 1.5)}M${f(sp / 2)} ${f(-sp / 2)}L${f(-sp / 2)} ${f(sp / 2)}`);
+      break;
+    case "sable":
+      body = L(`M${f(sp / 2)} 0V${S}M0 ${f(sp / 2)}H${S}`);
+      break;
+    case "tenne":
+      body = L(`M${S} 0L0 ${S}M${f(sp * 1.5)} ${f(sp / 2)}L${f(sp / 2)} ${f(sp * 1.5)}M${f(sp / 2)} ${f(-sp / 2)}L${f(-sp / 2)} ${f(sp / 2)}M0 ${f(sp / 2)}H${S}`);
+      break;
+    case "sanguine":
+      body = L(`M0 0L${S} ${S}M${S} 0L0 ${S}`);
+      break;
+    default: {
+      // furs: drawn with their usual pattern in ink and paper
+      return `url(#${furPattern(ctx, t, furScale)})`;
+    }
+  }
+  ctx.defs.set(key, `<pattern id="${id}" patternUnits="userSpaceOnUse" width="${f(size)}" height="${f(size)}">${bg}${body}</pattern>`);
+  return `url(#${id})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,11 +172,12 @@ const ERMINE_SPOT =
 
 export function furPattern(ctx: Ctx, fur: Tint, scale: number): string {
   const s = Math.max(0.15, Math.round(scale * 20) / 20);
-  const key = `fur-${fur}-${s}`;
+  const key = `fur-${fur}-${s}${ctx.hatch ? "-h" : ""}`;
   const id = `${ctx.id}-${key.replace(".", "_")}`;
   if (ctx.defs.has(key)) return id;
   const [a, b] = FUR_PARTS[fur as keyof typeof FUR_PARTS];
-  const ca = ctx.pal.tinctures[a].base, cb = ctx.pal.tinctures[b].base;
+  const ca = ctx.hatch ? (a === "argent" ? ctx.hatch.paper : hatchFill(ctx, a, 1, 1)) : ctx.pal.tinctures[a].base;
+  const cb = ctx.hatch ? (b === "argent" ? ctx.hatch.paper : b === "sable" ? ctx.hatch.ink : hatchFill(ctx, b, 1, 1)) : ctx.pal.tinctures[b].base;
   let body = "";
   let w = 0, h = 0;
   if (fur === "ermine" || fur === "ermines" || fur === "erminois" || fur === "pean") {

@@ -7,7 +7,7 @@
  */
 import { Rng } from "../src/core/rng";
 import { MinHeap } from "../src/core/heap";
-import { GlobeView, type GlobeLabel, type GlobeMarker } from "../src/render/globe/GlobeView";
+import { GlobeView, type GlobeLabel, type GlobeLine, type GlobeMarker } from "../src/render/globe/GlobeView";
 import type { BakedGlobe } from "../src/render/bake/index";
 import { BIOME_NAMES, type PhysicalWorld } from "../src/world/types";
 
@@ -27,6 +27,16 @@ interface Handle {
   world?: PhysicalWorld;
   setLayer(l: "terrain" | "political"): void;
   timings?: Record<string, number>;
+  /** [lat, lon] of an interesting place: "coast" | "river" | "mountain" | "border". */
+  spot?(kind: string): [number, number];
+  /** Highlight the realm at [lat, lon]. */
+  highlightAt?(c: [number, number]): void;
+  /** Show the demo polyline layer (trade routes, a war front). */
+  showLines?(on: boolean): void;
+  /** Highlight the drainage basin of the river through [lat, lon]. */
+  highlightBasinAt?(c: [number, number]): void;
+  /** Clear highlights / lines (used between scripted views). */
+  reset?(): void;
 }
 const w = window as unknown as { __globe: Handle };
 
@@ -92,6 +102,9 @@ function onWorld(world: PhysicalWorld, baked: BakedGlobe, source: string, timing
   });
   view.onPick((cell, lat, lon) => {
     console.log("pick", cell, lat.toFixed(2), lon.toFixed(2));
+    // Demo of a highlighted cell set: the drainage basin upstream of the picked land cell.
+    const basin = upstreamBasin(world, cell);
+    view.setHighlightCells(basin.length > 1 ? basin : null, { color: "#ffd98a" });
     void view.flyTo(lat, lon, Math.max(view.getView().zoom, 3));
   });
   // Overlay update cost (what timeline scrubbing pays per frame).
@@ -100,10 +113,80 @@ function onWorld(world: PhysicalWorld, baked: BakedGlobe, source: string, timing
   const tu1 = performance.now();
   apply();
   const all = { ...timings, upload: t1 - t0, politics: t2 - t1, overlay: t3 - t2, overlayUpdate: (tu1 - tu0) / 20, total: performance.now() - tStart };
-  w.__globe = { view, ready: true, world, setLayer: (l) => { layer = l; apply(); }, timings: all };
+  const latLonOf = (c: number): [number, number] => [(world.mesh.lat[c] * 180) / Math.PI, (world.mesh.lon[c] * 180) / Math.PI];
+  w.__globe = {
+    view, ready: true, world, timings: all,
+    setLayer: (l) => { layer = l; apply(); },
+    spot: (kind) => latLonOf(findSpot(world, kind, pol.realmOf)),
+    highlightAt: (c) => {
+      const p = view.projectLatLon(c[0], c[1]);
+      const hit = view.pickAt(p.x, p.y);
+      if (hit && pol.realmOf[hit.cell] >= 0) view.setHighlight(pol.realmOf[hit.cell] + 1);
+    },
+    showLines: (on) => view.setLines(on ? pol.lines : null),
+    highlightBasinAt: (c: [number, number]) => {
+      const p = view.projectLatLon(c[0], c[1]);
+      const hit = view.pickAt(p.x, p.y);
+      if (hit) view.setHighlightCells(upstreamBasin(world, mouthOf(world, hit.cell)), { color: "#ffd98a" });
+    },
+    reset: () => { view.setHighlight(null); view.setLines(null); view.setHighlightCells(null); },
+  };
   status.textContent = `${source} world · ${world.mesh.n} cells · ${baked.terrain.width}×${baked.terrain.height} · world ${timings.world.toFixed(0)} ms · bake ${timings.bake.toFixed(0)} ms`;
   console.log("timings", JSON.stringify(all));
   view.render();
+}
+
+/** Cells draining through `cell` (its upstream basin, including itself). */
+function upstreamBasin(world: PhysicalWorld, cell: number): number[] {
+  if (cell < 0 || !world.isLand[cell]) return [];
+  const n = world.mesh.n;
+  const up: number[][] = [];
+  const head = new Int32Array(n).fill(-1), next = new Int32Array(n).fill(-1);
+  for (let i = 0; i < n; i++) {
+    const d = world.downstream[i];
+    if (d >= 0) { next[i] = head[d]; head[d] = i; }
+  }
+  void up;
+  const out = [cell];
+  for (let k = 0; k < out.length; k++) for (let u = head[out[k]]; u >= 0; u = next[u]) out.push(u);
+  return out;
+}
+
+/** Follow the drainage downstream to the last land cell (the river mouth). */
+function mouthOf(world: PhysicalWorld, cell: number): number {
+  let c = cell;
+  for (let g = 0; g < world.mesh.n; g++) {
+    const d = world.downstream[c];
+    if (d < 0 || !world.isLand[d] || world.lakeId[d] >= 0) break;
+    c = d;
+  }
+  return c;
+}
+
+/** A representative cell for scripted views. */
+function findSpot(world: PhysicalWorld, kind: string, realmOf: Int32Array): number {
+  const n = world.mesh.n;
+  let best = 0, bestS = -Infinity;
+  for (let i = 0; i < n; i++) {
+    if (!world.isLand[i] || world.lakeId[i] >= 0) continue;
+    let s = -Infinity;
+    const absLat = Math.abs(world.mesh.lat[i]);
+    if (kind === "coast") s = world.coastDist[i] === 1 ? world.flow[i] : -Infinity;
+    else if (kind === "river") s = world.coastDist[i] >= 3 && world.coastDist[i] <= 8 ? world.flow[i] * (absLat < 1.1 ? 1 : 0) : -Infinity;
+    else if (kind === "mountain") s = world.elevation[i] * (absLat < 1.0 ? 1 : 0);
+    else if (kind === "border") {
+      const { adj, adjStart } = world.mesh;
+      const seen = new Set<number>();
+      for (let k = adjStart[i]; k < adjStart[i + 1]; k++) {
+        const j = adj[k];
+        if (realmOf[j] >= 0) seen.add(realmOf[j]);
+        for (let k2 = adjStart[j]; k2 < adjStart[j + 1]; k2++) if (realmOf[adj[k2]] >= 0) seen.add(realmOf[adj[k2]]);
+      }
+      s = seen.size * 10 - absLat * 3 - Math.abs(world.coastDist[i] - 4);
+    }
+    if (s > bestS) { bestS = s; best = i; }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,8 +347,36 @@ function fakePolitics(world: PhysicalWorld, rng: Rng, k: number) {
     markers.push({ xyz: pos(c), size: 7, shape: "triangle", color: "#e8dcc8" });
     labels.push({ xyz: pos(c), text: `Mt. ${syllableName(rng)}`, priority: 30, style: "feature", minZoom: 1.5 });
   }
+  // Lines: trade routes between neighbouring capitals (dashed, flowing),
+  // campaign arrows, and a sea route (dotted).
+  const lines: GlobeLine[] = [];
+  const caps = realms.filter((r) => r.cells.length >= 3).map((r) => r.seed);
+  const dot = (a: number, b: number): number => xyz[3 * a] * xyz[3 * b] + xyz[3 * a + 1] * xyz[3 * b + 1] + xyz[3 * a + 2] * xyz[3 * b + 2];
+  const seen = new Set<string>();
+  for (const a of caps) {
+    const near = caps.filter((b) => b !== a).sort((b, c) => dot(a, c) - dot(a, b)).slice(0, 2);
+    for (const b of near) {
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+      if (seen.has(key) || dot(a, b) < Math.cos(0.5)) continue;
+      seen.add(key);
+      // A gently bowed route through a midpoint pushed sideways.
+      const m = [xyz[3 * a] + xyz[3 * b], xyz[3 * a + 1] + xyz[3 * b + 1], xyz[3 * a + 2] + xyz[3 * b + 2]];
+      const side = [xyz[3 * a + 1] * xyz[3 * b + 2] - xyz[3 * a + 2] * xyz[3 * b + 1], xyz[3 * a + 2] * xyz[3 * b] - xyz[3 * a] * xyz[3 * b + 2], xyz[3 * a] * xyz[3 * b + 1] - xyz[3 * a + 1] * xyz[3 * b]];
+      const k = (rng.next() - 0.5) * 0.5;
+      const mid: [number, number, number] = [m[0] / 2 + side[0] * k, m[1] / 2 + side[1] * k, m[2] / 2 + side[2] * k];
+      lines.push({ points: [pos(a), mid, pos(b)], smooth: true, style: "dashed", width: 1.6, color: "#f3e3b8", flow: 14 });
+    }
+  }
+  for (let t = 0; t < 3 && caps.length > 3; t++) {
+    const a = caps[t * 2], b = caps.filter((c) => c !== a).sort((x, y) => dot(a, y) - dot(a, x))[0];
+    const m: [number, number, number] = [xyz[3 * a] + xyz[3 * b] + 0.06 * (rng.next() - 0.5), xyz[3 * a + 1] + xyz[3 * b + 1], xyz[3 * a + 2] + xyz[3 * b + 2] + 0.06];
+    lines.push({ points: [pos(a), m, pos(b)], smooth: true, width: 3, color: "#c8402c", arrow: true, casing: 1.2 });
+  }
+  if (seaSeeds.length >= 3) {
+    lines.push({ points: [pos(seaSeeds[0]), pos(seaSeeds[1]), pos(seaSeeds[2])], smooth: true, style: "dotted", width: 2.4, color: "#bfe0ff", casing: 0.8 });
+  }
   return {
     overlay: { colors, groups, borderWidth: 1.3 },
-    labels, markers, realms, realmOf,
+    labels, markers, realms, realmOf, lines,
   };
 }

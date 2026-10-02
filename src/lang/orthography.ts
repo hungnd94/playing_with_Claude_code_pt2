@@ -1,10 +1,11 @@
 /**
  * Romanisation. Each language picks a dominant orthographic tradition
  * ("school": anglo, germanic, nordic, slavic, polish, hungarian, romance,
- * celtic, turkic, semitic, polynesian, nahuatl, basque, hepburn, finnic,
- * classical, kartvelian, pinyin, indic, andean), adapted to its inventory with
- * collision-free spellings, contextual rules (c/qu, diphthong glides,
- * geminate digraphs) and a long-vowel style. Daughters inherit and drift.
+ * celtic, turkic, mongolic, semitic, iranian, polynesian, nahuatl, basque,
+ * hepburn, finnic, classical, kartvelian, pinyin, indic, andean, bantu, mayan,
+ * inuit, malay), normally suggested by its sound style, adapted to its
+ * inventory with collision-free spellings, contextual rules (c/qu, diphthong
+ * glides, geminate digraphs) and a long-vowel style. Daughters inherit and drift.
  *
  * Also: IPA transcription with stress marks.
  */
@@ -18,14 +19,16 @@ type LongStyle = "double" | "macron" | "acute" | "circumflex";
 
 interface School {
   id: string;
-  weight: number;
+  /** Preferred spellings per phoneme, best first. */
   map: Record<string, string[]>;
+  /** Phonemes whose first-choice spelling varies by language (shuffled per language). */
+  variants?: Record<string, string[]>;
   long: LongStyle[];
   nasal: ("tilde" | "ogonek")[];
   jAfterV: string;
   wAfterV: string;
   rules?: SpellingRule[];
-  /** Phonemes this tradition is good at spelling (affinity). */
+  /** Phonemes this tradition is good at spelling (affinity, used when no style suggests a school). */
   likes: string[];
   /** Hard requirement on the inventory. */
   requires?: (inv: Set<string>) => boolean;
@@ -34,145 +37,255 @@ interface School {
   pairs?: Record<string, string>;
 }
 
+/** Generic candidates, used after the school's own. */
 const DEFAULT: Record<string, string[]> = {
-  p: ["p"], b: ["b"], t: ["t"], d: ["d"], ʈ: ["ṭ", "tt", "rt"], ɖ: ["ḍ", "dd", "rd"], c: ["ky", "ty", "ć", "c"], ɟ: ["gy", "dy", "ǵ"],
-  k: ["k", "c"], g: ["g"], q: ["q", "qh", "kq"], ɢ: ["gq", "ġ"], ʔ: ["'", "ʻ", "ʾ", "h"],
-  pf: ["pf"], ts: ["ts", "tz", "c", "ç"], dz: ["dz", "z", "dż"], tʃ: ["ch", "tch", "č", "c"], dʒ: ["j", "dj", "dzh", "dž"],
-  ʈʂ: ["tr", "zh", "č"], ɖʐ: ["dr", "ǰ"], tɕ: ["ty", "ć", "ch"], dʑ: ["dy", "dź", "j"], tɬ: ["tl", "tlh"],
-  ɸ: ["f", "ph", "fh"], β: ["v", "bh", "b"], f: ["f", "ph", "ff"], v: ["v", "w", "bh"], θ: ["th", "þ", "z", "ŧ"], ð: ["dh", "ð", "dd", "th"],
-  s: ["s", "ss", "ś"], z: ["z", "s", "ż", "zz"], ʃ: ["sh", "š", "x", "sch", "sj"], ʒ: ["zh", "ž", "j", "zs"], ʂ: ["ṣ", "sh", "ş"], ʐ: ["ẓ", "zh", "r"],
-  ɕ: ["sy", "ś", "x"], ʑ: ["zy", "ź"], ç: ["hy", "ch", "ç"], ʝ: ["yh", "j", "gh"], x: ["kh", "x", "ch", "h", "ḫ"], ɣ: ["gh", "ğ", "ġ", "g"],
-  χ: ["kh", "x", "qh", "ẖ"], ʁ: ["gh", "rh", "ğ", "r"], ħ: ["ḥ", "hh", "h"], ʕ: ["ʿ", "'", "ʽ"], h: ["h"], ɦ: ["h", "hh"],
-  ɬ: ["lh", "ll", "hl", "ł"], ɮ: ["dl", "zl"], m: ["m"], n: ["n"], ɳ: ["ṇ", "nn", "rn"], ɲ: ["ny", "ñ", "nh", "nj", "gn"],
-  ŋ: ["ng", "ŋ", "ñ", "ṅ"], ɴ: ["nq", "ng"], r: ["r", "rr"], ʀ: ["r", "rr"], ɾ: ["r", "ŕ", "rh"], ɽ: ["ṛ", "rd"], l: ["l"], ɭ: ["ḷ", "rl"],
-  ʎ: ["ly", "ll", "lh", "lj", "ľ"], j: ["y", "j", "i"], w: ["w", "u", "v"], ʋ: ["v", "w"], ɹ: ["r"], ɰ: ["gh", "w"],
-  // vowels (qualities)
-  i: ["i"], y: ["ü", "y", "ue", "ui"], ɨ: ["y", "ë", "ï", "î", "ı"], ʉ: ["ü", "ʉ", "ue"], ɯ: ["ı", "ư", "ŭ", "u"], u: ["u", "ou", "oo"],
-  ɪ: ["i", "ĭ", "ı"], ʏ: ["ü", "ÿ"], ʊ: ["u", "ŭ", "ů"], e: ["e"], ø: ["ö", "ø", "oe", "eu"], ɘ: ["ë", "ə"], ɵ: ["ö", "ɵ"],
-  ɤ: ["ë", "ơ", "eo", "ŏ"], o: ["o"], ə: ["e", "ë", "ă", "â", "ə", "y"], ɛ: ["e", "è", "ę", "ä", "ae"], œ: ["œ", "ö", "eu", "oe"],
-  ɜ: ["ë", "ö", "ea"], ʌ: ["ŭ", "u", "ă", "eo"], ɔ: ["o", "ò", "å", "ǫ", "aw"], æ: ["æ", "ä", "ae", "a", "e"], ɐ: ["a", "ă"],
-  a: ["a"], ɑ: ["a", "â", "å", "aa"], ɒ: ["o", "å", "ò"],
+  p: ["p"], b: ["b"], t: ["t"], d: ["d"], ʈ: ["ṭ", "tt"], ɖ: ["ḍ", "dd"], c: ["ty", "ky", "ć"], ɟ: ["gy", "dy", "ǵ"],
+  k: ["k", "c"], g: ["g"], q: ["q"], ɢ: ["ġ"], ʔ: ["'", "ʻ", "ʾ"],
+  pf: ["pf"], ts: ["ts", "tz", "c"], dz: ["dz", "z"], tʃ: ["ch", "č", "tch"], dʒ: ["j", "dj", "dž"],
+  ʈʂ: ["zh", "tr"], ɖʐ: ["dr"], tɕ: ["ć", "ty", "ch"], dʑ: ["dź", "dy"], tɬ: ["tl", "tlh"],
+  ɸ: ["f", "ph"], β: ["v", "bh"], f: ["f", "ph"], v: ["v", "w"], θ: ["th", "þ"], ð: ["dh", "ð"],
+  s: ["s", "ss"], z: ["z", "ż"], ʃ: ["sh", "š"], ʒ: ["zh", "ž"], ʂ: ["ṣ", "sh"], ʐ: ["ẓ", "zh"],
+  ɕ: ["ś", "sy"], ʑ: ["ź", "zy"], ç: ["hy", "ç"], ʝ: ["yh", "gh"], x: ["kh", "ch", "x"], ɣ: ["gh", "ğ"],
+  χ: ["kh", "x", "qh"], ʁ: ["gh", "rh"], ħ: ["ḥ", "hh"], ʕ: ["ʿ", "'"], h: ["h"], ɦ: ["h", "hh"],
+  ɬ: ["ll", "lh", "hl"], ɮ: ["dl"], m: ["m"], n: ["n"], ɳ: ["ṇ", "rn"], ɲ: ["ny", "ñ", "nh"],
+  ŋ: ["ng", "ñ", "ṅ"], ɴ: ["ng"], r: ["r", "rr"], ʀ: ["r", "rr"], ɾ: ["r"], ɽ: ["ṛ", "rd"], l: ["l"], ɭ: ["ḷ", "rl"],
+  ʎ: ["ly", "lh", "ll", "lj"], j: ["y", "j"], w: ["w", "u"], ʋ: ["v", "w"], ɹ: ["r"], ɰ: ["gh", "w"],
+  // vowel qualities
+  i: ["i"], y: ["ü", "y"], ɨ: ["y", "ï", "ı"], ʉ: ["ü", "u"], ɯ: ["ı", "ŭ"], u: ["u"],
+  ɪ: ["i", "ĭ"], ʏ: ["ü"], ʊ: ["u", "ŭ"], e: ["e"], ø: ["ö", "ø", "eu"], ɘ: ["ë"], ɵ: ["ö"],
+  ɤ: ["ë", "ŏ"], o: ["o"], ə: ["ë", "ă", "e"], ɛ: ["è", "ä", "ę"], œ: ["œ", "ö"],
+  ɜ: ["ë", "ö"], ʌ: ["ŭ", "ă"], ɔ: ["ò", "å", "ǫ"], æ: ["æ", "ä", "ae"], ɐ: ["a", "ă"],
+  a: ["a"], ɑ: ["â", "å", "a"], ɒ: ["å", "ò"],
 };
 
 const SCHOOLS: School[] = [
   {
-    id: "anglo", weight: 3, long: ["double", "macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
-    map: { ʃ: ["sh"], tʃ: ["ch"], dʒ: ["j"], j: ["y"], x: ["kh"], θ: ["th"], ð: ["dh"], ɣ: ["gh"], ʒ: ["zh"], ŋ: ["ng"], ɲ: ["ny"] },
+    id: "anglo", long: ["double", "macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
+    map: {
+      ʃ: ["sh"], tʃ: ["ch"], dʒ: ["j"], j: ["y"], x: ["kh"], θ: ["th"], ð: ["dh"], ɣ: ["gh"], ʒ: ["zh"], ŋ: ["ng"], ɲ: ["ny"],
+      χ: ["kh", "q"], ʁ: ["gh"], ħ: ["ḥ", "hh"], ʕ: ["'"], ts: ["ts"], q: ["q"], ç: ["hy"], ʝ: ["y"],
+      ə: ["ë", "u"], ɨ: ["y", "ï"], ɛ: ["è", "ae"], ɔ: ["ò", "aw"], æ: ["ae", "æ"], ø: ["eu", "ö"], y: ["ü", "yu"], ɯ: ["ı"], ɑ: ["â"],
+    },
+    variants: { x: ["kh", "x"] },
     likes: ["ʃ", "tʃ", "θ", "x"],
   },
   {
-    id: "germanic", weight: 1.3, long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
-    map: { ʃ: ["sch"], tʃ: ["tsch"], x: ["ch"], j: ["j"], ts: ["z"], ç: ["ch"], y: ["ü"], ø: ["ö"], æ: ["ä"], ɛ: ["ä", "e"], dʒ: ["dsch"], ʒ: ["sch", "zh"], z: ["s", "z"], v: ["w", "v"], w: ["w", "u"] },
+    id: "germanic", long: ["double", "acute"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
+    map: {
+      ʃ: ["sch"], tʃ: ["tsch"], x: ["ch"], j: ["j"], ts: ["z", "tz"], ç: ["ch"], y: ["ü"], ø: ["ö"], æ: ["ä"], ɛ: ["ä", "è"],
+      ɔ: ["å", "ò"], dʒ: ["dsch"], ʒ: ["zh"], z: ["z", "s"], v: ["w", "v"], w: ["w", "u"], f: ["f"], ŋ: ["ng"], ə: ["e", "ë"],
+      θ: ["th"], ð: ["dh"], ɣ: ["gh"], ɲ: ["nj"],
+    },
     likes: ["ʃ", "x", "ts", "y", "ø", "pf", "ç", "v"],
   },
   {
-    id: "nordic", weight: 1.3, long: ["acute"], nasal: ["ogonek"], jAfterV: "i", wAfterV: "u",
-    map: { θ: ["þ"], ð: ["ð"], j: ["j"], ʃ: ["sj", "sk"], tʃ: ["tj", "kj"], x: ["h", "gh"], ɣ: ["gh", "g"], æ: ["æ"], ø: ["ø"], ɔ: ["ǫ", "å"], y: ["y"], w: ["v", "w"], ɑ: ["å"] },
+    id: "nordic", long: ["acute"], nasal: ["ogonek"], jAfterV: "i", wAfterV: "u",
+    map: {
+      θ: ["þ"], ð: ["ð"], j: ["j"], ʃ: ["sj", "sk"], tʃ: ["tj", "kj"], x: ["h", "ch"], ɣ: ["g", "gh"], æ: ["æ"], ø: ["ø"],
+      ɔ: ["ǫ", "å"], y: ["y"], w: ["v", "w"], v: ["v", "f"], ɑ: ["å"], œ: ["œ"], ŋ: ["ng"], ə: ["e"], ç: ["hj"], ʒ: ["zj"],
+      ts: ["z", "ts"], dʒ: ["dj"], β: ["v"], ɸ: ["f"], ʎ: ["lj"], ɲ: ["nj"],
+    },
     likes: ["θ", "ð", "æ", "ø", "ɔ", "y"],
   },
   {
-    id: "slavic", weight: 1.3, long: ["acute"], nasal: ["ogonek"], jAfterV: "j", wAfterV: "u",
-    map: { ʃ: ["š"], tʃ: ["č"], ʒ: ["ž"], dʒ: ["dž"], ts: ["c"], x: ["h", "ch"], j: ["j"], ɲ: ["ň", "nj"], ʎ: ["lj", "ľ"], ɨ: ["y"], tɕ: ["ć"], ɕ: ["ś"], ʑ: ["ź"], dʑ: ["đ"], ə: ["ă", "ǝ"], c: ["ť"], ɟ: ["ď"], w: ["w", "v"] },
+    id: "slavic", long: ["acute"], nasal: ["ogonek"], jAfterV: "j", wAfterV: "u",
+    map: {
+      ʃ: ["š"], tʃ: ["č"], ʒ: ["ž"], dʒ: ["dž"], ts: ["c"], x: ["ch", "h"], j: ["j"], ɲ: ["ň", "nj"], ʎ: ["ľ", "lj"], ɨ: ["y"],
+      tɕ: ["ć"], ɕ: ["ś"], ʑ: ["ź"], dʑ: ["đ"], ə: ["ă", "ǝ"], c: ["ť"], ɟ: ["ď"], w: ["ŭ", "w"], ɣ: ["gh", "ğ"], θ: ["th"],
+      ð: ["dh"], dz: ["dz"], ŋ: ["ng"], ɛ: ["ě"], æ: ["ä"], ɔ: ["ô"], y: ["ü"], ø: ["ö"],
+    },
+    variants: { x: ["ch", "h"] },
     likes: ["ʃ", "tʃ", "ʒ", "ts", "x", "ɨ", "tɕ", "ɲ"],
   },
   {
-    id: "polish", weight: 0.7, long: ["double"], nasal: ["ogonek"], jAfterV: "j", wAfterV: "ł",
-    map: { ʃ: ["sz"], tʃ: ["cz"], ʒ: ["ż"], dʒ: ["dż"], ts: ["c"], x: ["ch"], j: ["j"], v: ["w"], w: ["ł", "u"], ɲ: ["ń"], tɕ: ["ć"], ɕ: ["ś"], ʑ: ["ź"], dʑ: ["dź"], ɨ: ["y"] },
+    id: "polish", long: ["acute"], nasal: ["ogonek"], jAfterV: "j", wAfterV: "ł",
+    map: {
+      ʃ: ["sz"], tʃ: ["cz"], ʒ: ["ż"], dʒ: ["dż"], ts: ["c"], x: ["ch"], j: ["j"], v: ["w"], w: ["ł"], ɲ: ["ń"], tɕ: ["ć"],
+      ɕ: ["ś"], ʑ: ["ź"], dʑ: ["dź"], ɨ: ["y"], ʎ: ["l"], dz: ["dz"], ə: ["ë"], ɣ: ["gh"], ŋ: ["ng"],
+    },
     likes: ["ʃ", "tʃ", "ʒ", "ts", "ɕ", "tɕ", "ɨ", "v"],
     requires: (inv) => inv.has("v") || inv.has("ʃ"),
   },
   {
-    id: "hungarian", weight: 0.7, long: ["acute"], nasal: ["tilde"], jAfterV: "j", wAfterV: "u",
-    map: { tʃ: ["cs"], ʒ: ["zs"], ts: ["c"], dʒ: ["dzs"], ɟ: ["gy"], c: ["ty"], ɲ: ["ny"], ʎ: ["ly"], j: ["j"], y: ["ü"], ø: ["ö"], x: ["ch", "h"] },
+    id: "hungarian", long: ["acute"], nasal: ["tilde"], jAfterV: "j", wAfterV: "u",
+    map: {
+      s: ["sz"], ʃ: ["s"], tʃ: ["cs"], ʒ: ["zs"], ts: ["c"], dʒ: ["dzs"], ɟ: ["gy"], c: ["ty"], ɲ: ["ny"], ʎ: ["ly"], j: ["j"],
+      y: ["ü"], ø: ["ö"], x: ["ch", "h"], dz: ["dz"], ŋ: ["ng"], ə: ["ë"], ɛ: ["e"], æ: ["ä"],
+    },
     likes: ["y", "ø", "ɟ", "c", "ɲ", "tʃ"],
     requires: (inv) => inv.has("ʃ") && inv.has("s"),
   },
   {
-    id: "romance", weight: 1.4, long: ["acute", "circumflex"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
-    map: { k: ["c"], tʃ: ["ch"], ʃ: ["x", "sc"], ɲ: ["ñ", "gn", "nh"], ʎ: ["ll", "gl", "lh"], θ: ["z"], x: ["j", "kh"], dʒ: ["g", "dj"], j: ["y", "i"], w: ["u", "hu"], ts: ["z", "ç"], ʒ: ["j", "g"], r: ["rr", "r"], ɛ: ["è", "e"], ɔ: ["ò", "o"] },
+    id: "romance", long: ["acute", "circumflex"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
+    map: {
+      k: ["c"], tʃ: ["ch"], ʃ: ["x", "sc"], ɲ: ["ñ", "gn"], ʎ: ["ll", "gl"], θ: ["z"], x: ["j", "kh"], dʒ: ["g", "dj"], j: ["y", "i"],
+      w: ["u", "hu"], ts: ["z", "ç"], ʒ: ["j"], r: ["rr", "r"], ɛ: ["è"], ɔ: ["ò"], kʷ: ["qu"], gʷ: ["gu"], ə: ["ë"], ð: ["d"],
+      β: ["b"], ɣ: ["g"], dz: ["z"],
+    },
     rules: [
       { p: "k", s: "qu", before: "front" },
       { p: "g", s: "gu", before: "front" },
       { p: "w", s: "hu", after: "start", before: "vowel" },
     ],
-    likes: ["ɲ", "ʎ", "θ", "tʃ", "ɛ", "ɔ"],
+    likes: ["ɲ", "ʎ", "θ", "tʃ", "ɛ", "ɔ", "kʷ"],
   },
   {
-    id: "celtic", weight: 1.0, long: ["circumflex", "acute"], nasal: ["tilde"], jAfterV: "i", wAfterV: "w",
-    map: { v: ["f"], f: ["ff"], ð: ["dd"], ɬ: ["ll"], x: ["ch"], θ: ["th"], ə: ["y"], k: ["c"], j: ["i", "y"], ŋ: ["ng"], β: ["bh"], ɣ: ["gh", "dh"], ʃ: ["sh", "si"] },
+    id: "celtic", long: ["circumflex", "acute"], nasal: ["tilde"], jAfterV: "i", wAfterV: "w",
+    map: {
+      v: ["f"], f: ["ff"], ð: ["dd"], ɬ: ["ll"], x: ["ch"], θ: ["th"], ə: ["y"], ɨ: ["y", "u"], k: ["c"], j: ["i", "y"], ŋ: ["ng"],
+      β: ["bh"], ɣ: ["gh"], ʃ: ["sh", "si"], w: ["w"], u: ["w", "u"], y: ["ü"], ʒ: ["zh"], tʃ: ["ch", "tsi"], dʒ: ["j"], ts: ["ts"],
+      ɛ: ["è"], ɔ: ["ò"], æ: ["ae"], ø: ["eu"], ɲ: ["ny"], ʎ: ["ly"],
+    },
     likes: ["ð", "ɬ", "x", "v", "θ", "ə"],
-    requires: (inv) => inv.has("v") || inv.has("ð") || inv.has("ɬ") || inv.has("x"),
   },
   {
-    id: "turkic", weight: 1.0, long: ["circumflex"], nasal: ["tilde"], jAfterV: "y", wAfterV: "v",
-    map: { ʃ: ["ş"], tʃ: ["ç"], dʒ: ["c"], ʒ: ["j"], j: ["y"], ɣ: ["ğ"], ɯ: ["ı"], ø: ["ö"], y: ["ü"], x: ["kh", "h"], q: ["q"], ŋ: ["ñ", "ng"], χ: ["x"] },
+    id: "turkic", long: ["circumflex"], nasal: ["tilde"], jAfterV: "y", wAfterV: "v",
+    map: {
+      ʃ: ["ş"], tʃ: ["ç"], dʒ: ["c"], ʒ: ["j"], j: ["y"], ɣ: ["ğ"], ɯ: ["ı"], ø: ["ö"], y: ["ü"], x: ["kh", "h"], q: ["q"],
+      ŋ: ["ñ", "ng"], χ: ["x"], ə: ["ä", "ë"], æ: ["ä"], ts: ["ts"], θ: ["th"], ð: ["dh"], ɛ: ["ä"], ɔ: ["å"], ɲ: ["ny"],
+    },
     likes: ["ɯ", "ø", "y", "ʃ", "tʃ", "q", "ɣ"],
   },
   {
-    id: "semitic", weight: 1.0, long: ["macron"], nasal: ["tilde"], jAfterV: "y", wAfterV: "w",
-    map: { ħ: ["ḥ"], ʕ: ["ʿ"], ʔ: ["ʾ", "'"], ʃ: ["sh", "š"], x: ["kh", "ḫ"], χ: ["kh", "ḫ"], ɣ: ["gh", "ġ"], θ: ["th", "ṯ"], ð: ["dh", "ḏ"], q: ["q"], dʒ: ["j"], j: ["y"], tʼ: ["ṭ"], kʼ: ["ḳ"], sʼ: ["ṣ"], tsʼ: ["ṣ"], pʼ: ["p̣"] },
+    id: "mongolic", long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
+    map: {
+      x: ["kh"], ts: ["ts"], tʃ: ["ch"], dʒ: ["j"], ʃ: ["sh"], ʒ: ["zh"], j: ["y"], ø: ["ö"], y: ["ü"], ɵ: ["ö"], ʉ: ["ü"],
+      ŋ: ["ng"], ɣ: ["gh"], ə: ["ë"], ɔ: ["o"], ʊ: ["u"], q: ["q"], χ: ["kh"],
+    },
+    likes: ["x", "ts", "ø", "y"],
+  },
+  {
+    id: "semitic", long: ["macron"], nasal: ["tilde"], jAfterV: "y", wAfterV: "w",
+    map: {
+      ħ: ["ḥ"], ʕ: ["ʿ"], ʔ: ["ʾ", "'"], ʃ: ["sh", "š"], x: ["kh", "ḫ"], χ: ["kh"], ɣ: ["gh", "ġ"], θ: ["th", "ṯ"], ð: ["dh", "ḏ"],
+      q: ["q"], dʒ: ["j"], j: ["y"], tʼ: ["ṭ"], kʼ: ["ḳ"], sʼ: ["ṣ"], tsʼ: ["ṣ"], pʼ: ["p̣"], tʃ: ["ch"], ʒ: ["zh"], ts: ["ts"],
+      ə: ["e"], ɛ: ["e"], ɔ: ["o"], ŋ: ["ng"], ɲ: ["ny"], v: ["v"],
+    },
+    variants: { ʃ: ["sh", "š"] },
     likes: ["ħ", "ʕ", "q", "χ", "x", "ʔ", "ð", "θ"],
   },
   {
-    id: "polynesian", weight: 1.0, long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
-    map: { ʔ: ["ʻ"], ŋ: ["ng", "g"], ɸ: ["wh"], f: ["f", "wh"], β: ["v"] },
+    id: "iranian", long: ["macron"], nasal: ["tilde"], jAfterV: "y", wAfterV: "w",
+    map: {
+      x: ["kh"], ʃ: ["sh"], ʒ: ["zh"], ɣ: ["gh"], q: ["q"], tʃ: ["ch"], dʒ: ["j"], j: ["y"], θ: ["th"], ð: ["dh"], w: ["w", "v"],
+      ɑ: ["â", "å"], ə: ["ë"], ŋ: ["ng"], ts: ["ts"], χ: ["kh"], ʔ: ["'"], ħ: ["h"],
+    },
+    likes: ["x", "ʃ", "ʒ", "ɣ", "q"],
+  },
+  {
+    id: "polynesian", long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
+    map: { ʔ: ["ʻ"], ŋ: ["ng", "g"], ɸ: ["wh"], f: ["f", "wh"], β: ["v"], j: ["y"], ʃ: ["sh"], tʃ: ["ch"], ts: ["ts"] },
     likes: ["ʔ", "ŋ", "ɸ"],
     requires: (inv) => [...inv].filter((p) => !isVowel(p)).length <= 15,
   },
   {
-    id: "nahuatl", weight: 0.8, long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "uh",
-    map: { tɬ: ["tl"], ts: ["tz"], tʃ: ["ch"], ʃ: ["x"], w: ["hu"], k: ["c"], kʷ: ["cu"], ʔ: ["h"], j: ["y"] },
+    id: "nahuatl", long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "uh",
+    map: {
+      tɬ: ["tl"], ts: ["tz"], tʃ: ["ch"], ʃ: ["x"], w: ["hu"], k: ["c"], kʷ: ["cu"], ʔ: ["h"], j: ["y"], s: ["z", "s"],
+      ɬ: ["lh"], x: ["j"], ŋ: ["ng"], ə: ["ë"], u: ["u"], θ: ["th"], ð: ["dh"], ʒ: ["zh"], dʒ: ["dj"],
+    },
     rules: [
       { p: "k", s: "qu", before: "front" },
       { p: "kʷ", s: "uc", before: "nonvowel" },
+      { p: "s", s: "c", before: "front" },
     ],
     likes: ["tɬ", "ts", "kʷ", "ʃ", "ʔ"],
-    requires: (inv) => (inv.has("tɬ") || inv.has("kʷ")) && (!inv.has("h") || !inv.has("ʔ")) && ![...inv].some((p) => ["y", "ø", "æ", "ɯ"].includes(p)),
+    requires: (inv) => (inv.has("tɬ") || inv.has("kʷ")) && (!inv.has("h") || !inv.has("ʔ")) && !inv.has("z"),
   },
   {
-    id: "basque", weight: 0.6, long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
-    map: { tʃ: ["tx"], ts: ["tz"], ʃ: ["x"], j: ["y", "i"], ɲ: ["ñ"], x: ["j"], ʎ: ["ll"], r: ["rr"] },
+    id: "basque", long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
+    map: { tʃ: ["tx"], ts: ["tz"], ʃ: ["x"], j: ["y", "i"], ɲ: ["ñ"], x: ["j"], ʎ: ["ll"], r: ["rr"], ɾ: ["r"], θ: ["z"], dʒ: ["dj"], ʒ: ["j"], ɣ: ["g"], ð: ["d"], β: ["b"], ə: ["e"] },
     likes: ["ts", "tʃ", "ʃ", "ɲ"],
     requires: (inv) => inv.has("ts") && (inv.has("tʃ") || inv.has("ʃ")),
   },
   {
-    id: "hepburn", weight: 0.8, long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
-    map: { ʃ: ["sh"], tʃ: ["ch"], ts: ["ts"], dʒ: ["j"], ɸ: ["f"], j: ["y"], ɾ: ["r"], ɕ: ["sh"], tɕ: ["ch"], dʑ: ["j"] },
+    id: "hepburn", long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
+    map: { ʃ: ["sh"], tʃ: ["ch"], ts: ["ts"], dʒ: ["j"], ɸ: ["f"], j: ["y"], ɾ: ["r"], ɕ: ["sh"], tɕ: ["ch"], dʑ: ["j"], ŋ: ["ng"], ʒ: ["zh"], x: ["kh"], ə: ["ë"], ɨ: ["ü"], dz: ["dz"], β: ["v"], ç: ["hy"], ɣ: ["gh"] },
     likes: ["ɸ", "ɾ", "ts", "ɕ", "tɕ"],
   },
   {
-    id: "finnic", weight: 1.0, long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
-    map: { j: ["j"], y: ["y"], ø: ["ö"], æ: ["ä"], ʃ: ["š"], ŋ: ["ng"], ʒ: ["ž"] },
+    id: "finnic", long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
+    map: { j: ["j"], y: ["y"], ø: ["ö"], æ: ["ä"], ʃ: ["š"], ŋ: ["ng"], ʒ: ["ž"], tʃ: ["tš", "č"], ts: ["ts"], x: ["hh", "kh"], ɣ: ["gh"], ə: ["ë"], ɛ: ["e"], θ: ["th"], ð: ["dh"], β: ["v"], w: ["v", "w"], dʒ: ["dž"] },
     likes: ["y", "ø", "æ", "aː", "eː"],
   },
   {
-    id: "classical", weight: 0.9, long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
-    map: { pʰ: ["ph"], tʰ: ["th"], kʰ: ["ch"], k: ["c"], y: ["y"], x: ["kh", "ch"], j: ["i", "j"], w: ["u", "v"], ø: ["oe"], æ: ["ae"], ts: ["z"], θ: ["th"] },
+    id: "classical", long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u", geminateFirst: true,
+    map: {
+      pʰ: ["ph"], tʰ: ["th"], kʰ: ["ch", "kh"], k: ["c", "k"], y: ["y"], x: ["ch", "kh"], j: ["i", "j"], w: ["u", "v"], ø: ["oe"],
+      æ: ["ae"], ts: ["z"], θ: ["th"], kʷ: ["qu"], gʷ: ["gu"], ɛ: ["ē", "è"], ɔ: ["ō", "ò"], ʃ: ["sh", "x"], dz: ["z"], ə: ["ë"],
+      tʃ: ["ch", "c"], dʒ: ["g"], β: ["b"], ð: ["d"], ɣ: ["g"],
+    },
+    variants: { kʰ: ["ch", "kh"] },
     pairs: { "k+s": "x" },
-    likes: ["pʰ", "tʰ", "kʰ", "y", "θ"],
+    likes: ["pʰ", "tʰ", "kʰ", "y", "θ", "kʷ"],
   },
   {
-    id: "kartvelian", weight: 1.0, long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "v",
-    map: { pʼ: ["p'"], tʼ: ["t'"], kʼ: ["k'"], qʼ: ["q'"], tsʼ: ["ts'"], tʃʼ: ["ch'"], x: ["kh", "x"], ɣ: ["gh"], ʃ: ["sh"], ʒ: ["zh"], tʃ: ["ch"], dʒ: ["j"], ts: ["ts"], dz: ["dz"], j: ["y"], q: ["q"] },
+    id: "kartvelian", long: ["macron"], nasal: ["tilde"], jAfterV: "i", wAfterV: "v",
+    map: {
+      pʼ: ["p'"], tʼ: ["t'"], kʼ: ["k'"], qʼ: ["q'"], tsʼ: ["ts'"], tʃʼ: ["ch'"], x: ["kh"], ɣ: ["gh"], ʃ: ["sh"], ʒ: ["zh"],
+      tʃ: ["ch"], dʒ: ["j"], ts: ["ts"], dz: ["dz"], j: ["y"], q: ["q"], χ: ["kh"], ə: ["ë"], ŋ: ["ng"],
+    },
     likes: ["pʼ", "tʼ", "kʼ", "qʼ", "tsʼ", "tʃʼ", "ɣ", "x"],
     requires: (inv) => [...inv].some((p) => p.endsWith("ʼ")),
   },
   {
-    id: "pinyin", weight: 1.0, long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "o",
-    map: { p: ["b"], t: ["d"], k: ["g"], pʰ: ["p"], tʰ: ["t"], kʰ: ["k"], ts: ["z"], tsʰ: ["c"], ɕ: ["x"], tɕ: ["j"], tɕʰ: ["q"], ʂ: ["sh"], ʈʂ: ["zh"], ʐ: ["r"], x: ["h"], tʃ: ["zh"], tʃʰ: ["ch"] },
+    id: "pinyin", long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "o",
+    map: {
+      p: ["b"], t: ["d"], k: ["g"], pʰ: ["p"], tʰ: ["t"], kʰ: ["k"], ts: ["z"], tsʰ: ["c"], ɕ: ["x"], tɕ: ["j"], tɕʰ: ["q"],
+      ʂ: ["sh"], ʈʂ: ["zh"], ʈʂʰ: ["ch"], ʐ: ["r"], x: ["h"], tʃ: ["zh"], tʃʰ: ["ch"], ə: ["e"], e: ["ê"], y: ["ü"], ŋ: ["ng"],
+      ʃ: ["sh"], j: ["y"], w: ["w"],
+    },
     likes: ["pʰ", "tʰ", "kʰ", "tsʰ", "ɕ", "tɕ", "ʂ"],
-    requires: (inv) => inv.has("pʰ") || inv.has("tʰ") || inv.has("kʰ") ? !inv.has("b") && !inv.has("d") && !inv.has("g") : false,
+    requires: (inv) => (inv.has("pʰ") || inv.has("tʰ") || inv.has("kʰ") ? !inv.has("b") && !inv.has("d") && !inv.has("g") : false),
   },
   {
-    id: "indic", weight: 1.0, long: ["macron"], nasal: ["tilde"], jAfterV: "y", wAfterV: "v",
-    map: { ʈ: ["ṭ"], ɖ: ["ḍ"], ɳ: ["ṇ"], ʂ: ["ṣ"], ɕ: ["ś"], ʃ: ["ś", "sh"], tʃ: ["c", "ch"], dʒ: ["j"], ɲ: ["ñ"], ŋ: ["ṅ", "ng"], j: ["y"], w: ["v"], ɭ: ["ḷ"], ʋ: ["v"] },
+    id: "indic", long: ["macron"], nasal: ["tilde"], jAfterV: "y", wAfterV: "v",
+    map: {
+      ʈ: ["ṭ"], ɖ: ["ḍ"], ɳ: ["ṇ"], ʂ: ["ṣ"], ɕ: ["ś"], ʃ: ["sh", "ś"], tʃ: ["ch", "c"], tʃʰ: ["chh"], dʒ: ["j"], dʒʱ: ["jh"],
+      ɲ: ["ñ", "ny"], ŋ: ["ng", "ṅ"], j: ["y"], w: ["v"], ɭ: ["ḷ"], ʋ: ["v"], ɽ: ["ṛ"], r: ["r"], ɾ: ["r"], ə: ["ă"], x: ["kh"],
+      ɣ: ["gh"], z: ["z"], ʈʰ: ["ṭh"], ɖʱ: ["ḍh"],
+    },
     likes: ["ʈ", "ɖ", "ɳ", "ʂ", "bʱ", "dʱ", "gʱ", "kʰ", "ɭ"],
   },
   {
-    id: "andean", weight: 0.7, long: ["double"], nasal: ["tilde"], jAfterV: "y", wAfterV: "w",
-    map: { q: ["q"], ʎ: ["ll"], ɲ: ["ñ"], ʃ: ["sh"], tʃ: ["ch"], kʼ: ["k'"], qʼ: ["q'"], tʃʼ: ["ch'"], pʼ: ["p'"], tʼ: ["t'"], kʰ: ["kh"], qʰ: ["qh"], tʃʰ: ["chh"], x: ["j", "h"], χ: ["j", "h"], j: ["y"], w: ["w"] },
+    id: "andean", long: ["double"], nasal: ["tilde"], jAfterV: "y", wAfterV: "w",
+    map: {
+      q: ["q"], ʎ: ["ll"], ɲ: ["ñ"], ʃ: ["sh"], tʃ: ["ch"], kʼ: ["k'"], qʼ: ["q'"], tʃʼ: ["ch'"], pʼ: ["p'"], tʼ: ["t'"],
+      kʰ: ["kh"], qʰ: ["qh"], tʃʰ: ["chh"], pʰ: ["ph"], tʰ: ["th"], x: ["j", "h"], χ: ["j", "h"], j: ["y"], w: ["w"], ŋ: ["ng"],
+      ts: ["ts"], ə: ["ë"],
+    },
     likes: ["q", "qʼ", "ʎ", "ɲ", "kʼ", "χ"],
-    requires: (inv) => inv.has("q") || inv.has("kʼ") || inv.has("ʎ"),
+  },
+  {
+    id: "bantu", long: ["double"], nasal: ["tilde"], jAfterV: "y", wAfterV: "w",
+    map: {
+      ŋ: ["ng'"], ɲ: ["ny"], tʃ: ["ch"], dʒ: ["j"], ʃ: ["sh"], j: ["y"], w: ["w"], ɣ: ["gh"], θ: ["th"], ð: ["dh"], x: ["kh"],
+      ɛ: ["è"], ɔ: ["ò"], ʒ: ["zh"], ts: ["ts"], ə: ["ë"], β: ["bh"],
+    },
+    rules: [{ p: "ŋ", s: "n", before: "vowel", after: "vowel" }],
+    likes: ["ŋ", "ɲ", "mb"],
+  },
+  {
+    id: "mayan", long: ["double"], nasal: ["tilde"], jAfterV: "y", wAfterV: "w",
+    map: {
+      ʃ: ["x"], x: ["j"], ts: ["tz"], tsʼ: ["tz'"], tʃ: ["ch"], tʃʼ: ["ch'"], kʼ: ["k'"], tʼ: ["t'"], pʼ: ["p'"], qʼ: ["q'"],
+      ʔ: ["'"], j: ["y"], w: ["w"], q: ["q"], ŋ: ["ng"], ə: ["ä"], ɨ: ["ä"], h: ["h"], dʒ: ["dz"], ʒ: ["zh"],
+    },
+    likes: ["kʼ", "tsʼ", "tʃʼ", "ʃ", "x"],
+  },
+  {
+    id: "inuit", long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
+    map: { q: ["q"], ŋ: ["ng"], ɬ: ["lh", "ll"], ʁ: ["r"], ɣ: ["g"], j: ["j"], v: ["v"], χ: ["r"], x: ["kh"], ʃ: ["sh"], ts: ["ts"], ə: ["e"] },
+    likes: ["q", "ŋ", "ɬ", "ʁ"],
+  },
+  {
+    id: "malay", long: ["double"], nasal: ["tilde"], jAfterV: "i", wAfterV: "u",
+    map: {
+      ŋ: ["ng"], ɲ: ["ny"], tʃ: ["c", "ch"], dʒ: ["j"], ʃ: ["sy", "sh"], x: ["kh"], ɣ: ["gh"], j: ["y"], w: ["w"], ʔ: ["'"],
+      ə: ["e"], e: ["é"], θ: ["th"], ð: ["dh"], z: ["z"], f: ["f"], v: ["v"], ts: ["ts"],
+    },
+    variants: { tʃ: ["c", "ch"] },
+    likes: ["ŋ", "ɲ", "ə"],
   },
 ];
 
@@ -182,34 +295,34 @@ export function schoolIds(): string[] {
   return SCHOOLS.map((s) => s.id);
 }
 
-const VOWEL_LETTERS = "aeiouyäöüáéíóúàèìòùâêîôûāēīōūăĕĭŏŭæøåœəëïıǫęąãẽĩõũȳýǣőűơưůÿ";
+const VOWEL_LETTERS = "aeiouyäöüáéíóúàèìòùâêîôûāēīōūăĕĭŏŭæøåœəëïıǫęąãẽĩõũȳýǣőűơưůÿěô";
 
 function isVowelLetter(ch: string): boolean {
   return VOWEL_LETTERS.includes(ch.normalize("NFC")) || VOWEL_LETTERS.includes(ch.normalize("NFD")[0] ?? "");
 }
 
-/** Candidate spellings for a phoneme: school's, default's, then generic fallbacks. */
-function candidates(p: string, school: School): string[] {
+/** Candidate spellings for a phoneme: language variant, school's, default's, then generic fallbacks. */
+function candidates(p: string, school: School, variant?: string): string[] {
   const out: string[] = [];
   const push = (xs?: string[]) => {
     if (xs) for (const x of xs) if (!out.includes(x)) out.push(x);
   };
+  if (variant) push([variant]);
   push(school.map[p]);
   const f = features(p);
   if (!f) return [p];
   if (f.kind === "C") {
-    push(DEFAULT[p]);
-    // modified consonants
+    // modified consonants: base spelling + h / ' / w
     const base = phonemeFor({ ...f, asp: false, ejective: false, lab: false });
     if (base && base !== p) {
       const bs = [...(school.map[base] ?? []), ...(DEFAULT[base] ?? [base])];
-      for (const b of bs) {
-        if (f.lab) push([b + "w", b + "u", b + "v"]);
-        if (f.asp && !f.voice) push([b + "h", b + "hh"]);
-        if (f.asp && f.voice) push([b + "h", b + "hh"]);
-        if (f.ejective) push([b + "'", (b + "\u0323").normalize("NFC"), b + "q"]);
+      for (const b of bs.slice(0, 2)) {
+        if (f.lab) push([b + "w", b + "u"]);
+        if (f.asp) push([b + "h"]);
+        if (f.ejective) push([b + "'"]);
       }
     }
+    push(DEFAULT[p]);
     push([p]);
   } else {
     push(DEFAULT[p]);
@@ -224,19 +337,24 @@ function hasDiacritic(s: string): boolean {
 
 function longSpelling(short: string, style: LongStyle, p: string, schoolId: string): string {
   const q = vowelQuality(p);
-  if (schoolId === "germanic" && q === "i") return "ie";
+  if (schoolId === "germanic" && q === "i" && style === "double") return "ie";
   if (schoolId === "hungarian") {
     if (short === "ö") return "ő";
     if (short === "ü") return "ű";
   }
   const single = [...short.normalize("NFC")].length === 1;
-  if (style === "double" || !single) return single ? short + short : short + short.slice(-1);
-  const markCh = style === "macron" ? "̄" : style === "acute" ? "́" : "̂";
-  const composed = (short + markCh).normalize("NFC");
-  // use the mark only where a precomposed letter exists (ā, ǽ, ǖ); otherwise double
-  if ([...composed].length !== 1) return short + short;
-  const mark = style === "macron" ? "̄" : style === "acute" ? "́" : "̂";
-  return (short + mark).normalize("NFC");
+  const plain = /^[a-z]$/.test(short);
+  // Doubling a letter that already carries a mark (ää, öö) is fine in Finnic; elsewhere prefer a mark.
+  if (style === "double" && single && (plain || schoolId === "finnic" || schoolId === "mongolic")) return short + short;
+  if (!single) return short + short.slice(-1);
+  const order: LongStyle[] = style === "double" ? ["macron", "circumflex", "acute"] : [style, "macron", "circumflex", "acute"];
+  for (const st of order) {
+    if (st === "double") continue;
+    const mark = st === "macron" ? "̄" : st === "acute" ? "́" : "̂";
+    const composed = (short + mark).normalize("NFC");
+    if ([...composed].length === 1) return composed;
+  }
+  return short + short;
 }
 
 function nasalSpelling(short: string, style: "tilde" | "ogonek"): string {
@@ -250,26 +368,33 @@ function schoolScore(s: School, inv: Set<string>): number {
   if (s.requires && !s.requires(inv)) return 0;
   let aff = 0;
   for (const p of s.likes) if (inv.has(p)) aff++;
-  return s.weight * Math.pow(0.12 + aff, 1.5);
+  return Math.pow(0.12 + aff, 1.5);
 }
 
 /** Build a collision-free orthography for a phoneme inventory. */
 export function buildOrthography(
   ph: Phonology,
   rng: Rng,
-  opts: { school?: string; avoidSchools?: string[]; base?: Orthography } = {},
+  opts: { school?: string; schools?: [string, number][]; avoidSchools?: string[]; base?: Orthography } = {},
 ): Orthography {
   const inv = new Set([...ph.consonants, ...ph.vowels]);
   let school: School;
   if (opts.school && SCHOOL_BY_ID[opts.school]) school = SCHOOL_BY_ID[opts.school];
   else {
     const avoid = new Set(opts.avoidSchools ?? []);
-    const weights = SCHOOLS.map((s) => schoolScore(s, inv) * (avoid.has(s.id) ? 0.15 : 1) * Math.exp(rng.normal(0, 0.35)));
-    school = SCHOOLS[rng.weightedIndex(weights)];
+    const pref = opts.schools?.filter(([id]) => SCHOOL_BY_ID[id] && (!SCHOOL_BY_ID[id].requires || SCHOOL_BY_ID[id].requires!(inv)));
+    if (pref?.length) {
+      school = SCHOOL_BY_ID[rng.weighted(pref.map(([id, w]) => [id, w * (avoid.has(id) ? 0.4 : 1)] as [string, number]))];
+    } else {
+      const weights = SCHOOLS.map((s) => schoolScore(s, inv) * (avoid.has(s.id) ? 0.15 : 1) * Math.exp(rng.normal(0, 0.35)));
+      school = SCHOOLS[rng.weightedIndex(weights)];
+    }
   }
   if (school.id === "polish" && !inv.has("v")) school = { ...school, map: { ...school.map, w: ["w", "u"] } };
   const longStyle = rng.pick(school.long);
   const nasalStyle = rng.pick(school.nasal);
+  const variant: Record<string, string> = {};
+  for (const [p, vs] of Object.entries(school.variants ?? {})) variant[p] = rng.pick(vs);
   const map: Record<string, string> = {};
   const used = new Set<string>();
   // Keep the base orthography's spellings where possible (daughters).
@@ -282,10 +407,10 @@ export function buildOrthography(
       }
     }
   }
-  // Short vowels and consonants: assign by priority (fewest options first, then frequency).
+  // Short vowels and consonants: assign by priority.
   const shorts = [...ph.consonants, ...new Set(ph.vowels.map(vowelQuality))].filter((p) => map[p] === undefined);
   const freq = (p: string) => (ph.wOnset[p] ?? 0) + (ph.wCoda[p] ?? 0) + (ph.wVowel[p] ?? 0) * 2;
-  const cands = new Map(shorts.map((p) => [p, candidates(p, school)]));
+  const cands = new Map(shorts.map((p) => [p, candidates(p, school, variant[p])]));
   shorts.sort((a, b) => cands.get(a)!.length - cands.get(b)!.length || freq(b) - freq(a) || (a < b ? -1 : 1));
   // Spanish-style r/rr when both a trill and a tap exist.
   if (inv.has("r") && inv.has("ɾ") && map.r === undefined && map["ɾ"] === undefined && !used.has("rr")) {
@@ -297,14 +422,20 @@ export function buildOrthography(
   // Phonemes whose preferred spelling is their own ASCII letter go first, so
   // that p/t/k/a/i/u/w/h keep their obvious spellings and nothing else steals them.
   const natural = (p: string) => /^[a-z]$/.test(p) && cands.get(p)![0] === p;
-  // Then modified stops (pʰ, kʼ, kʷ), whose natural spelling is base+h/'/w,
-  // before fricatives that would otherwise steal "kh" or "ph".
+  // Then the school's explicit spellings (š, þ, tl…), then modified stops (pʰ, kʼ, kʷ).
+  const explicit = (p: string) => !natural(p) && (!!school.map[p] || !!variant[p]);
   const modified = (p: string) => {
     const f = cf(p);
-    return !!f && (f.asp || f.ejective || f.lab) && !natural(p);
+    return !!f && (f.asp || f.ejective || f.lab) && !natural(p) && !explicit(p);
   };
-  const ordered = [...shorts.filter(natural), ...shorts.filter(modified), ...shorts.filter((p) => !natural(p) && !modified(p))].filter((p) => map[p] === undefined);
+  const ordered = [
+    ...shorts.filter(natural),
+    ...shorts.filter(explicit),
+    ...shorts.filter(modified),
+    ...shorts.filter((p) => !natural(p) && !explicit(p) && !modified(p)),
+  ].filter((p) => map[p] === undefined);
   for (const p of ordered) {
+    if (map[p] !== undefined) continue;
     const cs = cands.get(p)!;
     let chosen = cs.find((c) => !used.has(c));
     if (chosen === undefined) {
@@ -332,25 +463,25 @@ export function buildOrthography(
     const q = vowelQuality(v);
     let base = map[q];
     if (f.nasal) base = nasalSpelling(base, nasalStyle);
-    const cands: string[] = [];
+    const cs: string[] = [];
     if (f.long) {
-      const first = longSpelling(base, longStyle, v, school.id);
-      // a vowel letter that already carries a mark (è, ë): prefer marks on the plain letter over "èè"
       const plain = base.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      if (plain !== base && [...plain].length === 1 && !first.startsWith(plain)) {
-        for (const st of [longStyle, "circumflex", "macron", "acute"] as LongStyle[]) if (st !== "double") cands.push(longSpelling(plain, st, v, school.id));
-        cands.push(plain + plain);
-      }
-      cands.push(first, base + base, base + "h");
-    } else cands.push(base, base + "n", base + "ñ");
-    const s = cands.find((c) => !used.has(c)) ?? cands[0];
+      const marked = plain !== base && [...plain].length === 1 && /^[a-z]$/.test(plain);
+      // A long vowel whose short form already carries a mark (è, ò) is better written ê/ô than èè.
+      if (marked && school.id !== "finnic" && school.id !== "mongolic")
+        for (const st of [longStyle, "circumflex", "macron", "acute"] as LongStyle[]) if (st !== "double") cs.push(longSpelling(plain, st, v, school.id));
+      cs.push(longSpelling(base, longStyle, v, school.id));
+      for (const st of ["macron", "circumflex", "acute"] as LongStyle[]) if (st !== longStyle) cs.push(longSpelling(base, st, v, school.id));
+      cs.push(base + base, base + "h");
+    } else cs.push(base, base + "n", base + "ñ");
+    const s = cs.find((c) => !used.has(c)) ?? cs[0];
     map[v] = s;
     used.add(s);
   }
   // Contextual rules.
   const rules: SpellingRule[] = [];
   if (inv.has("j") && (map.j === "y" || map.j === "j")) rules.push({ p: "j", s: school.jAfterV === "j" ? map.j : school.jAfterV, after: "vowel", before: "nonvowel" });
-  if (inv.has("w") && map.w && map.w !== school.wAfterV && !(map.w === "ł" && school.wAfterV === "ł"))
+  if (inv.has("w") && map.w && map.w !== school.wAfterV && !(map.w === "ł" && school.wAfterV === "ł") && !(map.w === "v" && school.wAfterV === "v"))
     rules.push({ p: "w", s: school.wAfterV, after: "vowel", before: "nonvowel" });
   if (inv.has("ʔ") && ["'", "ʻ", "ʾ"].includes(map["ʔ"])) rules.push({ p: "ʔ", s: "", after: "start" });
   if (map.w === "hu") rules.push({ p: "w", s: "u", after: "consonant" });
@@ -363,16 +494,17 @@ export function buildOrthography(
     // only applies if the default spelling is the one the rule is written against
     if (r.p === "k" && map.k !== "c") continue;
     if (r.p === "g" && map.k !== "c") continue;
+    if (r.p === "s" && map.s !== "z") continue;
     if (r.p === "w" && map.w !== "u" && map.w !== "hu") continue;
     if (r.p === "w" && r.s === "hu" && map.w === "hu") continue;
     if (r.p === "kʷ" && map["kʷ"] !== "cu") continue;
+    if (r.p === "ŋ" && map["ŋ"] !== "ng'") continue;
     rules.push(r);
   }
-  // Ejective / modified spellings that collide are fine; aspirates written with h are ok.
   const pairs = school.pairs ?? {};
   for (const [k, s] of Object.entries(pairs)) {
     const [a, b] = k.split("+");
-    if (inv.has(a) && inv.has(b) && map[a] === "c" && !used.has(s)) rules.push({ p: k, s });
+    if (inv.has(a) && inv.has(b) && !used.has(s) && (s !== "x" || map[a] === "c")) rules.push({ p: k, s });
   }
   return { school: school.id, map, rules, geminateFirstLetter: !!school.geminateFirst };
 }
@@ -469,7 +601,7 @@ export function romanizeWord(o: Orthography, w: Word): string {
     // geminates
     if (i > 0 && w[i - 1] === p && !isVowel(p) && s === lastSpell && s.length > 0) {
       const chars = [...s.normalize("NFC")];
-      if (chars.length >= 2 && o.geminateFirstLetter && !s.includes("'")) {
+      if (chars.length >= 2 && o.geminateFirstLetter && !s.includes("'") && !/^n/.test(s)) {
         out = out.slice(0, out.length - s.length) + chars[0] + s;
         lastSpell = s;
         i += span - 1;
@@ -529,7 +661,7 @@ export function ugliness(roman: string): number {
       worst = Math.max(worst, run);
     }
   }
-  const marks = [...s.normalize("NFD")].filter((c) => /[̀-ͯ]/.test(c)).length;
+  const marks = [...s.normalize("NFD")].filter((c) => /[\u0300-\u036f]/.test(c)).length;
   const apos = (s.match(/['ʻʿʾʼ]/g) ?? []).length;
   const len = [...s].length;
   return Math.max(0, worst - 3) * 2 + Math.max(0, marks - 2) * 0.7 + Math.max(0, apos - 1) * 0.8 + Math.max(0, len - 12) * 0.35;

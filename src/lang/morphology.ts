@@ -11,6 +11,7 @@ import { harmonize, harmonyClassOf, isValidWord, medialRunOK, nuclei, tables } f
 import type { Affix, AffixKind, Morphology, Phonology, Word, WordOrder } from "./types";
 import { key } from "./util";
 import { generateAffix, type AffixShape } from "./wordgen";
+import type { MorphHints } from "./styles";
 
 export interface Morph {
   form: Word;
@@ -227,6 +228,11 @@ const GRAM_SOURCES: Partial<Record<AffixKind, string[]>> = {
   neg: ["not"],
 };
 
+/** Clip a word to its first syllable (keeping a coda if it is a legal word-final consonant). */
+export function clipWord(ph: Phonology, w: Word): Word {
+  return truncate(ph, w, true);
+}
+
 function truncate(ph: Phonology, w: Word, suffix: boolean): Word {
   const nuc = nuclei(w);
   if (nuc.length <= 1) return w.slice();
@@ -246,24 +252,26 @@ function pickVowel(ph: Phonology, prefs: string[]): string {
   return ph.vowels[0];
 }
 
-export function generateMorphology(ph: Phonology, rng: Rng, roots: Record<string, Word>): Morphology {
-  const wordOrder = rng.weighted<WordOrder>([
-    ["SOV", 0.45],
-    ["SVO", 0.36],
-    ["VSO", 0.13],
-    ["VOS", 0.04],
-    ["OVS", 0.02],
-  ]);
+export function generateMorphology(ph: Phonology, rng: Rng, roots: Record<string, Word>, hints: MorphHints = {}): Morphology {
+  const wordOrder = rng.weighted<WordOrder>(
+    hints.order ?? [
+      ["SOV", 0.45],
+      ["SVO", 0.36],
+      ["VSO", 0.13],
+      ["VOS", 0.04],
+      ["OVS", 0.02],
+    ],
+  );
   const OV = wordOrder === "SOV" || wordOrder === "OVS";
   const verbInitial = wordOrder === "VSO" || wordOrder === "VOS";
-  const suffixPref = OV ? 0.92 : verbInitial ? 0.55 : 0.7;
-  const caseMarking = rng.chance(OV ? 0.72 : verbInitial ? 0.35 : 0.25);
+  const suffixPref = hints.suffix ?? (OV ? 0.92 : verbInitial ? 0.55 : 0.7);
+  const caseMarking = rng.chance(hints.caseMarking ?? (OV ? 0.72 : verbInitial ? 0.35 : 0.25));
   const adpositions: "pre" | "post" = rng.chance(OV ? 0.88 : 0.12) ? "post" : "pre";
-  const adjOrder: "AN" | "NA" = rng.chance(OV ? 0.65 : verbInitial ? 0.25 : 0.5) ? "AN" : "NA";
-  const genOrder: "GN" | "NG" = rng.chance(OV ? 0.82 : verbInitial ? 0.12 : 0.4) ? "GN" : "NG";
-  const compound: Morphology["compound"] = rng.chance(adjOrder === "AN" ? 0.85 : 0.3) ? "mod-head" : "head-mod";
-  const articles = rng.chance(0.42);
-  const gender = rng.chance(0.4);
+  const adjOrder: "AN" | "NA" = rng.chance(hints.adjFirst ?? (OV ? 0.65 : verbInitial ? 0.25 : 0.5)) ? "AN" : "NA";
+  const genOrder: "GN" | "NG" = rng.chance(hints.genFirst ?? (OV ? 0.82 : verbInitial ? 0.12 : 0.4)) ? "GN" : "NG";
+  const compound: Morphology["compound"] = rng.chance(adjOrder === "AN" ? 0.88 : 0.3) ? "mod-head" : "head-mod";
+  const articles = rng.chance(hints.articles ?? 0.42);
+  const gender = rng.chance(hints.gender ?? 0.4);
   const agreement = rng.chance(0.5);
   const proDrop = agreement ? rng.chance(0.8) : rng.chance(0.1);
   const hasCodas = ph.codas.length > 0 || ph.finals.length > 0;
@@ -326,7 +334,13 @@ export function generateMorphology(ph: Phonology, rng: Rng, roots: Record<string
         ["CVCV", 0.6],
         ["V", 0.6],
       ];
-  const mk = (kind: AffixKind, shapes: [AffixShape, number][], pos: Affix["pos"]): Affix => {
+  const prefixShapes: [AffixShape, number][] = [
+    ["CV", 4],
+    ["V", 1],
+  ];
+  const mk = (kind: AffixKind, shapes0: [AffixShape, number][], pos: Affix["pos"]): Affix => {
+    // prefixes are short (ka-, mu-, u-): long prefixes make every name begin alike
+    const shapes = pos === "prefix" ? prefixShapes : shapes0;
     // grammaticalise from a root sometimes
     const sources = GRAM_SOURCES[kind];
     if (sources && rng.chance(kind === "place" || kind === "land" ? 0.5 : 0.3)) {
@@ -345,15 +359,34 @@ export function generateMorphology(ph: Phonology, rng: Rng, roots: Record<string
   };
   const sidePos = (): Affix["pos"] => (rng.chance(suffixPref) ? "suffix" : "prefix");
 
+  const forced = new Set(hints.prefixes ?? []);
+  // Derivational suffixes are cross-linguistically far commoner than prefixes;
+  // feminine, adjectival and abstract markers are (almost) always suffixes.
+  const SUFFIXY = new Set<AffixKind>(["fem", "adj", "abstract", "agent", "place", "land", "dim", "aug"]);
   for (const kind of DERIV) {
-    const pos = kind === "patronym" && rng.chance(0.3) ? "before" : sidePos();
+    const pos = forced.has(kind)
+      ? "prefix"
+      : kind === "fem"
+        ? "suffix"
+        : kind === "patronym" && rng.chance(0.3)
+          ? "before"
+          : SUFFIXY.has(kind)
+            ? rng.chance(Math.max(suffixPref, 0.88))
+              ? "suffix"
+              : "prefix"
+            : sidePos();
     mo.affixes[kind] = mk(kind, derivShapes, pos);
   }
   // inflection
-  mo.affixes.pl = mk("pl", inflShapes, sidePos());
+  mo.affixes.pl = mk("pl", inflShapes, forced.has("pl") ? "prefix" : sidePos());
   if (articles) {
-    const r = rng.next();
-    mo.affixes.def = mk("def", inflShapes, r < 0.45 ? (adjOrder === "AN" || rng.chance(0.5) ? "before" : "after") : r < 0.8 ? "suffix" : "prefix");
+    const pos = hints.defPos
+      ? rng.weighted(hints.defPos)
+      : (() => {
+          const r = rng.next();
+          return r < 0.45 ? (adjOrder === "AN" || rng.chance(0.5) ? "before" : "after") : r < 0.8 ? "suffix" : "prefix";
+        })();
+    mo.affixes.def = mk("def", inflShapes, pos);
   }
   const caseKinds: AffixKind[] = ["nom", "acc", "gen", "dat", "loc", "all", "abl", "ins"];
   for (const ck of caseKinds) {

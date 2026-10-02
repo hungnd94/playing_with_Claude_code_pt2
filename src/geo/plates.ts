@@ -18,7 +18,8 @@ import { Rng, hash01 } from "../core/rng";
 import { Noise3 } from "../core/noise";
 import { MinHeap } from "../core/heap";
 import { BoundaryKind, type Plate } from "../world/types";
-import { cellAngle, distanceField } from "./util";
+import { cellAngle, distanceField, lerp } from "./util";
+import type { WorldStyle } from "./style";
 
 export interface Tectonics {
   plates: Plate[];
@@ -47,7 +48,7 @@ export interface Tectonics {
   velocity: Float32Array;
 }
 
-export function buildPlates(mesh: SphereMesh, numPlates: number, landFraction: number, radiusKm: number, edgeLen: Float32Array, rng: Rng): Tectonics {
+export function buildPlates(mesh: SphereMesh, numPlates: number, landFraction: number, radiusKm: number, edgeLen: Float32Array, rng: Rng, style: WorldStyle): Tectonics {
   const n = mesh.n;
   const P = Math.max(2, Math.min(250, Math.round(numPlates)));
   const { xyz, adjStart, adj } = mesh;
@@ -173,6 +174,17 @@ export function buildPlates(mesh: SphereMesh, numPlates: number, landFraction: n
       if (plate[j] !== plate[i]) { shared[plate[i] * P + plate[j]] += edgeLen[k]; perim[plate[i]] += edgeLen[k]; }
     }
   }
+  // Plate centroids (area-weighted, unnormalised) and polar-ness.
+  const cen = new Float64Array(3 * P);
+  for (let i = 0; i < n; i++) {
+    const p = plate[i], a = mesh.area[i];
+    cen[3 * p] += xyz[3 * i] * a; cen[3 * p + 1] += xyz[3 * i + 1] * a; cen[3 * p + 2] += xyz[3 * i + 2] * a;
+  }
+  const polar = new Float64Array(P);
+  for (let p = 0; p < P; p++) {
+    const l = Math.hypot(cen[3 * p], cen[3 * p + 1], cen[3 * p + 2]) || 1;
+    polar[p] = Math.abs(cen[3 * p + 2] / l);
+  }
   let contArea = 0;
   const rejected = new Uint8Array(P);
   if (P > 4) rejected[largest] = 1;
@@ -184,7 +196,12 @@ export function buildPlates(mesh: SphereMesh, numPlates: number, landFraction: n
       if (continental[p] || rejected[p]) continue;
       let sh = 0;
       for (let q = 0; q < P; q++) if (continental[q]) sh += shared[p * P + q];
-      w[p] = Math.exp(-3 * sh / Math.max(1e-9, perim[p])) * (0.5 + plateArea[p] * 10);
+      // Assembly < 0.5: continents avoid each other; > 0.5: they cluster into a supercontinent.
+      const k = lerp(-3.5, 6, style.assembly);
+      const anyCont = contArea > 0;
+      w[p] = Math.exp(k * (anyCont ? sh / Math.max(1e-9, perim[p]) : 0) - (anyCont && style.assembly > 0.6 && sh === 0 ? 2 : 0)) * (0.5 + plateArea[p] * 10);
+      // Mild preference for continents away from the poles (polar land is mostly ice).
+      w[p] *= 0.3 + 0.7 * (1 - polar[p] * polar[p]);
       any = true;
     }
     if (!any) break;
@@ -204,12 +221,31 @@ export function buildPlates(mesh: SphereMesh, numPlates: number, landFraction: n
     }
   }
 
+  // Centroid of all continental crust.
+  let Cx = 0, Cy = 0, Cz = 0;
+  for (let p = 0; p < P; p++) if (continental[p]) { Cx += cen[3 * p]; Cy += cen[3 * p + 1]; Cz += cen[3 * p + 2]; }
+  const Cl = Math.hypot(Cx, Cy, Cz) || 1;
+  Cx /= Cl; Cy /= Cl; Cz /= Cl;
+
   const plates: Plate[] = [];
   const density = new Float32Array(P);
   const motionRng = rng.fork("motion");
   for (let p = 0; p < P; p++) {
     const oceanic = !continental[p];
-    const axis = motionRng.unitVector();
+    let axis = motionRng.unitVector();
+    // Continents of an assembling world drift towards each other (collisions, sutures);
+    // otherwise motion is random (rifting and collisions both occur).
+    if (!oceanic && motionRng.next() < 0.85 * style.assembly) {
+      const cx = cen[3 * p], cy = cen[3 * p + 1], cz = cen[3 * p + 2];
+      let tx = cy * Cz - cz * Cy, ty = cz * Cx - cx * Cz, tz = cx * Cy - cy * Cx;
+      const tl = Math.hypot(tx, ty, tz);
+      if (tl > 0.05 * Math.hypot(cx, cy, cz)) {
+        tx /= tl; ty /= tl; tz /= tl;
+        const mx = 0.35 * axis[0] + tx, my = 0.35 * axis[1] + ty, mz = 0.35 * axis[2] + tz;
+        const ml = Math.hypot(mx, my, mz) || 1;
+        axis = [mx / ml, my / ml, mz / ml];
+      }
+    }
     const speed = oceanic ? motionRng.range(0.45, 1.0) : motionRng.range(0.2, 0.6);
     density[p] = (oceanic ? 1 : 0) + motionRng.next() * 0.8;
     plates.push({ id: p, oceanic, axis, speed, seedCell: seeds[p] });

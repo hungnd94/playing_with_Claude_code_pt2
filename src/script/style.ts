@@ -138,6 +138,8 @@ export function randomStyle(rng: Rng, family: Family, tool: Tool, direction: Dir
     case "cursive":
       width = r.range(0.5, 0.75);
       cornering = r.range(0.6, 1);
+      // Joined letters have small bodies (teeth, bowls): a lighter hand keeps them open.
+      weight *= tool === "needle" ? 1 : 0.8;
       slant = r.chance(0.3) ? r.range(-0.12, 0.18) : 0;
       break;
     case "wedge":

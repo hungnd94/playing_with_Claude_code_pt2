@@ -225,7 +225,7 @@ export function familyParams(rng: Rng, family: Family): Record<string, number> {
     case "tally":
       return { across: r.range(0.3, 0.7), notch: r.chance(0.6) ? 1 : 0, spacing: r.range(0.13, 0.18) };
     case "featural":
-      return { bar: r.range(0.5, 1), circ: r.range(0, 1), vstyle: r.chance(0.5) ? 1 : 0 };
+      return { bar: r.range(0.5, 1), circ: r.range(0, 1), vstyle: r.weighted([[0, 0.45], [1, 0.35], [2, 0.2]] as [number, number][]) };
     case "syllabic":
       return { closed: r.range(0.1, 0.5), hook: r.range(0, 0.7), ringPart: r.range(0, 0.5) };
   }
@@ -536,7 +536,19 @@ function genGeometric(rng: Rng, c: GenCtx): Shape {
   const box: Box = [0, 0, Wb, 1];
   const comp = rng.next();
   let st: Stroke[] = [];
-  const stacked = comp < 0.16 + c.big * 0.18 && !base.startsWith("dots");
+  const stacked = comp < 0.16 + c.big * 0.38 && !base.startsWith("dots");
+  const paired = !stacked && comp < 0.18 + c.big * 0.5 && !base.startsWith("dots");
+  if (paired) {
+    // A small primitive attached to the side of a main one, sharing its stem line
+    // (big sign sets need compounds; side by side they must still read as one sign).
+    const k2 = weighted(rng, kinds.filter((k) => !k[0].startsWith("dots") && k[0] !== base && k[0] !== "ring"));
+    const mw = W * 0.8;
+    const sw = W * 0.42;
+    const y0 = rng.pick([0, 0.3, 0.55]);
+    st = [...geoPrimitive(rng, base, [0, 0, mw, 1], noH), line(mw, y0 + 0.22, mw + 0.06, y0 + 0.22), ...geoPrimitive(rng, k2, [mw + 0.06, y0, mw + 0.06 + sw, y0 + 0.45], noH)];
+    const w = mw + 0.06 + sw;
+    return { strokes: rng.chance(0.5) ? mirrorX(st, w) : st, w };
+  }
   if (stacked) {
     // Two primitives stacked, or a primitive on a stem.
     const k2 = weighted(rng, kinds.filter((k) => !k[0].startsWith("dots")));
@@ -586,6 +598,28 @@ type Mk = (pts: P[], sharp?: number[]) => Stroke;
  * foot) — the way Devanagari letters are assembled from a small kit of parts.
  */
 function genHanging(rng: Rng, c: GenCtx): Shape {
+  const base = genHangingLetter(rng, c);
+  // Large sign sets need more forms: conjunct-like compounds, a half-form
+  // (the body without its stem) squeezed in front of a full letter.
+  if (rng.chance(c.big * 0.35)) {
+    const first = genHangingLetter(rng, { ...c, big: 0 });
+    const sx = first.w * c.p.sx;
+    const body = first.strokes.filter((s) => !(s.pts.length === 2 && Math.abs(s.pts[0][0] - sx) < 0.02 && Math.abs(s.pts[1][0] - sx) < 0.02));
+    const half = fitStrokes(body, 0, 0.0, first.w * 0.48, 0.72);
+    const k = 0.92;
+    const second = base.strokes.map((s) => ({ ...s, pts: s.pts.map((q) => [first.w * 0.42 + q[0] * k, q[1]] as P) }));
+    return { strokes: [...half, ...second], w: first.w * 0.42 + base.w * k };
+  }
+  if (rng.chance(c.big * 0.5)) {
+    // A second distinguishing element: a nukta-like dot or a small loop at the foot.
+    const W = base.w;
+    const extra = rng.chance(0.5) ? dot(W * 0.3, 1.2, 0.055) : smooth([[W * 0.55, 0.92], [W * 0.38, 1.12], [W * 0.18, 1.0]]);
+    return { ...base, strokes: [...base.strokes, extra] };
+  }
+  return base;
+}
+
+function genHangingLetter(rng: Rng, c: GenCtx): Shape {
   const p = c.p;
   const W = c.W * rng.range(0.92, 1.12);
   const sx = W * p.sx;
@@ -1054,12 +1088,13 @@ export function addDots(shape: Shape, pattern: string, T: number): Shape {
   const n = +pattern[1];
   const y = where === "a" ? Math.min(T - 0.24, 0.32) : where === "b" ? 1.26 : 0.82;
   const cx = W / 2;
-  const d = 0.13;
+  // Paired dots sit a little apart and slightly stepped, as a calligrapher sets them.
+  const d = 0.17;
   const r = 0.052;
   const dots: Stroke[] = [];
   if (n === 1) dots.push(dot(cx, y, r));
-  else if (n === 2) dots.push(dot(cx - d / 2, y, r), dot(cx + d / 2, y, r));
-  else dots.push(dot(cx - d / 2, y + (where === "a" ? 0.06 : -0.06), r), dot(cx + d / 2, y + (where === "a" ? 0.06 : -0.06), r), dot(cx, y + (where === "a" ? -0.07 : 0.07), r));
+  else if (n === 2) dots.push(dot(cx - d / 2, y + 0.015, r), dot(cx + d / 2, y - 0.015, r));
+  else dots.push(dot(cx - d / 2, y + (where === "a" ? 0.07 : -0.07), r), dot(cx + d / 2, y + (where === "a" ? 0.07 : -0.07), r), dot(cx, y + (where === "a" ? -0.08 : 0.08), r));
   return { ...shape, strokes: [...shape.strokes, ...dots] };
 }
 
@@ -1078,8 +1113,11 @@ function genCursive(rng: Rng, c: GenCtx): Shape {
 // ---------------------------------------------------------------------------
 
 /**
- * Cuneiform-like signs: small clusters of wedge impressions (horizontal,
- * vertical, oblique, and the corner wedge drawn as a dot) on a coarse grid.
+ * Cuneiform-like signs, composed the way real signs are: one to three
+ * clusters side by side (rows of verticals, stacks of horizontals, groups of
+ * corner wedges, diagonals, crosses), sometimes threaded on a long horizontal.
+ * Lengths are quantised (full / half / short) so signs read as distinct
+ * arrangements rather than near-identical strokes of slightly different size.
  */
 function genWedge(rng: Rng, c: GenCtx): Shape {
   const p = c.p;
@@ -1089,90 +1127,110 @@ function genWedge(rng: Rng, c: GenCtx): Shape {
     if (small) s.w = 0.8;
     st.push(s);
   };
-  const V = (x: number, y: number, len: number, small = false): void => {
-    const s = line(x, y, x, y + len);
+  const V = (x: number, y0: number, y1: number, small = false): void => {
+    const s = line(x, y0, x, y1);
     if (small) s.w = 0.8;
     st.push(s);
   };
   const Wk = (x: number, y: number): void => {
     st.push(dot(x, y, 0.09));
   };
-  const pattern = weighted(rng, [
-    ["hstack", p.horiz],
-    ["vrow", p.vert],
-    ["cross", 0.45],
-    ["wink", p.wink],
-    ["diag", p.diag],
-    ["hv", 0.5],
-    ["tri", 0.25],
-  ] as [string, number][]);
-  let w = 0.6;
-  switch (pattern) {
-    case "hstack": {
-      const n = rng.int(1, 3);
-      const len = rng.range(0.5, 0.85);
-      for (let i = 0; i < n; i++) H(0, n === 1 ? 0.5 : 0.18 + (0.64 * i) / (n - 1), len - (rng.chance(0.3) ? 0.15 : 0));
-      w = len;
-      const v = rng.int(0, 2);
-      for (let i = 0; i < v; i++) V(len + 0.1 + i * 0.2, 0.05, 0.9);
-      w = len + v * 0.2 + 0.05;
-      break;
-    }
-    case "vrow": {
-      const n = rng.int(1, 4);
-      const short = n > 2 || rng.chance(0.35);
-      for (let i = 0; i < n; i++) V(0.08 + i * 0.2, short ? 0.25 : 0.05, short ? 0.55 : 0.9, short);
-      w = 0.12 + (n - 1) * 0.2;
-      if (rng.chance(0.45)) {
-        H(0, short ? 0.08 : -0.05, w + 0.1);
-        w += 0.1;
+  /** Draw one cluster with its left edge at x; returns its width. */
+  // A lone wedge is only ever full-size and centred, so that look-alikes are caught.
+  const cluster = (x: number, kind: string, slim: boolean, alone: boolean): number => {
+    switch (kind) {
+      case "V": {
+        const n = weighted(rng, [[1, 1], [2, 1], [3, 0.7], [4, slim ? 0 : 0.25]] as [number, number][]);
+        const tiers = n >= 2 && rng.chance(0.3) ? 2 : 1;
+        const short = tiers === 1 && !(alone && n === 1) && rng.chance(0.25);
+        for (let i = 0; i < n; i++) {
+          const xx = x + 0.06 + i * 0.19;
+          if (tiers === 2) {
+            V(xx, 0.04, 0.44, true);
+            if (i < n - (rng.chance(0.4) ? 1 : 0)) V(xx, 0.56, 0.96, true);
+          } else if (short) V(xx, 0.28, 0.72, true);
+          else V(xx, 0.04, 0.96);
+        }
+        return 0.12 + (n - 1) * 0.19;
       }
-      break;
+      case "H": {
+        const n = weighted(rng, [[1, 1], [2, 1], [3, 0.6]] as [number, number][]);
+        const len = slim ? 0.4 : alone && n === 1 ? 0.62 : rng.pick([0.42, 0.62]);
+        const ys = n === 1 ? [alone ? 0.5 : rng.pick([0.22, 0.5, 0.78])] : n === 2 ? (rng.chance(0.5) ? [0.3, 0.7] : [0.18, 0.5]) : [0.16, 0.5, 0.84];
+        ys.forEach((y, i) => H(x, y, len - (n === 3 && i === 1 && rng.chance(0.4) ? 0.14 : 0), n === 3));
+        return len;
+      }
+      case "W": {
+        const n = weighted(rng, [[1, 1], [2, 1], [3, 0.8]] as [number, number][]);
+        const arr = n === 1 ? "one" : rng.pick(n === 3 ? ["row", "col", "tri"] : ["row", "col"]);
+        if (arr === "one") Wk(x + 0.12, alone ? 0.5 : rng.pick([0.3, 0.5]));
+        else if (arr === "row") for (let i = 0; i < n; i++) Wk(x + 0.12 + i * 0.26, 0.5);
+        else if (arr === "col") for (let i = 0; i < n; i++) Wk(x + 0.12, n === 2 ? 0.3 + i * 0.4 : 0.18 + i * 0.32);
+        else {
+          Wk(x + 0.12, 0.25);
+          Wk(x + 0.12, 0.75);
+          Wk(x + 0.38, 0.5);
+        }
+        return arr === "row" ? 0.12 + (n - 1) * 0.26 + 0.1 : arr === "tri" ? 0.48 : 0.22;
+      }
+      case "D": {
+        const k = rng.int(0, 2);
+        if (k === 0) st.push(line(x, 0.06, x + 0.5, 0.62));
+        else if (k === 1) st.push(line(x, 0.94, x + 0.5, 0.38));
+        else st.push(line(x, 0.06, x + 0.5, 0.62), line(x, 0.94, x + 0.5, 0.38));
+        return 0.5;
+      }
+      case "X": {
+        const len = slim ? 0.46 : rng.pick([0.5, 0.7]);
+        const y = rng.pick([0.3, 0.5]);
+        H(x, y, len);
+        const nv = rng.chance(0.3) ? 2 : 1;
+        for (let i = 0; i < nv; i++) V(x + len * (nv === 1 ? 0.55 : 0.4 + i * 0.3), 0.04, 0.96);
+        if (rng.chance(0.3)) H(x, 0.84, len * 0.6, true);
+        return len;
+      }
+      case "HV": {
+        const n = rng.chance(0.35) ? 2 : 1;
+        const len = 0.36;
+        for (let i = 0; i < n; i++) H(x, n === 1 ? 0.5 : 0.3 + i * 0.4, len);
+        V(x + len + 0.06, 0.04, 0.96);
+        return len + 0.1;
+      }
     }
-    case "cross": {
-      const y = rng.pick([0.3, 0.5]);
-      const len = rng.range(0.6, 0.9);
-      H(0, y, len);
-      V(len * rng.range(0.45, 0.7), 0.02, 0.96);
-      if (rng.chance(0.4)) H(0, 0.88, len * 0.55, true);
-      w = len;
-      break;
-    }
-    case "wink": {
-      const n = rng.int(1, 3);
-      const row = rng.chance(0.6);
-      for (let i = 0; i < n; i++) Wk(0.12 + (row ? i * 0.3 : 0), row ? 0.5 : 0.22 + i * 0.28);
-      const x = (row ? n * 0.3 : 0.34) + 0.06;
-      if (n === 1 || rng.chance(0.7)) V(x, 0.05, 0.9);
-      if (rng.chance(0.3)) H(x + 0.08, 0.5, 0.4);
-      w = x + 0.1;
-      break;
-    }
-    case "diag": {
-      st.push(line(0, 0.05, 0.62, 0.68));
-      if (rng.chance(0.6)) st.push(line(0, 0.95, 0.55, 0.4));
-      if (rng.chance(0.5)) V(0.75, 0.05, 0.9);
-      w = 0.8;
-      break;
-    }
-    case "hv": {
-      // a horizontal heading a column of short verticals
-      const n = rng.int(2, 3);
-      H(0, 0.12, 0.25 + n * 0.2);
-      for (let i = 0; i < n; i++) V(0.3 + i * 0.2, 0.35, 0.55, true);
-      w = 0.3 + n * 0.2;
-      break;
-    }
-    case "tri": {
-      Wk(0.12, 0.22);
-      Wk(0.12, 0.78);
-      Wk(0.45, 0.5);
-      if (rng.chance(0.5)) V(0.62, 0.05, 0.9);
-      w = 0.7;
-      break;
-    }
+    return 0.2;
+  };
+  const kinds: [string, number][] = [
+    ["V", p.vert * 1.4 + 0.3],
+    ["H", p.horiz * 1.4 + 0.2],
+    ["W", p.wink + 0.15],
+    ["D", p.diag + 0.05],
+    ["X", 0.45],
+    ["HV", 0.4],
+  ];
+  const big = c.big;
+  const ncol = weighted(rng, [[1, 0.55 - big * 0.3], [2, 0.35 + big * 0.1], [3, 0.08 + big * 0.25]] as [number, number][]);
+  let x = 0;
+  let prev = "";
+  for (let k = 0; k < ncol; k++) {
+    let kind = weighted(rng, kinds);
+    for (let t = 0; t < 3 && kind === prev && kind !== "V"; t++) kind = weighted(rng, kinds);
+    x += cluster(x, kind, ncol >= 3, ncol === 1) + 0.12;
+    prev = kind;
   }
-  return { strokes: st, w: Math.max(0.35, w) };
+  let w = x - 0.12;
+  // A long horizontal threading the clusters (a common cuneiform frame).
+  if (ncol >= 2 && rng.chance(0.15 + big * 0.2)) {
+    st.unshift(line(-0.06, rng.pick([0.5, 0.36]), w + 0.04, rng.pick([0.5, 0.36])));
+    st[0].pts[1][1] = st[0].pts[0][1];
+  }
+  w = Math.max(0.35, w);
+  // Signs too wide for the line are compressed horizontally (scribes squeeze, they do not shrink).
+  if (w > 1.25) {
+    const k = 1.25 / w;
+    for (const s of st) for (const q of s.pts) q[0] *= k;
+    w = 1.25;
+  }
+  return { strokes: st, w };
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,9 @@ import { driftNamingCulture, generateNamingCulture } from "./culture";
 import { assembleLexicon, generateRoots, planDerivations, realizeRecipe } from "./lexicon";
 import { affixWord, compound, generateMorphology, joinMorphs } from "./morphology";
 import { features, isNasal, isVowel, vf, vowelQuality } from "./phoneme";
-import { generatePhonology, invalidateTables, nuclei, phonologyFromCorpus, vowelQualities } from "./phonology";
+import { invalidateTables, nuclei, phonologyFromCorpus, vowelQualities } from "./phonology";
+import { phonologyFromStyle, pickStyle, styleById } from "./genphon";
+import { parseWeighted } from "./styles";
 import { applyChanges, generateChanges } from "./soundchange";
 import { buildOrthography, driftOrthography, romanizeName, romanizeWord } from "./orthography";
 import type { Affix, AffixKind, Flavour, Language, Lexeme, LineageStep, Morphology, Phonology, Word, WordOrder } from "./types";
@@ -19,6 +21,8 @@ import { generateAffix, generateRoot } from "./wordgen";
 export interface ProtoOptions {
   /** Homeland hint biasing the sound system. */
   flavour?: Flavour | null;
+  /** Force a sound style (see styles.ts; e.g. "finnic", "semitic"). Normally chosen from the flavour. */
+  style?: string;
   id?: string;
   /** English name; generated from the language's own words if omitted. */
   name?: string;
@@ -31,15 +35,17 @@ export interface ProtoOptions {
 export function createProtoLanguage(rng: Rng, opts: ProtoOptions = {}): Language {
   const flavour = opts.flavour ?? null;
   const id = opts.id ?? "L" + rng.fork("id").nextU32().toString(36);
-  const ph = generatePhonology(rng.fork("phonology"), flavour);
+  const avoid = opts.avoid ?? [];
+  const style = styleById(opts.style) ?? pickStyle(rng.fork("style"), flavour, avoid.map((l) => l.phonology.style ?? ""));
+  const ph = phonologyFromStyle(style, rng.fork("phonology"));
   const lrng = rng.fork("lexicon");
   const plan = planDerivations(lrng);
   const roots = generateRoots(ph, lrng, plan);
-  const mo = generateMorphology(ph, rng.fork("morphology"), roots);
+  const mo = generateMorphology(ph, rng.fork("morphology"), roots, style.morph);
   const lexicon = assembleLexicon({ phonology: ph, morphology: mo }, roots, plan, lrng);
-  const avoidSchools = (opts.avoid ?? []).map((l) => l.orthography.school);
-  const orthography = buildOrthography(ph, rng.fork("orthography"), { avoidSchools });
-  const naming = generateNamingCulture(rng.fork("naming"), mo);
+  const avoidSchools = avoid.map((l) => l.orthography.school);
+  const orthography = buildOrthography(ph, rng.fork("orthography"), { avoidSchools, schools: style.schools });
+  const naming = generateNamingCulture(rng.fork("naming"), mo, style.naming, { phonology: ph, lexicon });
   const lang: Language = {
     id,
     name: "",
@@ -59,7 +65,8 @@ export function createProtoLanguage(rng: Rng, opts: ProtoOptions = {}): Language
     lineage: [],
     seed: rng.key,
   };
-  setEndonym(lang, rng.fork("endonym"), opts.name, (opts.avoid ?? []).map((l) => l.name));
+  for (const c of CONCEPTS) lexicon[c.id].since = id;
+  setEndonym(lang, rng.fork("endonym"), opts.name, avoid.map((l) => l.name));
   return lang;
 }
 
@@ -203,8 +210,17 @@ export interface DeriveOptions {
   maxChanges?: number;
   /** Fraction of the lexicon replaced (default 3–8%). */
   replacement?: number;
+  /** Minimum share of inherited words the split's sound changes must alter (default 0.3). */
+  minImpact?: number;
   /** English names already in use (the parent's is always avoided). */
   avoidNames?: string[];
+  /**
+   * In-place evolution of the same people's language (Old X → Middle X → X)
+   * rather than a split: the English name is kept, the endonym evolves
+   * regularly, and change is gentler (2–5 sound laws, less replacement and
+   * grammatical drift).
+   */
+  stage?: boolean;
 }
 
 function evolveAffix(parent: Language, aff: Affix, changes: LineageStep["changes"], stress: Language["phonology"]["stress"]): Affix {
@@ -246,9 +262,13 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
   const stressBefore = parent.phonology.stress;
   const parentForms = CONCEPTS.map((c) => parent.lexicon[c.id].form);
   const ancestral = parent.lineage.flatMap((s) => s.changes.map((c) => c.id));
+  const style = styleById(parent.phonology.style);
+  const stage = !!opts.stage;
   const gen = generateChanges(rng.fork("changes"), parentForms, [...parent.phonology.consonants, ...parent.phonology.vowels], stressBefore, ancestral, {
-    min: opts.minChanges,
-    max: opts.maxChanges,
+    min: opts.minChanges ?? (stage ? 2 : 3),
+    max: opts.maxChanges ?? (stage ? 5 : 8),
+    drift: style?.drift ? Object.fromEntries(parseWeighted(style.drift)) : undefined,
+    minImpact: opts.minImpact ?? (stage ? 0.2 : 0.3),
   });
   const changes = gen.changes;
   const stress = gen.stress;
@@ -257,7 +277,7 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
   const lexicon: Record<string, Lexeme> = {};
   for (const c of CONCEPTS) {
     const form = applyChanges(changes, parent.lexicon[c.id].form, stressBefore).word;
-    lexicon[c.id] = { form, origin: { kind: "inherited", from: parent.id } };
+    lexicon[c.id] = { form, origin: { kind: "inherited", from: parent.id }, since: parent.lexicon[c.id].since ?? parent.id };
   }
 
   // 2. Evolve the grammar's morphemes.
@@ -284,13 +304,14 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
   // 3. Grammatical drift.
   const mrng = rng.fork("morphology");
   const used = new Set<string>(affixForms.map(key));
-  if (mrng.chance(0.12)) mo.adjOrder = mo.adjOrder === "AN" ? "NA" : "AN";
-  if (mrng.chance(0.08)) mo.compound = mo.compound === "mod-head" ? "head-mod" : "mod-head";
-  if (mrng.chance(0.12)) {
+  const g = stage ? 0.5 : 1;
+  if (mrng.chance(0.12 * g)) mo.adjOrder = mo.adjOrder === "AN" ? "NA" : "AN";
+  if (mrng.chance(0.08 * g)) mo.compound = mo.compound === "mod-head" ? "head-mod" : "mod-head";
+  if (mrng.chance(0.12 * g)) {
     const shifts: Record<WordOrder, WordOrder[]> = { SOV: ["SVO"], SVO: ["SOV", "VSO"], VSO: ["SVO", "VOS"], VOS: ["VSO"], OVS: ["SOV"] };
     mo.wordOrder = mrng.pick(shifts[mo.wordOrder]);
   }
-  if (mo.caseMarking && mrng.chance(0.15)) {
+  if (mo.caseMarking && mrng.chance(0.15 * g)) {
     // case endings eroded; adpositions take over
     mo.caseMarking = false;
     mo.adpositions = mo.wordOrder === "SOV" || mo.wordOrder === "OVS" ? "post" : "pre";
@@ -302,21 +323,21 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
     mo.affixes.nom = { form: [], pos: "suffix" };
     mo.affixes.acc = { form: [], pos: "suffix" };
   }
-  if (!mo.articles && mrng.chance(0.18)) {
+  if (!mo.articles && mrng.chance(0.18 * g)) {
     // a demonstrative grammaticalises into an article
     mo.articles = true;
     const that = lexicon.that.form;
     const nuc = nuclei(that);
     const form = nuc.length > 1 ? that.slice(0, nuc[0] + 1) : that.slice();
     mo.affixes.def = { form, pos: mrng.chance(0.6) ? (mo.adjOrder === "AN" ? "before" : "after") : "suffix", source: "that" };
-  } else if (mo.articles && mrng.chance(0.06)) {
+  } else if (mo.articles && mrng.chance(0.06 * g)) {
     mo.articles = false;
     delete mo.affixes.def;
   }
 
   // 4. Lexical replacement.
   const lrng = rng.fork("lexicon");
-  const frac = opts.replacement ?? lrng.range(0.03, 0.08);
+  const frac = opts.replacement ?? (stage ? lrng.range(0.02, 0.05) : lrng.range(0.03, 0.08));
   const stable = new Set(["people", "I", "you", "he", "we", "you.pl", "they", "and", "not", "all", "this", "that", "one", "two", "three", "four", "five", "word"]);
   const candidates = CONCEPTS.filter((c) => !stable.has(c.id));
   const nRep = Math.round(candidates.length * frac);
@@ -327,18 +348,18 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
     if (r < 0.4) {
       const root = generateRoot(parent.phonology, lrng, c.tier, avoid);
       const form = applyChanges(changes, root, stressBefore).word;
-      lexicon[c.id] = { form, origin: { kind: "coined" } };
+      lexicon[c.id] = { form, origin: { kind: "coined" }, since: id };
       avoid.add(key(form));
     } else if (r < 0.7) {
       const rel = relatedConcept(c.id, lrng);
-      if (rel) lexicon[c.id] = { form: lexicon[rel].form.slice(), origin: { kind: "shift", from: rel } };
+      if (rel) lexicon[c.id] = { form: lexicon[rel].form.slice(), origin: { kind: "shift", from: rel }, since: id };
     } else if (c.recipes?.length) {
       const lx = realizeRecipe(interimLang, lrng.pick(c.recipes), (x) => lexicon[x]?.form);
-      if (lx && nuclei(lx.form).length <= 5) lexicon[c.id] = lx;
+      if (lx && nuclei(lx.form).length <= 5) lexicon[c.id] = { ...lx, since: id };
     } else {
       const root = generateRoot(parent.phonology, lrng, c.tier, avoid);
       const form = applyChanges(changes, root, stressBefore).word;
-      lexicon[c.id] = { form, origin: { kind: "coined" } };
+      lexicon[c.id] = { form, origin: { kind: "coined" }, since: id };
     }
   }
 
@@ -353,6 +374,19 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
 
   const orthography = driftOrthography(parent.orthography, ph, rng.fork("orthography"));
   const naming = driftNamingCulture(parent.naming, rng.fork("naming"));
+  // Clipped toponymic heads and name endings evolve with the language.
+  if (naming.headForms) {
+    for (const [h, f] of Object.entries(naming.headForms)) {
+      const r = applyChanges(changes, f, stressBefore).word;
+      if (r.some((p) => isVowel(p))) naming.headForms[h] = r;
+      else delete naming.headForms[h];
+    }
+  }
+  if (naming.maleEnding) {
+    const e = evolveAffix(parent, { form: naming.maleEnding, pos: "suffix" }, changes, stressBefore).form;
+    if (e.length) naming.maleEnding = e;
+    else delete naming.maleEnding;
+  }
   const lang: Language = {
     id,
     name: "",
@@ -372,7 +406,14 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
     lineage: [],
     seed: rng.key,
   };
-  setEndonym(lang, rng.fork("endonym"), opts.name, [parent.name, ...(opts.avoidNames ?? [])]);
+  if (stage) {
+    // Same people, same tongue a few centuries on: the self-name evolves regularly.
+    const e = applyChanges(changes, parent.endonymPhonemes, stressBefore).word;
+    lang.endonymPhonemes = e;
+    lang.endonym = romanizeName(orthography, e);
+    lang.endonymGloss = parent.endonymGloss;
+    lang.name = opts.name ?? parent.name;
+  } else setEndonym(lang, rng.fork("endonym"), opts.name, [parent.name, ...(opts.avoidNames ?? [])]);
   lang.lineage = [
     ...parent.lineage,
     { from: parent.id, to: id, toName: lang.name, year, stressBefore, changes, orthography: clone(orthography) },
@@ -393,6 +434,22 @@ export function languageFromJSON(json: string): Language {
 /** Ancestor ids from the root down to (excluding) this language. */
 export function ancestry(lang: Language): string[] {
   return lang.lineage.map((s) => s.from);
+}
+
+/**
+ * Whether two related languages' words for a concept are cognate (descend from
+ * the same ancestral word). Unrelated languages never share cognates.
+ */
+export function isCognate(a: Language, b: Language, concept: string): boolean {
+  const la = a.lexicon[concept];
+  const lb = b.lexicon[concept];
+  if (!la || !lb) return false;
+  return (la.since ?? a.id) === (lb.since ?? b.id);
+}
+
+/** Does this language still use the ancestor's word for a concept (regularly descended)? */
+export function retainsWord(lang: Language, ancestor: Language, concept: string): boolean {
+  return isCognate(lang, ancestor, concept);
 }
 
 /** Phoneme correspondences between an ancestor and a descendant, from aligned inherited words. */

@@ -24,8 +24,14 @@ export interface RenderOptions {
   /** Prefix for every id in the SVG. Default: an automatic unique prefix. */
   idPrefix?: string;
   palette?: Palette | "illuminated" | "flat";
-  /** "rich": gradients, sheen and vignette. "flat": plain tinctures. Default "rich". */
-  finish?: "rich" | "flat";
+  /**
+   * "rich": gradients, sheen and vignette. "flat": plain tinctures.
+   * "hatched": engraved line-art with Petra Sancta hatching. Default "rich".
+   */
+  finish?: "rich" | "flat" | "hatched";
+  /** Ink and paper colours for the hatched finish. */
+  ink?: string;
+  paper?: string;
   /** Faint parchment/paint texture (adds an SVG filter). Default false. */
   texture?: boolean;
   /** Extra attributes for the root <svg> (e.g. 'class="arms"'). */
@@ -44,14 +50,19 @@ export function makeCtx(opts: RenderOptions, unitsWide: number): Ctx {
   const size = opts.size ?? 200;
   const px = size / unitsWide;
   const outlinePx = Math.max(0.6, Math.min(1.7, 0.45 + size / 320));
+  const hatched = opts.finish === "hatched";
+  const ink = opts.ink ?? "#1b1714", paper = opts.paper ?? "#fbf8f0";
+  const pal = resolvePalette(opts.palette);
   return {
     id: opts.idPrefix ?? autoId(),
-    pal: resolvePalette(opts.palette),
+    pal: hatched ? { ...pal, contour: ink, contourOnDark: paper } : pal,
     defs: new Map(),
+    ids: new Map(),
     n: 0,
     px,
     ow: outlinePx / px,
     shading: (opts.finish ?? "rich") === "rich",
+    hatch: hatched ? { ink, paper } : undefined,
   };
 }
 
@@ -87,9 +98,9 @@ function drawCharges(ctx: Ctx, g: ChargeGroup, slots: Slot[], under: Tint, tinct
       id = uid(ctx, "c");
       const px = k * ctx.px * Math.max(bw, bh);
       const body = paintCharge(art, {
-        body: chargeFill(ctx, tincture, box),
-        accent: chargeFill(ctx, accent, box),
-        crown: g.crowned ? chargeFill(ctx, g.crowned, box) : "",
+        body: chargeFill(ctx, tincture, box, k),
+        accent: chargeFill(ctx, accent, box, k),
+        crown: g.crowned ? chargeFill(ctx, g.crowned, box, k) : "",
         contour: ctx.pal.contour,
         detail: detailColor(ctx, tincture),
         outlineW: ctx.ow / k,

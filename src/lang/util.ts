@@ -71,7 +71,7 @@ export function asciiFold(s: string): string {
   for (const ch of s) out += special[ch] ?? ch;
   return out
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/['ʻʼʿʾ’`]/g, "");
 }
 

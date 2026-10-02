@@ -266,6 +266,13 @@ function classifyRaw(ph: string): PhonInfo {
       case "̍":
         secondary.push("syllabic");
         break;
+      case "̧": // cedilla: ç decomposes to c + U+0327 under NFD
+        if (core.endsWith("c")) core = core.slice(0, -1) + "ç";
+        break;
+      case "ˈ": // stress and syllable marks are not part of a segment
+      case "ˌ":
+      case ".":
+        break;
       case "̪": // dental
       case "̚": // unreleased
       case "̆":
@@ -317,7 +324,7 @@ function classifyRaw(ph: string): PhonInfo {
   if (cs.length >= 2 && CONS[cs[0]] && CONS[cs[0]][1] === "stop" && AFFRICATE_SECOND.has(cs[1])) {
     const second = CONS[cs[1]];
     place = second[0] === "labiodental" ? "labiodental" : second[0];
-    manner = second[1] === "lateralFricative" ? "lateralFricative" : "affricate";
+    manner = "affricate";
     voiced = CONS[cs[0]][2];
     base = cs[0] + cs[1];
     known = true;
@@ -345,6 +352,11 @@ function classifyRaw(ph: string): PhonInfo {
 }
 
 export const isVowel = (ph: string): boolean => classify(ph).vowel;
+
+/** Marks that may appear in IPA transcriptions but are not phonemes (stress, syllable breaks, spaces). */
+export function isSegment(ph: string): boolean {
+  return !/^[\sˈˌ.\-‿|‖]*$/.test(ph);
+}
 
 /** The phoneme with secondary articulations removed. */
 export const baseOf = (ph: string): string => classify(ph).base;

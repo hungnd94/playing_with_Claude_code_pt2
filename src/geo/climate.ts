@@ -92,12 +92,19 @@ const tableAt = (t: Float64Array, latDeg: number): number => {
   return t[i] * (1 - f) + t[i + 1] * f;
 };
 
-/** Sea-level zonal-mean temperature from annual insolation (fit to Earth). */
+/**
+ * Sea-level zonal-mean temperature from annual insolation, through Earth's
+ * zonal-mean surface air temperatures (annual insolation at 0°, 10°, … 90°
+ * latitude for a 23.5° tilt ↦ 26.5, 26.5, 25, 19.5, 13.5, 6, −1, −10, −17,
+ * −19.5 °C). Mapping by insolation rather than latitude lets other axial
+ * tilts shift the climate belts. Beyond the table, atmospheric heat transport
+ * keeps the slope gentle.
+ */
+const ZONAL_T: number[][] = [[172.6, -19.5], [178.5, -17], [186, -14], [197, -10], [214, -5.5], [236.4, -1], [260, 2.8], [284.1, 6], [328.2, 13.5], [365.1, 19.5], [392.7, 25], [409.7, 26.5], [416, 26.8]];
 function zonalTemp(Q: number): number {
-  // Fit to Earth's zonal-mean surface air temperature vs annual insolation:
-  // (418 W/m², 26.5 °C) (366, 20.5) (286, 6) (241, −1) (205, −10) (173, −22).
-  const d = 418 - Q;
-  return d >= 0 ? 26.5 - 0.031 * Math.pow(d, 1.33) : 26.5 + 0.016 * Math.pow(-d, 1.33);
+  if (Q < 172.6) return -19.5 - 0.15 * (172.6 - Q);
+  if (Q > 416) return 26.8 + 0.04 * (Q - 416);
+  return table(ZONAL_T, Q);
 }
 
 /** Open-ocean anomaly vs the zonal mean (oceans are mild at high latitudes). */
@@ -131,7 +138,9 @@ function table(stops: number[][], x: number): number {
 const U_TAB = [[0, -5], [8, -6.5], [18, -5], [27, -1.5], [32, 1], [40, 6], [50, 8.5], [58, 7], [65, 3], [70, 0], [77, -2.5], [90, -1]];
 const V_TAB = [[0, 0], [5, -2], [14, -3], [24, -1.5], [30, 0], [36, 1.5], [50, 1.8], [64, 0.6], [70, 0], [80, -1], [90, 0]];
 // Large-scale rain-out efficiency (ascent vs subsidence) vs |latitude from ITCZ|.
-const Z_TAB = [[0, 0.07], [5, 0.062], [10, 0.042], [15, 0.022], [20, 0.011], [26, 0.008], [31, 0.011], [37, 0.02], [44, 0.03], [52, 0.034], [62, 0.032], [72, 0.026], [82, 0.02], [90, 0.018]];
+// (Earth's precipitation / precipitable-water ratio is similar in the ITCZ and the storm
+// tracks; only the subsiding subtropics are markedly less efficient.)
+const Z_TAB = [[0, 0.06], [5, 0.054], [10, 0.04], [15, 0.026], [20, 0.016], [26, 0.012], [31, 0.016], [37, 0.03], [44, 0.044], [52, 0.05], [62, 0.048], [72, 0.04], [82, 0.034], [90, 0.03]];
 
 export function buildClimate(
   mesh: SphereMesh,
@@ -345,11 +354,11 @@ export function buildClimate(
       pullW[k] = w;
       tot += w;
     }
-    const C = clamp(0.2 + s / 11, 0.2, 0.75);
+    const C = clamp(0.2 + s / 11, 0.2, 0.6);
     courant[i] = C;
     // Eddy diffusion: strongest in the mid-latitude storm tracks (cyclones carry moisture poleward).
     const zl = Math.abs(climLat[i]);
-    const diff = 0.1 + 0.18 * Math.exp(-(((zl - 57) / 15) ** 2));
+    const diff = 0.1 + 0.26 * Math.exp(-(((zl - 56) / 17) ** 2));
     const deg = b - a;
     for (let k = a; k < b; k++) pullW[k] = (tot > 0 ? (C * pullW[k]) / tot : C / deg) + diff / deg;
     selfW[i] = 1 - C - diff;
@@ -426,6 +435,7 @@ export function buildClimate(
     temperature[i] = T;
   }
 
+
   // ------------------------------------------------------------ precipitation
   const up = new Float32Array(n);
   const down = new Float32Array(n);
@@ -461,13 +471,33 @@ export function buildClimate(
     rate[i] = clamp(r, 0.002, 0.6);
     const s = Math.hypot(wind[3 * i], wind[3 * i + 1], wind[3 * i + 2]);
     evapK[i] = isOcean[i] ? 0.22 * (0.5 + 0.5 * clamp(s / 7, 0, 2)) * (0.08 + 0.92 * smoothstep(-9, -3, T)) : 0;
-    recycle[i] = isOcean[i] ? 0 : 0.2 + 0.4 * clamp((T + 0.6 * tempRange[i] + 5) / 30, 0, 1);
+    recycle[i] = isOcean[i] ? 0 : 0.28 + 0.34 * clamp((T + 0.6 * tempRange[i] + 10) / 32, 0, 1);
   }
   const q = new Float32Array(n);
   const tq = new Float32Array(n);
   const P = new Float64Array(n);
   // Start near the expected state (ocean air saturated to 80%, decaying inland) to converge fast.
   for (let i = 0; i < n; i++) q[i] = 0.8 * qs[i] * (isOcean[i] ? 1 : 0.3 + 0.7 * maritime[i]);
+  // Meridional eddy exchange: extratropical cyclones carry moisture far poleward, much
+  // further than the cell-to-cell diffusion can within the iteration budget. Each cell
+  // swaps moisture with the cells ~5° north and south of it (storm-track latitudes only).
+  const farN = new Int32Array(n), farS = new Int32Array(n);
+  const eddyK = new Float32Array(n);
+  {
+    const dl = 5 * DEG;
+    const c = Math.cos(dl), sn = Math.sin(dl);
+    for (let i = 0; i < n; i++) {
+      const px = xyz[3 * i], py = xyz[3 * i + 1], pz = xyz[3 * i + 2];
+      // Unit north vector at p (towards +z along the meridian).
+      let nx = -pz * px, ny = -pz * py, nz = 1 - pz * pz;
+      const nl = Math.hypot(nx, ny, nz);
+      if (nl < 1e-6) { farN[i] = i; farS[i] = i; continue; }
+      nx /= nl; ny /= nl; nz /= nl;
+      farN[i] = locator.find(px * c + nx * sn, py * c + ny * sn, pz * c + nz * sn, i);
+      farS[i] = locator.find(px * c - nx * sn, py * c - ny * sn, pz * c - nz * sn, i);
+      eddyK[i] = 0.22 * smoothstep(28, 45, Math.abs(climLat[i]));
+    }
+  }
   const ITER = 90, ACC = 25;
   const satF = new Float32Array(n);
   for (let i = 0; i < n; i++) satF[i] = qs[i] * (isOcean[i] ? 1.0 : 0.95);
@@ -475,25 +505,10 @@ export function buildClimate(
   for (let i = 0; i < n; i++) evapT[i] = 0.8 * qs[i];
   let qA = q, qB = tq;
   for (let it = 0; it < ITER; it++) {
-    moistureStep(n, adjStart, adj, pullW, selfW, qA, qB, evapK, evapT, satF, rate, recycle, P, it >= ITER - ACC);
+    moistureStep(n, adjStart, adj, pullW, selfW, qA, qB, evapK, evapT, satF, rate, recycle, P, it >= ITER - ACC, farN, farS, eddyK);
     const t = qA; qA = qB; qB = t;
   }
   q.set(qA);
-  if ((globalThis as { __CLIMDBG?: boolean }).__CLIMDBG) {
-    const B = 9;
-    const acc = Array.from({ length: B }, () => [0, 0, 0, 0, 0, 0, 0]);
-    for (let i = 0; i < n; i++) {
-      if (isOcean[i]) continue;
-      const b = Math.min(B - 1, Math.floor((lat[i] / DEG + 90) / 20));
-      const sp = Math.hypot(wind[3 * i], wind[3 * i + 1], wind[3 * i + 2]);
-      const a = acc[b];
-      a[0]++; a[1] += q[i]; a[2] += qs[i]; a[3] += rate[i]; a[4] += maritime[i]; a[5] += sp; a[6] += recycle[i];
-    }
-    for (let b = B - 1; b >= 0; b--) {
-      const a = acc[b];
-      if (a[0]) console.log(`lat ${b * 20 - 90}: q ${(a[1] / a[0]).toFixed(3)} qs ${(a[2] / a[0]).toFixed(2)} rate ${(a[3] / a[0]).toFixed(3)} mar ${(a[4] / a[0]).toFixed(2)} wind ${(a[5] / a[0]).toFixed(1)} rec ${(a[6] / a[0]).toFixed(2)}`);
-    }
-  }
   // Calibrate to an Earth-like global mean (~1000 mm/yr).
   let tot = 0, area = 0;
   for (let i = 0; i < n; i++) { tot += P[i] * mesh.area[i]; area += mesh.area[i]; }
@@ -559,11 +574,14 @@ function moistureStep(
   n: number, adjStart: Int32Array, adj: Int32Array, w: Float32Array, self: Float32Array,
   src: Float32Array, dst: Float32Array, evapK: Float32Array, evapT: Float32Array, sat: Float32Array,
   rate: Float32Array, recycle: Float32Array, P: Float64Array, acc: boolean,
+  farN: Int32Array, farS: Int32Array, eddyK: Float32Array,
 ): void {
   for (let i = 0; i < n; i++) {
     let qi = self[i] * src[i];
     const e = adjStart[i + 1];
     for (let k = adjStart[i]; k < e; k++) qi += w[k] * src[adj[k]];
+    const ke = eddyK[i];
+    if (ke > 0) { qi += ke * (src[farN[i]] + src[farS[i]] - 2 * src[i]); if (qi < 0) qi = 0; }
     const ek = evapK[i];
     if (ek > 0) { const def = evapT[i] - qi; if (def > 0) qi += ek * def; }
     let p = 0;

@@ -89,6 +89,12 @@ function root(lang: Language, c: string): Piece {
   return { form: lang.lexicon[c].form, gloss: en(c), concept: c, role: "root" };
 }
 
+/** A settlement head in its combining form (clipped favourite heads like -stan), else the full root. */
+function headRoot(lang: Language, c: string): Piece {
+  const f = lang.naming.headForms?.[c];
+  return f && f.length ? { form: f, gloss: en(c), concept: c, role: "root" } : root(lang, c);
+}
+
 function affixPiece(lang: Language, kind: AffixKind): Piece | null {
   const a = lang.morphology.affixes[kind];
   if (!a || a.form.length === 0) return null;
@@ -364,7 +370,7 @@ export function nameSettlement(lang: Language, rng: Rng, site: SettlementSite = 
         const given = coreOf(f).roman;
         if (rng.chance(0.55)) {
           const h = pickHead();
-          return makeName(lang, "settlement", [cmp(lang, [namePiece(f, given)], [root(lang, h)])], `${given}'s ${en(h)}`);
+          return makeName(lang, "settlement", [cmp(lang, [namePiece(f, given)], [headRoot(lang, h)])], `${given}'s ${en(h)}`);
         }
         return makeName(lang, "settlement", [withAffix(lang, [namePiece(f, given)], "place")], `Place of ${given}`);
       }
@@ -384,7 +390,7 @@ export function nameSettlement(lang: Language, rng: Rng, site: SettlementSite = 
         const adj = adjs.length && rng.chance(0.6) ? rng.pick(adjs) : rng.pick(["white", "red", "black", "green", "old", "new", "high", "fair", "holy", "great", "grey", "golden", "north", "south", "east", "west", "upper", "lower", "far", "cold", "bright", "dark"]);
         const h = pickHead();
         if (rng.chance(nc.phrasal)) return makeName(lang, "settlement", adjPhrase(lang, [root(lang, adj)], [root(lang, h)]), `${en(adj)} ${en(h)}`);
-        return makeName(lang, "settlement", [cmp(lang, [root(lang, adj)], [root(lang, h)])], `${en(adj)} ${en(h)}`);
+        return makeName(lang, "settlement", [cmp(lang, [root(lang, adj)], [headRoot(lang, h)])], `${en(adj)} ${en(h)}`);
       }
       case "bare": {
         const h = heads.length ? rng.pick(heads) : pickHead();
@@ -395,7 +401,7 @@ export function nameSettlement(lang: Language, rng: Rng, site: SettlementSite = 
           if (dimP) return makeName(lang, "settlement", [withAffix(lang, [root(lang, h)], "dim")], `Little ${en(h)}`);
         }
         const mod = randomModifier(rng, new Set([h]), false, lang);
-        return makeName(lang, "settlement", [cmp(lang, [root(lang, mod)], [root(lang, h)])], `${en(mod)} ${en(h)}`);
+        return makeName(lang, "settlement", [cmp(lang, [root(lang, mod)], [headRoot(lang, h)])], `${en(mod)} ${en(h)}`);
       }
       case "opaque": {
         const form = generateWord(lang.phonology, rng, rng.int(2, 3));
@@ -408,7 +414,7 @@ export function nameSettlement(lang: Language, rng: Rng, site: SettlementSite = 
         const excl = new Set([h]);
         const ms = mods.filter((m) => m !== h);
         const mod = ms.length && rng.chance(0.75) ? rng.pick(ms) : randomModifier(rng, excl, false, lang);
-        return makeName(lang, "settlement", [cmp(lang, [root(lang, mod)], [root(lang, h)])], `${en(mod)} ${en(h)}`);
+        return makeName(lang, "settlement", [cmp(lang, [root(lang, mod)], [headRoot(lang, h)])], `${en(mod)} ${en(h)}`);
       }
     }
   };
@@ -786,9 +792,10 @@ function givenName(lang: Language, rng: Rng, fem: boolean): Name {
     const style = nc.personStyle;
     const r = rng.next();
     if (style === "opaque" || r < 0.12) {
-      const form = generateWord(lang.phonology, rng, rng.int(2, 3), { openFinal: femSuffix });
+      const form = generateWord(lang.phonology, rng, rng.int(nc.maleEnding && !fem ? 1 : 2, 2), { openFinal: femSuffix });
       let pcs: Piece[] = [{ form, gloss: "", role: "root" }];
       if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+      else if (!fem && nc.maleEnding?.length && rng.chance(0.8)) pcs = [...pcs, { form: nc.maleEnding, gloss: "", role: "link" }];
       return makeName(lang, "person", [pcs], "");
     }
     if (style === "dithematic" && seconds.length && els.length) {
@@ -819,6 +826,7 @@ function givenName(lang: Language, rng: Rng, fem: boolean): Name {
       gloss = `Little ${gloss}`;
     }
     if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+    else if (!fem && nc.maleEnding?.length && rng.chance(0.8)) pcs = [...pcs, { form: nc.maleEnding, gloss: "", role: "link" }];
     return makeName(lang, "person", [pcs], gloss);
   };
   return gen();

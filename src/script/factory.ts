@@ -6,7 +6,7 @@
 import type { Rng } from "../core/rng";
 import type { Family, ScriptStyle, Stroke } from "./types";
 import { genGlyph, type GenCtx, type Shape } from "./families";
-import { rasterize, maxSimilarity, overlapFraction, type Raster } from "./raster";
+import { rasterize, maxSimilarity, overlapFraction, keepRaster, scratchRaster, type Raster } from "./raster";
 import { complexity, roundStrokes, strokesBBox } from "./geom";
 import { differentiate, type Differentiator } from "./marks";
 
@@ -38,83 +38,87 @@ export class GlyphFactory {
   }
 
   similarityTo(shape: Shape): number {
-    return maxSimilarity(rasterize(shape.strokes, shape.w), this.rasters);
+    return maxSimilarity(rasterize(shape.strokes, shape.w, this.scratch), this.rasters);
   }
+
+  /**
+   * Effective look-alike threshold: large sign sets (syllabaries) tolerate
+   * slightly closer pairs, as real ones do (Linear B, Cherokee, Vai).
+   */
+  get limit(): number {
+    const n = this.rasters.length;
+    return this.thresh + 0.02 * Math.max(0, Math.min(1, (n - 40) / 60));
+  }
+
+  private gen(gen?: (rng: Rng) => Shape): Shape {
+    return gen ? gen(this.rng) : genGlyph(this.family, this.rng, this.ctx);
+  }
+
+  /** Accept a shape whose raster `r` (possibly scratch) is known to be distinct. */
+  private take(s: Shape, r: Raster): Shape {
+    this.rasters.push(r === this.scratch ? keepRaster(r) : r);
+    return tidy(s);
+  }
+
+  private readonly scratch: Raster = scratchRaster();
 
   /** A fresh glyph from the family grammar, rejecting look-alikes and tangles. */
   fresh(maxTries = 14, gen?: (rng: Rng) => Shape): Shape {
-    maxTries = Math.min(this.rasters.length > 50 ? 16 : 26, maxTries + Math.floor(this.rasters.length / 3));
+    maxTries = Math.min(this.rasters.length > 50 ? 12 : 26, maxTries + Math.floor(this.rasters.length / 3));
+    const lim = this.limit;
     let best: Shape | null = null;
     let bestScore = Infinity;
-    let bestR: Raster | null = null;
     for (let t = 0; t < maxTries; t++) {
-      const s = gen ? gen(this.rng) : genGlyph(this.family, this.rng, this.ctx);
+      const s = this.gen(gen);
       if (!s.strokes.length) continue;
-      const r = rasterize(s.strokes, s.w);
+      const r = rasterize(s.strokes, s.w, this.scratch);
       // Cheap test first (early exit above the threshold), tangles only for survivors.
-      const sim = maxSimilarity(r, this.rasters, this.thresh);
-      if (sim < this.thresh) {
+      const sim = maxSimilarity(r, this.rasters, lim);
+      if (sim < lim) {
         const tangle = overlapFraction(s.strokes);
-        if (tangle < 0.3) {
-          this.rasters.push(r);
-          return tidy(s);
-        }
+        if (tangle < 0.3) return this.take(s, r);
         if (tangle > 0.42) continue;
         const score = sim + tangle * 0.5;
         if (score < bestScore) {
           bestScore = score;
           best = s;
-          bestR = r;
         }
       } else if (sim + 0.15 < bestScore) {
         bestScore = sim + 0.15;
         best = s;
-        bestR = r;
       }
     }
-    if (!best) {
-      best = gen ? gen(this.rng) : genGlyph(this.family, this.rng, this.ctx);
-      bestR = rasterize(best.strokes, best.w);
-    }
+    if (!best) best = this.gen(gen);
+    const bestR = rasterize(best.strokes, best.w, this.scratch);
+    if (maxSimilarity(bestR, this.rasters, lim) < lim) return this.take(best, bestR);
     // Rescue a look-alike with the script's own differentiators (dots, bars, ticks…).
-    if (maxSimilarity(bestR!, this.rasters, this.thresh) >= this.thresh) {
-      for (const d of this.rescue) {
-        const c = differentiate(best, d, this.rng);
-        const r = rasterize(c.strokes, c.w);
-        if (maxSimilarity(r, this.rasters, this.thresh) < this.thresh) {
-          this.rasters.push(r);
-          return tidy(c);
-        }
-      }
-      for (const d of this.rescue) {
-        const c = differentiate(differentiate(best, d, this.rng), this.rescue[(this.rescue.indexOf(d) + 1) % this.rescue.length], this.rng);
-        const r = rasterize(c.strokes, c.w);
-        if (maxSimilarity(r, this.rasters, this.thresh) < this.thresh) {
-          this.rasters.push(r);
-          return tidy(c);
-        }
-      }
-      // Last resort: fresh candidates, each with a differentiator.
-      for (let k = 0; k < 20; k++) {
-        const g0 = gen ? gen(this.rng) : genGlyph(this.family, this.rng, this.ctx);
-        const c = k % 2 ? g0 : differentiate(g0, this.rescue[k % this.rescue.length], this.rng);
-        const r = rasterize(c.strokes, c.w);
-        if (maxSimilarity(r, this.rasters, this.thresh) < this.thresh) {
-          this.rasters.push(r);
-          return tidy(c);
-        }
-      }
+    const tryShape = (c: Shape): Shape | null => {
+      const r = rasterize(c.strokes, c.w, this.scratch);
+      return maxSimilarity(r, this.rasters, lim) < lim ? this.take(c, r) : null;
+    };
+    for (const d of this.rescue) {
+      const ok = tryShape(differentiate(best, d, this.rng));
+      if (ok) return ok;
     }
-    this.rasters.push(bestR!);
-    return tidy(best);
+    for (const d of this.rescue) {
+      const e = this.rescue[(this.rescue.indexOf(d) + 1) % this.rescue.length];
+      const ok = tryShape(differentiate(differentiate(best, d, this.rng), e, this.rng));
+      if (ok) return ok;
+    }
+    // Last resort: fresh candidates, half of them with a differentiator.
+    for (let k = 0; k < 10; k++) {
+      const g0 = this.gen(gen);
+      const ok = tryShape(k % 2 ? g0 : differentiate(g0, this.rescue[k % this.rescue.length], this.rng));
+      if (ok) return ok;
+    }
+    return this.take(best, rasterize(best.strokes, best.w));
   }
 
   /** Accept a candidate only if distinct enough; returns null otherwise. */
   tryAccept(s: Shape, thresh = this.thresh): Shape | null {
-    const r = rasterize(s.strokes, s.w);
+    const r = rasterize(s.strokes, s.w, this.scratch);
     if (maxSimilarity(r, this.rasters, thresh) >= thresh) return null;
-    this.rasters.push(r);
-    return tidy(s);
+    return this.take(s, r);
   }
 }
 

@@ -593,10 +593,15 @@ function renderDot(st: Stroke, ctx: Ctx, salt: number): void {
   switch (tool) {
     case "pen": {
       const a = ctx.style.nibAngle;
-      // A short pull perpendicular to the nib makes a lozenge, like reed-pen dots.
-      const len = Math.max(r0 * 1.3, W * 0.7);
-      const ux = Math.sin(a) * len * 0.5;
-      const uy = Math.cos(a) * len * 0.5;
+      // A short diagonal pull (between square to the nib and straight down) makes a rhombus, like a calligrapher's dot.
+      const len = Math.max(r0 * 1.4, W * 0.95);
+      let dx = Math.sin(a);
+      let dy = 1 + Math.cos(a);
+      const dl = Math.hypot(dx, dy) || 1;
+      dx /= dl;
+      dy /= dl;
+      const ux = dx * len * 0.5;
+      const uy = dy * len * 0.5;
       penPiece([x - ux, y - uy, x, y, x + ux, y + uy], ctx, Math.max(0.85, Math.min(1.1, (r0 * 2.6) / W)), W * 0.25);
       break;
     }

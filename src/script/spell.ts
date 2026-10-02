@@ -5,7 +5,7 @@
  * featural syllable blocks.
  */
 import type { Glyph, Script, VowelOp, Form } from "./types";
-import { classify, phonDistance } from "./ipa";
+import { classify, isSegment, phonDistance } from "./ipa";
 import { applyVowelOps, orient } from "./marks";
 import { vowelIsVertical } from "./special";
 import type { Shape } from "./families";
@@ -175,7 +175,9 @@ export interface SpellOptions {
   pointed?: boolean;
 }
 
-export function spellWord(s: Script, word: string[], opts: SpellOptions = {}): Cluster[] {
+export function spellWord(s: Script, word0: string[], opts: SpellOptions = {}): Cluster[] {
+  // Stress marks, syllable dots and stray spaces are not written.
+  const word = word0.filter(isSegment);
   switch (s.kind) {
     case "alphabet":
       return word.flatMap((ph) => spellPh(s, ph));

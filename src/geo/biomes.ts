@@ -45,7 +45,7 @@ export function classifyBiomes(inp: BiomeInputs, rng: Rng): Uint8Array {
     const T = temperature[i];
     if (isOcean[i]) {
       const e = elevation[i];
-      if (T < -7.5) biome[i] = Biome.SeaIce;
+      if (T < -9) biome[i] = Biome.SeaIce;
       else if (e > -0.2) biome[i] = Biome.Shallows;
       else if (e > -2.6) biome[i] = Biome.Ocean;
       else biome[i] = Biome.DeepOcean;

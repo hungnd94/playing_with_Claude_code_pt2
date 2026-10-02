@@ -166,3 +166,44 @@ export function erode(
     elevation.set(tmp);
   }
 }
+
+/**
+ * Glacial troughs. Where ice sheets once flowed from coastal highlands to the
+ * sea, valleys were overdeepened far below sea level and later flooded:
+ * fjords, sounds and sea lochs (Norway, Chile, British Columbia, Greenland).
+ * Valleys are followed along the drainage tree from the coast inland for a few
+ * cells; the trough deepens towards the mouth and reaches further inland where
+ * the ice came from higher ground. `cold(i)` (0..1) says how strongly cell i
+ * was glaciated.
+ */
+export function carveFjords(mesh: SphereMesh, elevation: Float32Array, seaLevel: number, cold: (i: number) => number): number {
+  const n = mesh.n;
+  const { recv, order, count } = drainageTree(mesh, elevation, seaLevel);
+  const A = new Float32Array(n);
+  const upMax = new Float32Array(n);
+  const hops = new Int16Array(n);
+  for (let q = 0; q < count; q++) { const i = order[q]; A[i] = 1; upMax[i] = elevation[i]; }
+  for (let q = count - 1; q >= 0; q--) {
+    const i = order[q];
+    const r = recv[i];
+    if (r >= 0 && elevation[r] >= seaLevel) { A[r] += A[i]; if (upMax[i] > upMax[r]) upMax[r] = upMax[i]; }
+  }
+  for (let q = 0; q < count; q++) {
+    const i = order[q];
+    const r = recv[i];
+    hops[i] = r < 0 || elevation[r] < seaLevel ? 1 : hops[r] + 1;
+  }
+  let carved = 0;
+  for (let q = 0; q < count; q++) {
+    const i = order[q];
+    const g = cold(i);
+    if (g <= 0 || A[i] < 2) continue;
+    const head = upMax[i] - seaLevel;
+    if (head < 0.5) continue;
+    const H = 1.5 + 4.5 * g * Math.min(1, head / 2.2);
+    if (hops[i] > H) continue;
+    const target = seaLevel - (0.06 + 0.4 * g) * (1 - (hops[i] - 1) / H) - 0.02;
+    if (elevation[i] > target) { elevation[i] = target; carved++; }
+  }
+  return carved;
+}

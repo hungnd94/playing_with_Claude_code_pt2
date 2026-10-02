@@ -1,27 +1,37 @@
 /**
  * Elevation from plate tectonics plus multi-scale noise.
  *
- * 1. A "continentalness" field (crust type) starts from plate types. Continental
- *    plates are cut back near divergent and transform boundaries (passive
- *    margins: the continent sits inside its plate with an oceanic fringe that
- *    widens with the maturity of the spreading ridge), but reach right up to
- *    convergent boundaries (active margins). Rare continental fragments float
- *    on oceanic plates.
- * 2. The whole tectonic framework is sampled through a smooth domain warp so
- *    that plate outlines, coasts and mountain belts curve and swirl together
- *    instead of looking like Voronoi polygons.
- * 3. A hypsometric mapping turns crust into elevation: abyssal plains whose
+ * 1. Crust. A "continentalness" field starts from plate types. Continental
+ *    plates are cut back near divergent boundaries and ocean-facing transforms
+ *    (passive margins: the continent sits inside its plate with an oceanic
+ *    fringe that widens with the maturity of the spreading ridge), but reach
+ *    right up to convergent boundaries (active margins) and continue across
+ *    boundaries with other continental plates (sutures). Rifted slivers,
+ *    microcontinents and interior basins add variety.
+ * 2. The tectonic framework is sampled through a smooth domain warp so that
+ *    plate outlines, coasts and mountain belts curve together instead of
+ *    looking like Voronoi polygons.
+ * 3. Coastlines. The signed distance to the continental edge is displaced by
+ *    multi-octave noise measured in km, whose amplitude varies regionally
+ *    (smooth Africa-like coasts next to ragged Aegean-like ones), is damped
+ *    along active margins (straight Andean coasts), and gains narrow ridged
+ *    components at high latitudes (fjords and skerry chains). This makes
+ *    peninsulas, bays, gulfs and offshore islands at the 150–1500 km scale
+ *    without single-cell speckle.
+ * 4. A hypsometric mapping turns crust into elevation: abyssal plains whose
  *    depth follows the age–depth relation away from mid-ocean ridges, a steep
- *    continental slope, a shelf, low coastal plains rising to interior
- *    plateaus.
- * 4. Boundary-driven relief, each with its own cross-section profile:
- *    ocean–continent subduction (trench + coastal cordillera + volcanic arc +
- *    back-arc plateau), continent–continent collision (high range + broad
- *    plateau on the overriding side), ocean–ocean subduction (trench + island
- *    arc), continental rifts (graben + shoulders), transform ridges.
- * 5. Hotspot chains carried along by plate motion, old eroded orogens and
- *    basins in continental interiors, and high-frequency coast noise that is
- *    stronger at high latitudes (ragged, fjord-like coasts and skerries).
+ *    continental slope, a shelf, coastal plains rising to the interior.
+ * 5. Interior relief: broad basins and swells, a few sharp-edged plateaus,
+ *    great escarpments behind passive margins (Drakensberg, Western Ghats,
+ *    Serra do Mar), and old orogens along the sutures of a vanished plate
+ *    configuration (Urals, Appalachians, Caledonides).
+ * 6. Active boundaries, each with its own cross-section: ocean–continent
+ *    subduction (trench, coastal cordillera, volcanic arc, back-arc plateau),
+ *    continent–continent collision (high range plus a broad plateau on the
+ *    overriding side and a foreland basin in front), ocean–ocean subduction
+ *    (trench and island arc), continental rifts (graben with shoulders),
+ *    transpressional ranges along continental transforms, mid-ocean ridges.
+ * 7. Hotspot chains carried along by plate motion.
  */
 import type { SphereMesh } from "../core/sphere";
 import { CellLocator } from "../core/sphere";
@@ -29,6 +39,7 @@ import { Rng } from "../core/rng";
 import { Noise3 } from "../core/noise";
 import { BoundaryKind } from "../world/types";
 import type { Tectonics } from "./plates";
+import type { WorldStyle } from "./style";
 import { clamp, distanceField, quantileBisect, smoothField, smoothstep } from "./util";
 
 export interface Hotspot {
@@ -42,7 +53,7 @@ export interface Hotspot {
 export interface ElevationResult {
   /** Elevation (km) relative to a nominal datum; sea level is chosen later. */
   elevation: Float32Array;
-  /** Crust continentalness 0..1 after warping (≥0.5 = continental crust). */
+  /** Crust continentalness 0..1 after warping and coast displacement (≥0.5 = continental crust). */
   crust: Float32Array;
   volcanism: Float32Array;
   seismicity: Float32Array;
@@ -68,50 +79,53 @@ export function buildElevation(
   edgeLen: Float32Array,
   oceanFraction: number,
   rng: Rng,
+  style: WorldStyle,
 ): ElevationResult {
   const n = mesh.n;
   const { xyz, adjStart, adj } = mesh;
   const P = tect.plates.length;
   // Length scale relative to Earth, damped so features remain resolvable on small planets.
   const L = Math.pow(radiusKm / 6371, 0.6);
+  const contPlate = (p: number) => !tect.plates[p].oceanic;
 
   // ---------------------------------------------------------------- crust
-  // Margin sources: divergent and transform boundary cells of continental plates.
-  // Margin widths shrink on small plates (a small continent would otherwise drown in
-  // its own passive margins), and the whole set is relaxed until continental crust
-  // comfortably exceeds the land target.
   const MMAX = 2500;
   const noiseC = new Noise3(rng.fork("crust-noise"));
   const crust0 = new Float32Array(n);
+  const marginIn0 = new Float32Array(n).fill(1e4); // km inland of a passive margin (unwarped)
   const landTarget = 1 - oceanFraction;
-  // Noise fields used by the crust model, evaluated once (the margin loop may run several times).
   const nzWobble = new Float32Array(n), nzSliver = new Float32Array(n), nzMicro = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const x = xyz[3 * i], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
-    if (!tect.plates[tect.plate[i]].oceanic) {
+    if (contPlate(tect.plate[i])) {
       nzWobble[i] = noiseC.fbm(x * 3.1, y * 3.1, z * 3.1, 3);
       nzSliver[i] = noiseC.fbm(x * 2.0 + 21.1, y * 2.0 - 13.3, z * 2.0 + 4.4, 3);
     } else {
       nzMicro[i] = noiseC.fbm(x * 2.3 + 11.7, y * 2.3 - 3.1, z * 2.3 + 5.5, 4);
     }
   }
+  const microLo = 0.6 - 0.14 * style.micro;
+  const crustTarget = landTarget + style.shelf;
   let mScale = 1;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     const marginSrc: number[] = [];
     const marginOff: number[] = [];
     for (let i = 0; i < n; i++) {
       if (!tect.isBoundary[i]) continue;
       const p = tect.plate[i];
-      if (tect.plates[p].oceanic) continue;
+      if (!contPlate(p)) continue;
       const o = tect.other[i];
       const k = tect.kind[i];
+      const othC = contPlate(o);
       let M = -1;
       if (k === BoundaryKind.Divergent) {
         const mat = tect.pairMaturity[p * P + o];
         if (mat >= 0.25) M = (250 + 1250 * (mat - 0.25)) * L * (0.7 + 0.5 * clamp(-tect.conv[i] / 0.8, 0, 1));
       } else if (k === BoundaryKind.Transform) {
-        M = 220 * L;
-      } else if (tect.plates[o].oceanic && tect.conv[i] < 0.12) {
+        // Ocean-facing transforms are sheared passive margins; between two continents the
+        // fault runs on land (San Andreas, Alpine Fault, Dead Sea).
+        if (!othC) M = 220 * L;
+      } else if (!othC && tect.conv[i] < 0.12) {
         // Very slow convergence against an oceanic plate: behaves as a passive margin.
         M = 120 * L;
       }
@@ -125,26 +139,26 @@ export function buildElevation(
     let contArea = 0;
     for (let i = 0; i < n; i++) {
       const p = tect.plate[i];
-      if (!tect.plates[p].oceanic) {
+      if (contPlate(p)) {
         const signed = mf.dist[i] === Infinity ? 1e9 : mf.dist[i] - MMAX; // distance beyond the margin
+        marginIn0[i] = Math.min(1e4, signed);
         const wobble = 160 * L * nzWobble[i];
         crust0[i] = smoothstep(-200 * L, 260 * L, signed + wobble);
         // Rifted slivers (Madagascar, Sri Lanka, Zealandia): crust left stranded offshore,
         // parallel to a passive margin, where a sparse noise mask allows.
         if (signed < -150 * L && signed > -1400 * L) {
-          const mask = nzSliver[i];
           const band = Math.exp(-(((signed + 520 * L * mScale) / (200 * L)) ** 2));
-          crust0[i] = Math.max(crust0[i], 0.95 * band * smoothstep(0.18, 0.34, mask));
+          crust0[i] = Math.max(crust0[i], 0.95 * band * smoothstep(0.18, 0.34, nzSliver[i]));
         }
       } else {
-        // Microcontinents / oceanic plateaus: very rare fragments of continental crust in the oceans.
-        crust0[i] = 0.9 * smoothstep(0.47, 0.6, nzMicro[i]);
+        // Microcontinents / oceanic plateaus: rare fragments of continental crust in the oceans.
+        crust0[i] = 0.9 * smoothstep(microLo, microLo + 0.13, nzMicro[i]);
       }
       if (crust0[i] >= 0.5) contArea += mesh.area[i] / (4 * Math.PI);
     }
-    // Aim for continental crust ≈ 1.12–1.4 × the land target (the rest is shelf).
-    if (contArea < landTarget * 1.12) mScale *= 0.6;
-    else if (contArea > landTarget * 1.4) mScale *= 1.7;
+    // Aim for continental crust ≈ 1.0–1.3 × (land + shelf).
+    if (contArea < crustTarget * 1.0) mScale *= 0.6;
+    else if (contArea > crustTarget * 1.3) mScale *= 1.6;
     else break;
   }
   // Inland seas / large interior basins on continents (Mediterranean, Hudson Bay, Black Sea…).
@@ -152,13 +166,20 @@ export function buildElevation(
     if (crust0[i] < 0.5) continue;
     const x = xyz[3 * i], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
     const s = noiseC.fbm(x * 2.6 - 7.3, y * 2.6 + 2.2, z * 2.6 + 9.9, 4);
-    crust0[i] -= 0.75 * smoothstep(0.41, 0.54, s);
+    // Fragmented worlds have many more, larger drowned basins: their continents break up
+    // into big islands and archipelagos around shelf seas (Sundaland, the Aegean).
+    crust0[i] -= 0.75 * smoothstep(0.41 - 0.2 * style.fragment, 0.54 - 0.14 * style.fragment, s);
+    if (style.fragment > 0.4) {
+      const s2 = noiseC.fbm(x * 4.6 + 3.1, y * 4.6 - 8.2, z * 4.6 + 1.4, 3);
+      const drop = 0.7 * smoothstep(0.4, 0.9, style.fragment) * smoothstep(0.12, 0.3, s2);
+      crust0[i] = Math.max(crust0[i] - drop, Math.min(crust0[i], 0.45)); // shallow shelf seas, not abyssal holes
+    }
   }
   smoothField(mesh, crust0, 2, 0.5);
   // Calibrate: shift crust so that the deep ocean (beyond the shelf break) covers
-  // oceanFraction − shelfFraction of the planet; the rest is continental shelf and land.
+  // oceanFraction − shelf of the planet; the rest is continental shelf and land.
   {
-    const q = quantileBisect(crust0, mesh.area, clamp(oceanFraction - 0.045, 0.05, 0.95));
+    const q = quantileBisect(crust0, mesh.area, clamp(oceanFraction - style.shelf, 0.05, 0.95));
     const shift = clamp(0.47 - q, -0.3, 0.3);
     // Only continental-ish crust moves; the abyss stays abyssal (no speckle of shoals).
     for (let i = 0; i < n; i++) crust0[i] += shift * smoothstep(0.15, 0.45, crust0[i]);
@@ -178,12 +199,13 @@ export function buildElevation(
   const crust = new Float32Array(n);
   const dDiv = new Float32Array(n);
   const bd = new Float32Array(n);
-  const A1 = 0.17, F1 = 1.3, A2 = 0.045, F2 = 4.2;
+  const marginIn = new Float32Array(n);
+  const A1 = style.warp, F1 = 1.3, A2 = 0.045, F2 = 4.2;
   for (let i = 0; i < n; i++) {
     const x = xyz[3 * i], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
-    let wx = A1 * warpNoise.fbm(x * F1 + 1.3, y * F1 + 7.7, z * F1 - 2.1, 3) + A2 * warpNoise.fbm(x * F2 + 4.4, y * F2 - 1.9, z * F2 + 8.2, 3);
-    let wy = A1 * warpNoise.fbm(x * F1 - 5.1, y * F1 + 2.4, z * F1 + 6.6, 3) + A2 * warpNoise.fbm(x * F2 - 3.3, y * F2 + 5.5, z * F2 - 7.4, 3);
-    let wz = A1 * warpNoise.fbm(x * F1 + 9.2, y * F1 - 6.3, z * F1 + 0.4, 3) + A2 * warpNoise.fbm(x * F2 + 2.8, y * F2 + 3.1, z * F2 + 1.6, 3);
+    let wx = A1 * warpNoise.fbm(x * F1 + 1.3, y * F1 + 7.7, z * F1 - 2.1, 3) + A2 * warpNoise.fbm(x * F2 + 4.4, y * F2 - 1.9, z * F2 + 8.2, 2);
+    let wy = A1 * warpNoise.fbm(x * F1 - 5.1, y * F1 + 2.4, z * F1 + 6.6, 3) + A2 * warpNoise.fbm(x * F2 - 3.3, y * F2 + 5.5, z * F2 - 7.4, 2);
+    let wz = A1 * warpNoise.fbm(x * F1 + 9.2, y * F1 - 6.3, z * F1 + 0.4, 3) + A2 * warpNoise.fbm(x * F2 + 2.8, y * F2 + 3.1, z * F2 + 1.6, 2);
     // Tangential part only.
     const dd = wx * x + wy * y + wz * z;
     wx -= dd * x; wy -= dd * y; wz -= dd * z;
@@ -197,9 +219,66 @@ export function buildElevation(
     dDiv[i] = bary[0] * dDiv0[a] + bary[1] * dDiv0[b] + bary[2] * dDiv0[c];
     const ba = Math.min(tect.bdist[a], 4000), bb = Math.min(tect.bdist[b], 4000), bc = Math.min(tect.bdist[c], 4000);
     bd[i] = bary[0] * ba + bary[1] * bb + bary[2] * bc;
+    marginIn[i] = bary[0] * marginIn0[a] + bary[1] * marginIn0[b] + bary[2] * marginIn0[c];
   }
   const plate = new Uint8Array(n);
   for (let i = 0; i < n; i++) plate[i] = tect.plate[wNear[i]];
+
+  // ---------------------------------------------------------------- coastline displacement
+  // Signed distance (km) to the crust = 0.5 isoline, with sub-cell crossing positions.
+  const nCoast = new Noise3(rng.fork("coast"));
+  const ct = new Float32Array(n);
+  {
+    const src: number[] = [], off: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const ci = crust[i];
+      let best = Infinity;
+      for (let k = adjStart[i]; k < adjStart[i + 1]; k++) {
+        const cj = crust[adj[k]];
+        if ((ci >= 0.5) !== (cj >= 0.5)) {
+          const t = (ci - 0.5) / (ci - cj);
+          best = Math.min(best, t * edgeLen[k]);
+        }
+      }
+      if (best < Infinity) { src.push(i); off.push(best); }
+    }
+    const MAXD = 1600 * L;
+    const sdist = distanceField(mesh, edgeLen, src, MAXD, undefined, off).dist;
+    const Wl = 330 * L, Ws = 230 * L;
+    for (let i = 0; i < n; i++) {
+      const d = sdist[i] === Infinity ? MAXD : sdist[i];
+      const sd = crust[i] >= 0.5 ? d : -d;
+      if (Math.abs(sd) >= 1300 * L) { ct[i] = crust[i]; continue; }
+      const x = xyz[3 * i], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
+      const absLat = Math.abs(mesh.lat[i]) * 180 / Math.PI;
+      // Regional roughness: smooth coasts in some regions, ragged ones in others.
+      const region = smoothstep(-0.35, 0.45, nCoast.fbm(x * 1.1 + 3.3, y * 1.1 - 7.1, z * 1.1 + 1.9, 2));
+      // Active margins have straight coasts (the trench is right offshore).
+      const active = 0.3 + 0.7 * smoothstep(120 * L, 600 * L, bd[i]);
+      const amp = 300 * L * style.coastRough * (0.3 + 0.95 * region) * active;
+      // Domain-warped fbm: lobed peninsulas and curved gulfs rather than round blobs.
+      const qx = 0.35 * nCoast.fbm(x * 3 + 1.1, y * 3 + 4.4, z * 3 - 2.2, 2);
+      const qy = 0.35 * nCoast.fbm(x * 3 - 6.1, y * 3 - 1.4, z * 3 + 3.2, 2);
+      let delta = amp * (nCoast.fbm((x + qx) * 4.2, (y + qy) * 4.2, (z - qx) * 4.2, 4, 2.1, 0.55) * 1.3);
+      // (The ridged high-latitude term below is not damped on active margins: Chile,
+      // Alaska and British Columbia are both active and fjorded.)
+      // High latitudes: glacial coasts with narrow fjords cutting in and skerry chains offshore.
+      const hl = smoothstep(46, 62, absLat) * (1 - smoothstep(80, 88, absLat));
+      if (hl > 0 && Math.abs(sd) < 700 * L) {
+        const f1 = nCoast.ridged(x * 9.5 + 2.2, y * 9.5 - 5.3, z * 9.5 + 8.8, 2);
+        const f2 = nCoast.ridged(x * 8.1 - 4.4, y * 8.1 + 1.7, z * 8.1 - 3.3, 2);
+        delta += hl * style.coastRough * 260 * L * (f2 * f2 * f2 - 1.1 * f1 * f1 * f1 * f1);
+      }
+      // Moving the coastline by `delta` ≈ adding the change of a typical coastal crust
+      // profile; the original crust structure (shelf seas, slopes) is preserved, and
+      // displacement never digs below shelf depth (bays are shallow; fjords come later).
+      const prof = (v: number) => (v >= 0 ? 0.5 + 0.5 * Math.tanh(v / Wl) : 0.5 + 0.5 * Math.tanh(v / Ws));
+      let dc = prof(sd + delta) - prof(sd);
+      if (dc < 0) dc = Math.max(dc, Math.min(0, 0.43 - crust[i]));
+      const w = 1 - smoothstep(500 * L, 1300 * L, Math.abs(sd));
+      ct[i] = crust[i] + w * dc;
+    }
+  }
 
   // ---------------------------------------------------------------- paleo sutures
   // An older generation of plates whose boundaries survive inside today's continents
@@ -208,21 +287,23 @@ export function buildElevation(
   const paleoH = new Float32Array(n);
   {
     const pr = rng.fork("paleo");
-    const K = Math.max(6, Math.round(P * 0.9));
+    const K = Math.max(7, Math.round(P * 1.1));
     const seeds: number[][] = [];
     for (let k = 0; k < K; k++) seeds.push(pr.unitVector());
-    const height: number[] = [];
-    for (let k = 0; k < K * K; k++) height.push(0);
+    const height = new Float32Array(K * K);
     for (let a = 0; a < K; a++) for (let b = a + 1; b < K; b++) {
-      // Some sutures are old and worn down to hills, a few are still high and rugged.
-      const h = pr.next() < 0.3 ? 0 : 0.5 + 1.6 * Math.pow(pr.next(), 1.5);
+      // Most sutures are worn down to hill country; a few are still high and rugged.
+      const r = pr.next();
+      const h = r < 0.25 ? 0 : r < 0.75 ? 0.45 + 0.5 * pr.next() : 1.0 + 1.3 * pr.next();
       height[a * K + b] = h; height[b * K + a] = h;
     }
     const nP = new Noise3(pr.fork("paleo-warp"));
-    const halfW = (130 * L) / radiusKm;
+    const halfW = (150 * L) / radiusKm;
     for (let i = 0; i < n; i++) {
+      if (ct[i] < 0.45) continue;
       let x = xyz[3 * i], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
-      x += 0.16 * nP.fbm(x * 1.4, y * 1.4, z * 1.4, 3); y += 0.16 * nP.fbm(x * 1.4 + 5, y * 1.4, z * 1.4, 3); z += 0.16 * nP.fbm(x * 1.4, y * 1.4 - 5, z * 1.4, 3);
+      const ox = x, oy = y, oz = z;
+      x += 0.16 * nP.fbm(ox * 1.4, oy * 1.4, oz * 1.4, 3); y += 0.16 * nP.fbm(ox * 1.4 + 5, oy * 1.4, oz * 1.4, 3); z += 0.16 * nP.fbm(ox * 1.4, oy * 1.4 - 5, oz * 1.4, 3);
       const l = Math.hypot(x, y, z); x /= l; y /= l; z /= l;
       let b1 = -2, b2 = -2, k1 = 0, k2 = 0;
       for (let k = 0; k < K; k++) {
@@ -231,14 +312,13 @@ export function buildElevation(
       }
       const edge = 0.5 * (Math.acos(Math.min(1, b2)) - Math.acos(Math.min(1, b1)));
       const hgt = height[k1 * K + k2];
-      const along = smoothstep(-0.25, 0.25, nP.fbm(x * 2.2 + 3, y * 2.2, z * 2.2 + 7, 2));
+      const along = smoothstep(-0.4, 0.15, nP.fbm(ox * 2.2 + 3, oy * 2.2, oz * 2.2 + 7, 2));
       paleo[i] = hgt > 0 ? Math.exp(-((edge / halfW) ** 2)) * along : 0;
       paleoH[i] = hgt;
     }
   }
 
   // ---------------------------------------------------------------- noise fields
-  const nCoast = new Noise3(rng.fork("coast"));
   const nRelief = new Noise3(rng.fork("relief"));
   const nRidge = new Noise3(rng.fork("ridge"));
   const nAlong = new Noise3(rng.fork("along"));
@@ -266,39 +346,45 @@ export function buildElevation(
 
   for (let i = 0; i < n; i++) {
     const x = xyz[3 * i], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
-    const absLat = Math.abs(mesh.lat[i]) * 180 / Math.PI;
-    // Coastline noise: more ragged at high latitudes (glacial coasts).
-    const hl = smoothstep(42, 68, absLat);
-    const transition = 1 - Math.abs(2 * crust[i] - 1); // 1 where crust ≈ 0.5
-    const coastAmp = 0.13 + 0.22 * transition;
-    let cn = coastAmp * (nCoast.fbm(x * 3.3, y * 3.3, z * 3.3, 4) + 0.4 * nCoast.fbm(x * 8 + 3, y * 8 - 1, z * 8 + 2, 3));
-    if (hl > 0) cn += hl * (0.12 + 0.12 * transition) * (nCoast.ridged(x * 13, y * 13, z * 13, 3) - 0.35);
-    const ct = crust[i] + cn;
+    const c = ct[i];
 
     // Abyssal depth from crust age (distance to ridge), plus abyssal hills.
     let ocean = 0;
-    if (ct < 0.47) {
+    if (c < 0.47) {
       const age = dDiv[i] / (900 * L);
-      ocean = -(2.6 + 2.4 * (1 - Math.exp(-age))) + 0.22 * nRelief.fbm(x * 9, y * 9, z * 9, 3);
+      ocean = -(2.6 + 2.4 * (1 - Math.exp(-age))) + 0.22 * nRelief.fbm(x * 9, y * 9, z * 9, 2);
       const rd = Math.exp(-dDiv[i] / (60 * L));
       if (rd > 0.01) ocean += 0.35 * rd * (nRidge.ridged(x * 14, y * 14, z * 14, 2) - 0.5);
     }
     // Hypsometric mapping of crust → elevation.
     let e: number;
-    if (ct <= 0.3) e = ocean;
-    else if (ct <= 0.47) e = ocean + (-0.35 - ocean) * smoothstep(0.3, 0.47, ct);
-    else if (ct <= 0.55) e = -0.35 + 0.3 * ((ct - 0.47) / 0.08);
-    else e = 0.08 + 0.48 * smoothstep(0.55, 0.82, ct);
-    const landness = smoothstep(0.5, 0.75, ct);
+    if (c <= 0.3) e = ocean;
+    else if (c <= 0.44) e = ocean + (-0.4 - ocean) * smoothstep(0.3, 0.44, c);
+    else if (c <= 0.5) e = -0.4 + 0.36 * ((c - 0.44) / 0.06);
+    else e = -0.04 + 0.6 * smoothstep(0.5, 0.9, c);
+    const landness = smoothstep(0.5, 0.78, c);
     if (landness > 0) {
-      // Continental interior relief: broad plateaus and sedimentary basins (low frequency,
-      // so interiors read as a few large provinces rather than blotches).
-      const plateau = nRelief.fbm(x * 1.6 + 4.4, y * 1.6, z * 1.6 - 8.1, 3);
-      e += landness * (1.15 * smoothstep(0.08, 0.5, plateau) + 0.3 * Math.min(0, plateau) + 0.07 * nRelief.fbm(x * 11, y * 11, z * 11, 3));
+      // Broad basins and swells (Congo basin, East African swell): low amplitude, large scale.
+      const swell = nRelief.fbm(x * 1.4 + 4.4, y * 1.4, z * 1.4 - 8.1, 3);
+      let interior = style.plateau * 0.6 * swell;
+      // A few highlands (Ethiopia, Anatolia, Iran, Mexico): raised blocks with rugged tops and
+      // steep rims that erosion dissects.
+      const pl = nRelief.fbm(x * 2.1 - 3.7, y * 2.1 + 9.1, z * 2.1 + 2.6, 3);
+      const hiland = smoothstep(0.25, 0.34, pl + 0.06 * swell);
+      if (hiland > 0) interior += style.plateau * hiland * (0.45 + 0.75 * nRidge.ridged(x * 5.5 - 2, y * 5.5 + 4, z * 5.5 + 1, 3));
+      // Great escarpments behind passive margins: an uplifted rim 150–400 km inland.
+      const mi = marginIn[i];
+      if (mi < 900 * L) {
+        const esc = smoothstep(-0.15, 0.35, nAlong.fbm(x * 2.4 - 1.1, y * 2.4 + 6.2, z * 2.4 + 3.3, 2));
+        interior += esc * (0.6 + 0.9 * nRidge.ridged(x * 7.5 + 1, y * 7.5, z * 7.5 - 2, 3)) * bump(mi, 300 * L, 150 * L);
+      }
+      // Fine texture.
+      interior += 0.08 * nRelief.fbm(x * 12, y * 12, z * 12, 2);
+      e += landness * interior;
       // Old orogens: eroded fold belts along paleo-plate sutures (Urals, Appalachians, Caledonides).
-      const old = paleo[i] * landness * smoothstep(250 * L, 650 * L, bd[i]);
+      const old = paleo[i] * landness * smoothstep(200 * L, 550 * L, bd[i]);
       oldOrogen[i] = old;
-      if (old > 0.002) e += old * paleoH[i] * (0.45 + 0.85 * nRidge.ridged(x * 7, y * 7, z * 7, 4));
+      if (old > 0.002) e += old * paleoH[i] * (0.35 + 0.9 * nRidge.ridged(x * 7, y * 7, z * 7, 4));
     }
 
     // ---- Active boundary relief.
@@ -313,32 +399,35 @@ export function buildElevation(
       const along = 0.5 + 0.5 * nAlong.fbm(x * 2.6 + 3.3, y * 2.6 - 1.1, z * 2.6 + 7.7, 3); // 0..1 variation along strike
       const ownC = crust0[s] >= 0.5;
       const othC = crustAcross[s] >= 0.5;
-      const ridge = k === BoundaryKind.Divergent ? 1 : 0.45 + 0.9 * nRidge.ridged(x * 6.5, y * 6.5, z * 6.5, 5);
-      if (k === BoundaryKind.Convergent) {
+      const ridge = k === BoundaryKind.Divergent ? 1 : 0.45 + 0.9 * nRidge.ridged(x * 6.5, y * 6.5, z * 6.5, 4);
+      if (ownC && othC && k !== BoundaryKind.Divergent) {
+        // Continent meets continent. Convergence builds Himalaya + Tibet; even oblique or
+        // slow motion leaves a suture range (Zagros, Alps, Caucasus).
+        const sc = clamp(Math.max(cv, 0.3 * tect.shear[s]) / 0.7, 0.3, 1.3) * (0.55 + 0.75 * along);
+        const over = tect.density[own] <= tect.density[o];
+        U += sc * 4.4 * Math.exp(-((d / (240 * L)) ** 2)) * ridge;
+        if (over) U += sc * sc * 2.4 * smoothstep(950 * L, 350 * L, d) * (0.75 + 0.25 * ridge);
+        else U += sc * 0.5 * smoothstep(450 * L, 100 * L, d) - sc * 0.25 * bump(d, 380 * L, 110 * L); // foreland basin
+        volc = Math.max(volc, 0.12 * clamp(sc, 0, 1) * bump(d, 250 * L, 150 * L));
+        seis = Math.max(seis, clamp(sc, 0, 1) * Math.exp(-d / (300 * L)));
+      } else if (k === BoundaryKind.Convergent) {
         const sc = clamp(cv / 0.7, 0, 1.3) * (0.55 + 0.75 * along);
         const ownDense = tect.density[own] > tect.density[o];
         if (ownC && !othC) {
           // Overriding continent above a subducting ocean: Andes.
-          U += sc * 4.3 * bump(d, 150 * L, 130 * L) * ridge;
-          U += sc * sc * 1.5 * smoothstep(650 * L, 220 * L, d) * smoothstep(60 * L, 200 * L, d) * (0.7 + 0.3 * ridge);
+          U += sc * 4.8 * bump(d, 160 * L, 150 * L) * ridge;
+          U += sc * sc * 1.7 * smoothstep(700 * L, 220 * L, d) * smoothstep(60 * L, 200 * L, d) * (0.7 + 0.3 * ridge);
           volc = Math.max(volc, clamp(sc, 0, 1) * bump(d, 170 * L, 80 * L));
         } else if (!ownC && othC) {
           // Subducting oceanic plate: trench hugging the boundary, outer rise beyond.
           U -= sc * 2.4 * Math.exp(-d / (65 * L));
           U += sc * 0.3 * bump(d, 220 * L, 90 * L);
-        } else if (ownC && othC) {
-          // Continental collision: Himalaya + Tibet on the overriding side.
-          const over = !ownDense;
-          U += sc * 3.6 * Math.exp(-((d / (210 * L)) ** 2)) * ridge;
-          if (over) U += sc * 2.4 * smoothstep(900 * L, 350 * L, d) * (0.75 + 0.25 * ridge);
-          else U += sc * 0.6 * smoothstep(450 * L, 100 * L, d);
-          volc = Math.max(volc, 0.12 * clamp(sc, 0, 1) * bump(d, 250 * L, 150 * L));
         } else {
           // Ocean–ocean: the denser plate subducts; the other carries an island arc.
           if (ownDense) {
             U -= sc * 2.6 * Math.exp(-d / (65 * L));
           } else {
-            const isl = 0.35 + 0.9 * nAlong.fbm(x * 11 + 1, y * 11 - 4, z * 11 + 2, 3) + 0.4;
+            const isl = 0.75 + 0.9 * nAlong.fbm(x * 11 + 1, y * 11 - 4, z * 11 + 2, 3);
             U += sc * 4.6 * bump(d, 130 * L, 70 * L) * Math.max(0, isl);
             U += sc * 0.8 * bump(d, 300 * L, 160 * L); // back-arc swell
             volc = Math.max(volc, clamp(sc, 0, 1) * bump(d, 130 * L, 60 * L));
@@ -374,14 +463,14 @@ export function buildElevation(
 
   // ---------------------------------------------------------------- hotspots
   const hRng = rng.fork("hotspots");
-  const nHot = hRng.int(3, 7);
+  const nHot = style.hotspots;
   const hotspots: Hotspot[] = [];
   const spacing = mesh.meanSpacing;
   for (let h = 0; h < nHot; h++) {
     const [hx, hy, hz] = hRng.unitVector();
     const start = locator.find(hx, hy, hz);
     const pl = tect.plates[plate[start]];
-    const oceanic = crust[start] < 0.45;
+    const oceanic = ct[start] < 0.45;
     const steps = oceanic ? hRng.int(6, 16) : 2;
     const stepAngle = spacing * hRng.range(1.0, 1.5);
     const tau = hRng.range(3, 7);
@@ -401,7 +490,6 @@ export function buildElevation(
       chain.push(cell);
       const amp = amp0 * Math.exp(-t / tau) * (0.75 + 0.5 * hRng.next());
       const radius = (oceanic ? 0.9 : 2.5) * spacing;
-      // Paint a bump around `cell`, BFS-limited.
       paintBump(mesh, cell, radius, (j, w) => {
         elevation[j] += amp * w;
         if (t < 2) volcanism[j] = Math.max(volcanism[j], (t === 0 ? 1 : 0.6) * w);
@@ -423,7 +511,33 @@ export function buildElevation(
     }
   }
 
-  return { elevation, crust, volcanism, seismicity, plate, boundary, orogeny, oldOrogen, rift, boundaryDist: bd, hotspots };
+  return { elevation, crust: ct, volcanism, seismicity, plate, boundary, orogeny, oldOrogen, rift, boundaryDist: bd, hotspots };
+}
+
+/**
+ * Continental interiors stand higher than their coasts (Africa's plateau, the
+ * Brazilian and Deccan highlands): once a provisional sea level is known, land
+ * is lifted by an amount that grows with distance from the coast and varies
+ * between regions. Monotone in elevation for land, so coastlines are kept;
+ * small islands stay low.
+ */
+export function liftInteriors(mesh: SphereMesh, elevation: Float32Array, seaLevel: number, edgeLen: Float32Array, radiusKm: number, rng: Rng, style: WorldStyle): void {
+  const n = mesh.n;
+  const L = Math.pow(radiusKm / 6371, 0.6);
+  const src: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (elevation[i] < seaLevel) continue;
+    for (let k = mesh.adjStart[i]; k < mesh.adjStart[i + 1]; k++) if (elevation[mesh.adj[k]] < seaLevel) { src.push(i); break; }
+  }
+  const d = distanceField(mesh, edgeLen, src, 1500 * L, (_a, b) => elevation[b] >= seaLevel).dist;
+  const noise = new Noise3(rng.fork("lift"));
+  for (let i = 0; i < n; i++) {
+    if (elevation[i] < seaLevel) continue;
+    const di = d[i] === Infinity ? 1500 * L : d[i];
+    const x = mesh.xyz[3 * i], y = mesh.xyz[3 * i + 1], z = mesh.xyz[3 * i + 2];
+    const A = 0.2 + 0.5 * smoothstep(-0.35, 0.35, noise.fbm(x * 1.2, y * 1.2, z * 1.2, 2));
+    elevation[i] += style.plateau * A * smoothstep(60 * L, 1000 * L, di);
+  }
 }
 
 /** Visit cells within angular `radius` of `center` (BFS on the mesh) with a gaussian weight. */

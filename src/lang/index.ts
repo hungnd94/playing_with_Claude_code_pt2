@@ -62,6 +62,8 @@ export {
   languageFromJSON,
   ancestry,
   correspondences,
+  isCognate,
+  retainsWord,
   type ProtoOptions,
   type DeriveOptions,
 } from "./language";
@@ -100,3 +102,7 @@ export { evolveName, borrowName, adaptWord, evolveWord, renderEtymology, ancesto
 export { sentence, phrase, motto, proverb, inscription, type NP, type Clause, type Phrase, type Sentence, type Relation } from "./grammar";
 
 export { asciiFold } from "./util";
+
+export { toWName, toUtterance, displayParts, stageLabels, type WNameOptions } from "./bridge";
+export { SOUND_STYLES, type SoundStyle } from "./styles";
+export { pickStyle } from "./genphon";

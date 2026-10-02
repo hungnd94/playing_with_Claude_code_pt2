@@ -98,6 +98,8 @@ interface Unit {
   /** ink box in em (skeleton-based estimate) */
   top: number;
   bottom: number;
+  /** Stroke weight multiplier (syllable blocks are drawn lighter). */
+  wscale?: number;
 }
 
 function markStrokes(s: Script, id: number): Stroke[] {
@@ -207,22 +209,24 @@ function buildBlock(s: Script, c: Cluster): Unit {
       strokes.push(...fitStrokes(g.strokes, x0 + i * w + 0.02, y0, x0 + (i + 1) * w - 0.02, y1));
     });
   };
+  // Blocks are a little taller than the body and drawn lighter, as in Hangul.
+  const T = -0.12;
   const S = 1.0;
+  const H = S - T;
+  const Y = (f: number): number => T + f * H;
   if (vertical) {
-    const yb = hasCoda ? 0.56 : S;
-    put(b.onset, 0.04, 0.06, 0.56, yb - 0.06);
-    put([b.vowel], 0.64, 0, 0.96, yb);
-    if (hasCoda) put(b.coda, 0.1, 0.66, 0.9, S);
+    const yb = hasCoda ? 0.56 : 1;
+    put(b.onset, 0.03, Y(0.05), 0.58, Y(yb - 0.05));
+    put([b.vowel], 0.66, Y(0), 0.97, Y(yb));
+    if (hasCoda) put(b.coda, 0.1, Y(0.64), 0.9, Y(1));
   } else {
-    const y1 = hasCoda ? 0.3 : 0.44;
-    put(b.onset, 0.14, 0.02, 0.86, y1);
-    const vy = hasCoda ? 0.4 : 0.56;
-    put([b.vowel], 0.02, vy - 0.12, 0.98, vy + 0.1);
-    if (hasCoda) put(b.coda, 0.14, 0.66, 0.86, S);
+    const y1 = hasCoda ? 0.3 : 0.46;
+    put(b.onset, 0.14, Y(0.02), 0.86, Y(y1));
+    const vy = hasCoda ? 0.42 : 0.6;
+    put([b.vowel], 0.02, Y(vy - 0.1), 0.98, Y(vy + 0.1));
+    if (hasCoda) put(b.coda, 0.14, Y(0.64), 0.86, Y(1));
   }
-  // Vowel glyph strokes from featural vowels are lines; fitStrokes may squash a
-  // horizontal vowel's ticks, which is fine and Hangul-like.
-  return { strokes, adv: S, key: `B${b.onset.join(".")}v${b.vowel}c${b.coda.join(".")}`, top: 0, bottom: 1 };
+  return { strokes, adv: 1.04, key: `B${b.onset.join(".")}v${b.vowel}c${b.coda.join(".")}`, top: T, bottom: 1, wscale: 0.82 };
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +241,7 @@ export interface LayoutOptions extends SpellOptions {
 }
 
 function unitOutline(s: Script, u: Unit): Outline {
-  return outlineStrokes(s.style, u.strokes, `${s.id}|${u.key}`, hashString(u.key) & 0xffff);
+  return outlineStrokes(s.style, u.strokes, `${s.id}|${u.key}`, hashString(u.key) & 0xffff, u.wscale ?? 1);
 }
 
 function jitterMat(s: Script, i: number, key: string, salt: number, cx: number, cy: number): Mat {

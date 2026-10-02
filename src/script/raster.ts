@@ -14,109 +14,152 @@ const Y0 = -0.55;
 const Y1 = 1.55;
 
 export interface Raster {
+  /** Blurred, soft-saturated ink density, normalised to unit length. */
   v: Float32Array;
   norm: number;
+  /**
+   * Norms of the 4×4-pixel blocks of `v`. By Cauchy–Schwarz,
+   * similarity(a, b) ≤ Σ_k a.blocks[k]·b.blocks[k], a cheap exact upper bound
+   * used to skip most full comparisons.
+   */
+  blocks: Float32Array;
 }
 
-function splat(g: Float32Array, x: number, y: number, m: number): void {
-  const fx = ((x - X0) / (X1 - X0)) * RW - 0.5;
-  const fy = ((y - Y0) / (Y1 - Y0)) * RH - 0.5;
-  const ix = Math.floor(fx);
-  const iy = Math.floor(fy);
-  const tx = fx - ix;
-  const ty = fy - iy;
-  for (let dy = 0; dy <= 1; dy++) {
-    const yy = iy + dy;
-    if (yy < 0 || yy >= RH) continue;
-    const wy = dy ? ty : 1 - ty;
-    for (let dx = 0; dx <= 1; dx++) {
-      const xx = ix + dx;
-      if (xx < 0 || xx >= RW) continue;
-      g[yy * RW + xx] += m * wy * (dx ? tx : 1 - tx);
-    }
-  }
-}
+const BW = RW / 4;
+const BH = RH / 4;
 
 /**
  * Rasterise strokes. Glyphs are normalised to a common em frame: x scaled so
  * the glyph box width maps to [0,1] (narrow and wide letters still compare).
  */
-const TMP = new Float32Array(RW * RH);
 const SX = RW / (X1 - X0);
 const SY = RH / (Y1 - Y0);
 
-export function rasterize(strokes: Stroke[], boxW: number): Raster {
-  const g = new Float32Array(RW * RH);
+/** Copy a raster (e.g. one made into a scratch buffer) so it can be kept. */
+export function keepRaster(r: Raster): Raster {
+  return { v: r.v.slice(), norm: r.norm, blocks: r.blocks.slice() };
+}
+
+/**
+ * Rasterise strokes. Pass `into` (a raster to overwrite) to avoid allocating
+ * for throw-away candidates; keep the result with `keepRaster`.
+ */
+export function rasterize(strokes: Stroke[], boxW: number, into?: Raster): Raster {
+  // Accumulate on a grid padded by 2 pixels so the blur needs no edge tests.
+  const acc = ACC;
+  acc.fill(0);
   const sx = 1 / Math.max(0.3, boxW);
   for (const st of strokes) {
     if (st.dot !== undefined) {
       // Dots count heavily: they distinguish letters in dotted scripts.
-      splat(g, st.pts[0][0] * sx, st.pts[0][1], 1.6);
+      splatPad(acc, st.pts[0][0] * sx, st.pts[0][1], 1.6);
       continue;
     }
     const xy = sampleRaw(st, 0.045).xy;
     for (let i = 0; i < xy.length; i += 2) {
-      // inline bilinear splat
-      const fx = (xy[i] * sx - X0) * SX - 0.5;
-      const fy = (xy[i + 1] - Y0) * SY - 0.5;
+      const fx = (xy[i] * sx - X0) * SX - 0.5 + 2;
+      const fy = (xy[i + 1] - Y0) * SY - 0.5 + 2;
       const ix = Math.floor(fx);
       const iy = Math.floor(fy);
+      if (ix < 0 || iy < 0 || ix > PW - 2 || iy > PH - 2) continue;
       const tx = fx - ix;
       const ty = fy - iy;
-      const m = 0.45;
-      if (iy >= 0 && iy < RH) {
-        if (ix >= 0 && ix < RW) g[iy * RW + ix] += m * (1 - tx) * (1 - ty);
-        if (ix + 1 >= 0 && ix + 1 < RW) g[iy * RW + ix + 1] += m * tx * (1 - ty);
-      }
-      if (iy + 1 >= 0 && iy + 1 < RH) {
-        if (ix >= 0 && ix < RW) g[(iy + 1) * RW + ix] += m * (1 - tx) * ty;
-        if (ix + 1 >= 0 && ix + 1 < RW) g[(iy + 1) * RW + ix + 1] += m * tx * ty;
-      }
+      const o = iy * PW + ix;
+      const a = 0.45 * (1 - ty);
+      const b = 0.45 * ty;
+      acc[o] += a * (1 - tx);
+      acc[o + 1] += a * tx;
+      acc[o + PW] += b * (1 - tx);
+      acc[o + PW + 1] += b * tx;
     }
   }
   // Separable 5-tap binomial blur [1 4 6 4 1] (= two [1 2 1] passes).
-  const tmp = TMP;
-  for (let y = 0; y < RH; y++) {
-    const o = y * RW;
-    for (let x = 0; x < RW; x++) {
-      let v = 6 * g[o + x];
-      if (x > 0) v += 4 * g[o + x - 1];
-      if (x > 1) v += g[o + x - 2];
-      if (x < RW - 1) v += 4 * g[o + x + 1];
-      if (x < RW - 2) v += g[o + x + 2];
-      tmp[o + x] = v;
+  const hb = HB;
+  for (let y = 0; y < PH; y++) {
+    const o = y * PW;
+    for (let x = 2; x < PW - 2; x++) {
+      const i = o + x;
+      hb[i] = acc[i - 2] + 4 * (acc[i - 1] + acc[i + 1]) + 6 * acc[i] + acc[i + 2];
     }
   }
+  const g = into ? into.v : new Float32Array(RW * RH);
+  const blocks = into ? into.blocks.fill(0) : new Float32Array(BW * BH);
+  const val = VAL;
   let n = 0;
   for (let y = 0; y < RH; y++) {
     for (let x = 0; x < RW; x++) {
-      const i = y * RW + x;
-      let v = 6 * tmp[i];
-      if (y > 0) v += 4 * tmp[i - RW];
-      if (y > 1) v += tmp[i - 2 * RW];
-      if (y < RH - 1) v += 4 * tmp[i + RW];
-      if (y < RH - 2) v += tmp[i + 2 * RW];
+      const i = (y + 2) * PW + x + 2;
+      const v = hb[i - 2 * PW] + 4 * (hb[i - PW] + hb[i + PW]) + 6 * hb[i] + hb[i + 2 * PW];
       // Soft-saturate so heavy overlaps do not dominate.
-      const sv = Math.sqrt(v);
-      g[i] = sv;
+      val[y * RW + x] = Math.sqrt(v);
       n += v;
     }
   }
-  return { v: g, norm: Math.sqrt(n) || 1 };
+  const inv = 1 / (Math.sqrt(n) || 1);
+  for (let y = 0; y < RH; y++)
+    for (let x = 0; x < RW; x++) {
+      const i = y * RW + x;
+      const v = val[i] * inv;
+      g[i] = v;
+      blocks[(y >> 2) * BW + (x >> 2)] += v * v;
+    }
+  for (let k = 0; k < blocks.length; k++) blocks[k] = Math.sqrt(blocks[k]);
+  if (into) return into;
+  return { v: g, norm: 1, blocks };
 }
 
+const PW = RW + 4;
+const PH = RH + 4;
+const ACC = new Float64Array(PW * PH);
+const HB = new Float64Array(PW * PH);
+const VAL = new Float64Array(RW * RH);
+
+function splatPad(g: Float64Array, x: number, y: number, m: number): void {
+  const fx = (x - X0) * SX - 0.5 + 2;
+  const fy = (y - Y0) * SY - 0.5 + 2;
+  const ix = Math.floor(fx);
+  const iy = Math.floor(fy);
+  if (ix < 0 || iy < 0 || ix > PW - 2 || iy > PH - 2) return;
+  const tx = fx - ix;
+  const ty = fy - iy;
+  const o = iy * PW + ix;
+  g[o] += m * (1 - ty) * (1 - tx);
+  g[o + 1] += m * (1 - ty) * tx;
+  g[o + PW] += m * ty * (1 - tx);
+  g[o + PW + 1] += m * ty * tx;
+}
+
+/** A reusable scratch raster. */
+export function scratchRaster(): Raster {
+  return { v: new Float32Array(RW * RH), norm: 1, blocks: new Float32Array(BW * BH) };
+}
+
+/** Cosine similarity of two rasters (1 = identical ink distribution). */
 export function similarity(a: Raster, b: Raster): number {
   let s = 0;
   const av = a.v;
   const bv = b.v;
   for (let i = 0; i < av.length; i++) s += av[i] * bv[i];
-  return s / (a.norm * b.norm);
+  return s;
 }
 
-/** Highest similarity of `r` to any raster in `others` (with early exit above `stop`). */
+function bound(a: Raster, b: Raster): number {
+  const ab = a.blocks;
+  const bb = b.blocks;
+  let s = 0;
+  for (let k = 0; k < ab.length; k++) s += ab[k] * bb[k];
+  return s;
+}
+
+/**
+ * Highest similarity of `r` to any raster in `others`, exact; stops early
+ * once it exceeds `stop`. Comparisons whose block bound cannot beat the
+ * current best are skipped.
+ */
 export function maxSimilarity(r: Raster, others: readonly Raster[], stop = 2): number {
   let best = 0;
   for (const o of others) {
+    if (bound(r, o) <= best) continue;
     const s = similarity(r, o);
     if (s > best) {
       best = s;
@@ -131,47 +174,66 @@ export function maxSimilarity(r: Raster, others: readonly Raster[], stop = 2): n
  * stroke for a sustained stretch. Crossings are fine; coincident strokes are not.
  */
 export function overlapFraction(strokes: Stroke[], tol = 0.045): number {
-  const lines = strokes.filter((s) => s.dot === undefined && s.pts.length >= 2).map((s) => sampleRaw(s, 0.035).xy);
+  const lines: number[][] = [];
+  for (const s of strokes) if (s.dot === undefined && s.pts.length >= 2) lines.push(sampleRaw(s, 0.035).xy);
   if (lines.length < 2) return selfOverlap(lines[0] ?? [], tol);
-  // Uniform grid hash: cell = tol, so near points are in the 3×3 neighbourhood.
+  // Uniform grid (cell = tol) with linked buckets: near points are in the 3×3 neighbourhood.
+  let N = 0;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const xy of lines) {
+    N += xy.length / 2;
+    for (let i = 0; i < xy.length; i += 2) {
+      if (xy[i] < x0) x0 = xy[i];
+      if (xy[i] > x1) x1 = xy[i];
+      if (xy[i + 1] < y0) y0 = xy[i + 1];
+      if (xy[i + 1] > y1) y1 = xy[i + 1];
+    }
+  }
   const inv = 1 / tol;
-  const grid = new Map<number, number[]>(); // key → [strokeIndex, x, y, ...]
-  const key = (cx: number, cy: number): number => (cx + 1000) * 4096 + (cy + 1000);
+  const gw = Math.floor((x1 - x0) * inv) + 3;
+  const gh = Math.floor((y1 - y0) * inv) + 3;
+  const head = new Int32Array(gw * gh).fill(-1);
+  const next = new Int32Array(N);
+  const px = new Float64Array(N);
+  const py = new Float64Array(N);
+  const ps = new Int32Array(N);
+  const pc = new Int32Array(N);
+  let k = 0;
   lines.forEach((xy, si) => {
     for (let i = 0; i < xy.length; i += 2) {
-      const k = key(Math.floor(xy[i] * inv), Math.floor(xy[i + 1] * inv));
-      let cell = grid.get(k);
-      if (!cell) grid.set(k, (cell = []));
-      cell.push(si, xy[i], xy[i + 1]);
+      const c = (Math.floor((xy[i + 1] - y0) * inv) + 1) * gw + Math.floor((xy[i] - x0) * inv) + 1;
+      px[k] = xy[i];
+      py[k] = xy[i + 1];
+      ps[k] = si;
+      pc[k] = c;
+      next[k] = head[c];
+      head[c] = k;
+      k++;
     }
   });
-  let close = 0;
-  let total = 0;
   const t2 = tol * tol;
-  lines.forEach((xy, si) => {
-    for (let i = 0; i < xy.length; i += 2) {
-      total++;
-      const cx = Math.floor(xy[i] * inv);
-      const cy = Math.floor(xy[i + 1] * inv);
-      let near = false;
-      for (let dx = -1; dx <= 1 && !near; dx++)
-        for (let dy = -1; dy <= 1 && !near; dy++) {
-          const cell = grid.get(key(cx + dx, cy + dy));
-          if (!cell) continue;
-          for (let j = 0; j < cell.length; j += 3) {
-            if (cell[j] === si) continue;
-            const ex = xy[i] - cell[j + 1];
-            const ey = xy[i + 1] - cell[j + 2];
-            if (ex * ex + ey * ey < t2) {
-              near = true;
-              break;
-            }
+  let close = 0;
+  for (let p = 0; p < N; p++) {
+    const c0 = pc[p];
+    let near = false;
+    for (let dy = -gw; dy <= gw && !near; dy += gw)
+      for (let dx = -1; dx <= 1 && !near; dx++) {
+        for (let q = head[c0 + dy + dx]; q >= 0; q = next[q]) {
+          if (ps[q] === ps[p]) continue;
+          const ex = px[p] - px[q];
+          const ey = py[p] - py[q];
+          if (ex * ex + ey * ey < t2) {
+            near = true;
+            break;
           }
         }
-      if (near) close++;
-    }
-  });
-  return total ? close / total : 0;
+      }
+    if (near) close++;
+  }
+  return N ? close / N : 0;
 }
 
 function selfOverlap(xy: number[], tol: number): number {

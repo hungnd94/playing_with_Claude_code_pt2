@@ -1,0 +1,141 @@
+/* Palimpsest — design tokens. Every colour is a token; light (vellum) values on
+   :root, dark (lapis & gilt) values for prefers-color-scheme and data-theme. */
+:root {
+  --bg: #efe6d2;
+  --bg-raise: #f6f0e2;
+  --bg-sunk: #e5d9bf;
+  --bg-hover: rgba(45, 79, 138, 0.07);
+  --stage: #e8dcc2;
+  --stage-glow: rgba(255, 250, 238, 0.85);
+  --ink: #2a2117;
+  --ink-2: #57483a;
+  --ink-3: #85755f;
+  --ink-4: #a99a80;
+  --rule: rgba(42, 33, 23, 0.16);
+  --rule-2: rgba(42, 33, 23, 0.3);
+  --accent: #2d4f8a;
+  --accent-2: #1f3a6b;
+  --link: #2d4f8a;
+  --link-line: rgba(45, 79, 138, 0.35);
+  --rubric: #a8432a;
+  --gilt: #9b7631;
+  --gilt-soft: rgba(155, 118, 49, 0.18);
+  --focus: #2d4f8a;
+  --mark: rgba(168, 67, 42, 0.12);
+  --war: #a8432a;
+  --plague: #4a4552;
+  --golden: #b8892d;
+  --faith: #3f6d6a;
+  --ev: rgba(42, 33, 23, 0.36);
+  --scrim: rgba(42, 33, 23, 0.28);
+  --shadow: 0 1px 2px rgba(42, 33, 23, 0.08), 0 8px 28px rgba(42, 33, 23, 0.14);
+  --card: #faf5ea;
+  --input: #fbf7ee;
+  --chart-1: #2d4f8a;
+  --chart-2: #a8432a;
+  --chart-3: #4f7a4a;
+  --glyph: #1f160c;
+  --emblem-shadow: drop-shadow(0 1px 1.5px rgba(42, 33, 23, 0.25));
+
+  --f-display: "IM Fell English", "Alegreya", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --f-display-sc: "IM Fell English SC", "IM Fell English", "Alegreya SC", Georgia, serif;
+  --f-read: "Alegreya", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, "DejaVu Serif", serif;
+  --f-ui: "Alegreya Sans", "Gill Sans", "Gill Sans MT", "Segoe UI", "Helvetica Neue", "DejaVu Sans", sans-serif;
+  --f-ui-sc: "Alegreya Sans SC", "Alegreya Sans", "Gill Sans", "Segoe UI", sans-serif;
+  --f-ipa: "Alegreya Sans", "Gentium Plus", "Charis SIL", "DejaVu Sans", "Segoe UI", sans-serif;
+
+  --bar-h: 46px;
+  --tl-h: 76px;
+  --pane-w: clamp(360px, 40vw, 640px);
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --t-fast: 120ms;
+  --t-med: 240ms;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0f1a;
+    --bg-raise: #10172a;
+    --bg-sunk: #080b14;
+    --bg-hover: rgba(201, 164, 92, 0.08);
+    --stage: #05070d;
+    --stage-glow: rgba(30, 48, 90, 0.35);
+    --ink: #e7dfcc;
+    --ink-2: #b9b09b;
+    --ink-3: #847d6c;
+    --ink-4: #5e5a50;
+    --rule: rgba(201, 164, 92, 0.16);
+    --rule-2: rgba(201, 164, 92, 0.34);
+    --accent: #c9a45c;
+    --accent-2: #e3c27f;
+    --link: #d6b46c;
+    --link-line: rgba(214, 180, 108, 0.32);
+    --rubric: #d1a554;
+    --gilt: #c9a45c;
+    --gilt-soft: rgba(201, 164, 92, 0.16);
+    --focus: #e3c27f;
+    --mark: rgba(201, 164, 92, 0.14);
+    --war: #c46a4c;
+    --plague: #8a8aa6;
+    --golden: #d9b45f;
+    --faith: #7fb0a8;
+    --ev: rgba(231, 223, 204, 0.32);
+    --scrim: rgba(3, 5, 10, 0.6);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 32px rgba(0, 0, 0, 0.5);
+    --card: #121a30;
+    --input: #0d1324;
+    --chart-1: #d6b46c;
+    --chart-2: #c46a4c;
+    --chart-3: #7fb0a8;
+    --glyph: #e7dfcc;
+    --emblem-shadow: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0f1a;
+  --bg-raise: #10172a;
+  --bg-sunk: #080b14;
+  --bg-hover: rgba(201, 164, 92, 0.08);
+  --stage: #05070d;
+  --stage-glow: rgba(30, 48, 90, 0.35);
+  --ink: #e7dfcc;
+  --ink-2: #b9b09b;
+  --ink-3: #847d6c;
+  --ink-4: #5e5a50;
+  --rule: rgba(201, 164, 92, 0.16);
+  --rule-2: rgba(201, 164, 92, 0.34);
+  --accent: #c9a45c;
+  --accent-2: #e3c27f;
+  --link: #d6b46c;
+  --link-line: rgba(214, 180, 108, 0.32);
+  --rubric: #d1a554;
+  --gilt: #c9a45c;
+  --gilt-soft: rgba(201, 164, 92, 0.16);
+  --focus: #e3c27f;
+  --mark: rgba(201, 164, 92, 0.14);
+  --war: #c46a4c;
+  --plague: #8a8aa6;
+  --golden: #d9b45f;
+  --faith: #7fb0a8;
+  --ev: rgba(231, 223, 204, 0.32);
+  --scrim: rgba(3, 5, 10, 0.6);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 32px rgba(0, 0, 0, 0.5);
+  --card: #121a30;
+  --input: #0d1324;
+  --chart-1: #d6b46c;
+  --chart-2: #c46a4c;
+  --chart-3: #7fb0a8;
+  --glyph: #e7dfcc;
+  --emblem-shadow: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+  color-scheme: dark;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --bar-h: 44px;
+    --tl-h: 64px;
+  }
+}

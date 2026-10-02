@@ -46,6 +46,7 @@ export function bakeCellIds(world: PhysicalWorld, width: number, height: number,
   const out = new Uint8Array(width * height * 4);
   const bary = new Float64Array(3);
   const wr = new Float64Array(3 * width);
+  const oct = ctx.coastOctavesFor(height);
   let t = ctx.locator.locateTriangle(grid.cosLat[0] * grid.cosLon[0], grid.cosLat[0] * grid.sinLon[0], grid.sinLat[0], bary);
   for (let y = 0; y < height; y++) {
     const cl = grid.cosLat[y], sl = grid.sinLat[y];
@@ -58,7 +59,7 @@ export function bakeCellIds(world: PhysicalWorld, width: number, height: number,
       const qy = cl * grid.sinLon[x] + wr[3 * x + 1];
       const qz = sl + wr[3 * x + 2];
       t = ctx.locate(qx, qy, qz, x === 0 ? rowStart : t, bary);
-      const land = terrain ? terrain[4 * (y * width + x) + 3] >= 128 : ctx.coastField(qx, qy, qz, t, bary) >= 0;
+      const land = terrain ? terrain[4 * (y * width + x) + 3] >= 128 : ctx.coastField(qx, qy, qz, t, bary, oct) >= 0;
       // The previous pixel's owner is a good extra starting candidate.
       const cellId = ctx.ownerCell(qx, qy, qz, t, land, lastLand === land ? lastCell : -1);
       lastCell = cellId;

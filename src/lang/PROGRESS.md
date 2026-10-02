@@ -21,18 +21,38 @@ Demo: `npx tsx tools/lang-demo.ts <seed>`.
 - derive ≈ 20 ms (budget 10 ms).
 - Missing: `toWName`/`toUtterance`, README.md, stage evolution (Old/Middle X).
 
+## Done in session 2
+- `styles.ts`: 26 sound styles (finnic, norse, celtic, semitic, japonic, nahuan, polynesian,
+  kartvelian, turkic, mongolic, slavic, germanic, bantu, mayan, sinitic, indic, dravidian,
+  latinate, hellenic, iranian, quechuan, austronesian, inuit, vasconic, riverine, magyar):
+  correlated inventory/clusters/finals/word length/stress/harmony/banned CV/final vowels,
+  morphology hints, naming hints, spelling school, sound-change drift tendencies.
+- `genphon.ts`: style-driven phonology generator (replaces the old free-parameter one);
+  `pickStyle` avoids styles already used in the world.
+- Phonology gained optional `style`, `wFinal`, `wFinalV`, `banned`, `pGeminate`
+  (daughters re-derive them empirically in `phonologyFromCorpus`).
+- Orthography: school table rewritten (26 schools incl. new bantu/mayan/inuit/malay/
+  iranian/mongolic), per-language spelling variants, long vowels on marked letters (ê not èè).
+- Morphology: fem/adj/abstract affixes suffixal; prefixes short (CV/V); style prefixes (Bantu).
+- Naming culture: short favourite heads/elements, clipped head forms (`headForms`),
+  male name endings (`maleEnding`), both evolve in daughters.
+- Sound change: 12 new templates (polynesian-shift, s>h, gradation, spirantisation before i,
+  lenition, final raising, lowering before r, d-flapping, final n>ŋ, ts before u,
+  sonorant palatalisation, vowel lowering, diphthongisation), conflict groups, style drift,
+  minimum impact per split (30%; 20% for stages), automatic repairs (glide absorption…).
+- `Lexeme.since` cognate tracking + `isCognate`/`retainsWord`; demo † fixed.
+- `bridge.ts`: `toWName`, `toUtterance`, `displayParts`, `stageLabels`.
+- `deriveLanguage(..., { stage: true })` for Old/Middle/Modern stages.
+
 ## In progress
-- (see todo)
+- Multi-seed critical review of the demo output; name quality.
 
 ## Todo
-1. toWName / toUtterance helpers (history contract) + README.md.
-2. Cognate tracking on lexemes (`Lexeme.since`) → correct † in comparisons.
-3. derive performance < 10 ms.
-4. Archetype-driven proto-languages (coherent looks) + orthography cleanup.
-5. Sound-change magnitude per split; plausibility review.
-6. Name quality pass (length, variety, glosses), persons, deities, features.
-7. Stage evolution helper (Old X → Middle X → X).
-8. More tests; final multi-seed review.
+1. README.md (API).
+2. derive performance < 10 ms (profile: isVowel, applyChange env matching).
+3. Offensive-word sanitising of lexicon forms.
+4. Name quality pass (length, variety, glosses), persons, deities, features.
+5. More tests (styles, cognates, bridge, stage); final multi-seed review.
 
 ## Decisions
 - Keep the existing data model (plain JSON `Language`, `Name`); extend, don't replace.

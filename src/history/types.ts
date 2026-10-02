@@ -121,6 +121,12 @@ export interface Culture {
   color: RGB;
   /** Native titles, e.g. { ruler: <word for king>, priest: … }. */
   titles: Partial<Record<"ruler" | "emperor" | "chief" | "priest" | "noble" | "general", WName>>;
+  /** The people's ancestral folk religion. */
+  folkReligion: Id;
+  /** Founding (root) culture of this people's family tree (= own id for founding cultures). */
+  family: Id;
+  /** Settlement or polity the people were named after when they split off, or -1. */
+  namedAfter: Id;
 }
 
 export interface Language {
@@ -133,8 +139,18 @@ export interface Language {
   children: Id[];
   /** Year it emerged (split or stage change). */
   born: number;
+  /** Year it gave way to its next in-place stage or ceased to be spoken, or -1 if still spoken at the end. */
+  ended: number;
   culture: Id;
-  /** The language engine's serialisable language object. */
+  /** Root (proto-)language of its family. */
+  family: Id;
+  /**
+   * How it arose: "proto" (a founding people's tongue), "split" (a daughter
+   * language of a people that broke away), "stage" (a later stage of the same
+   * people's language: Old X → Middle X → X).
+   */
+  origin: "proto" | "split" | "stage";
+  /** The language engine's serialisable language object (src/lang `Language`). */
   data: unknown;
 }
 
@@ -151,6 +167,8 @@ export interface Script {
   born: number;
   /** Culture that invented or adapted it. */
   culture: Id;
+  /** How it arose: invented from nothing, borrowed and adapted to a new language, or evolved in place. */
+  how: "invented" | "adapted" | "derived";
   /** Settlement where it is said to have been invented/adapted, or -1. */
   origin: Id;
   /** The script module's serialisable object. */
@@ -164,6 +182,8 @@ export interface Script {
 export interface Settlement {
   id: Id;
   cell: number;
+  /** Earlier settlement at the same site whose ruins this one was built on, or -1. */
+  ruinsOf: Id;
   /** Render position (unit vector, jittered within the cell so maps don't look gridded). */
   pos: [number, number, number];
   names: NameRecord[];
@@ -176,7 +196,12 @@ export interface Settlement {
   mother: Id;
   /** Person credited with the founding, or -1. */
   founder: Id;
-  /** Population sampled every `history.sampleStep` years starting at sample index `popStart`. */
+  /**
+   * Population of the town itself (urban; what an encyclopedia quotes), sampled
+   * every `history.sampleStep` years starting at sample index `popStart`
+   * (sample k ↔ year k * sampleStep). The rural hinterland is counted in the
+   * owning polity's `stats.pop`.
+   */
   popStart: number;
   pop: number[];
   cultures: { year: number; culture: Id }[];
@@ -186,8 +211,10 @@ export interface Settlement {
   /** Year walls were raised, or -1. */
   walled: number;
   wonders: Id[];
-  /** Free-form distinctions, e.g. "holy city", "seat of learning". */
+  /** Free-form distinctions, e.g. "holy city", "seat of learning", "trade hub", "capital". */
   tags: string[];
+  /** Occupations during wars (settlement held by an enemy without a peace yet), for the atlas. */
+  occupations: { from: number; to: number; by: Id; war: Id }[];
 }
 
 /** Names of a geographic feature in the languages of the peoples who knew it. */
@@ -214,11 +241,21 @@ export type Government =
 
 export type PolityEndReason = "conquered" | "collapsed" | "merged" | "dissolved" | "absorbed" | "extinct";
 
+/**
+ * Succession laws: primogeniture (eldest son, then daughters), seniority (eldest
+ * male of the dynasty), elective (magnates choose among the royal kin),
+ * tanistry (the ablest kinsman; steppe and clan peoples), election (a
+ * republic's council elects any citizen), appointment (a theocracy's clergy
+ * appoint a priest).
+ */
+export type SuccessionLaw = "primogeniture" | "seniority" | "elective" | "tanistry" | "election" | "appointment";
+
 export interface Polity {
   id: Id;
   /** Core name over time (e.g. "Ashkar"); prose builds titles like "Kingdom of Ashkar" from this + government. */
   names: NameRecord[];
   governments: { year: number; gov: Government }[];
+  succession: { year: number; law: SuccessionLaw }[];
   founded: number;
   ended: number;
   endReason?: PolityEndReason;
@@ -239,9 +276,14 @@ export interface Polity {
   motto?: Utterance;
   color: RGB;
   wars: Id[];
-  /** Series sampled every `history.sampleStep` years from sample index `statStart`. */
+  /**
+   * Series sampled every `history.sampleStep` years from sample index `statStart`:
+   * total population (urban + rural), land area, settlement count, military strength (soldiers).
+   */
   statStart: number;
   stats: { pop: number[]; areaKm2: number[]; settlements: number[]; strength: number[] };
+  /** Peak land area (km²) and the year it was reached. */
+  peak: { areaKm2: number; year: number };
 }
 
 export type Sex = "m" | "f";
@@ -555,7 +597,7 @@ export interface Disaster {
 export type EventType =
   // founding & growth
   | "settlementFounded" | "settlementAbandoned" | "settlementGrew" | "colonyFounded" | "portFounded" | "wallsBuilt"
-  | "settlementRenamed" | "capitalMoved"
+  | "settlementRenamed" | "capitalMoved" | "polityRenamed"
   // realms
   | "polityFounded" | "polityUnified" | "governmentChanged" | "polityCollapsed" | "polityAnnexed" | "independence"
   | "vassalized" | "vassalFreed" | "union" | "partition"
@@ -569,7 +611,7 @@ export type EventType =
   | "religionFounded" | "prophetBorn" | "conversion" | "stateReligion" | "schism" | "heresySuppressed" | "templeBuilt"
   | "pilgrimage" | "miracle"
   // culture & knowledge
-  | "cultureSplit" | "languageSplit" | "languageShift" | "scriptInvented" | "scriptAdopted" | "invention" | "techSpread"
+  | "cultureSplit" | "languageSplit" | "languageEvolved" | "languageShift" | "scriptInvented" | "scriptAdopted" | "invention" | "techSpread"
   | "workWritten" | "wonderBuilt" | "wonderDestroyed" | "goldenAge" | "darkAge" | "featureNamed" | "firstContact"
   | "exploration" | "migration"
   // economy & nature
@@ -601,6 +643,125 @@ export interface HEvent {
   /** Type-specific details (documented next to each emitter in src/history). */
   data?: Record<string, unknown>;
 }
+
+/**
+ * The `data` payload of each event type. Every event also carries the generic
+ * cross-reference arrays of `HEvent` (polities, persons, …); `data` says which
+ * role each referenced entity played. All values are plain JSON.
+ *
+ * Common conventions: `polity`/`settlement`/`person` fields are ids; `-1`
+ * means none; names are not repeated here (look them up at `event.year` with
+ * the helpers in ./query.ts) except where the event itself is about a name.
+ */
+export interface EventData {
+  settlementFounded: {
+    settlement: Id; culture: Id; polity: Id; mother: Id; founder: Id;
+    /** Built on the ruins of this settlement, or -1. */
+    ruinsOf: Id;
+    /** Concept ids describing the site (river, ford, coast, oak, salt…). */
+    site: string[];
+    /** One of the first settlements of a people (year-0 hearths). */
+    hearth: boolean;
+  };
+  colonyFounded: EventData["settlementFounded"] & { across: "sea" | "lake"; landmass: Id; distanceKm: number };
+  settlementAbandoned: { settlement: Id; cause: "decline" | "sacked" | "disaster" | "plague" | "famine" | "war"; pop: number; polity: Id };
+  /** A settlement passed a size milestone ("town" ≥ 5k, "city" ≥ 20k, "great city" ≥ 60k, "metropolis" ≥ 150k). */
+  settlementGrew: { settlement: Id; pop: number; rank: "town" | "city" | "great city" | "metropolis"; polity: Id; largestInWorld: boolean };
+  portFounded: { settlement: Id; polity: Id };
+  wallsBuilt: { settlement: Id; polity: Id; ruler: Id; reason: "war" | "wealth" | "raids" };
+  settlementRenamed: { settlement: Id; from: string; to: string; reason: NameChangeReason; polity: Id; culture: Id };
+  polityRenamed: { polity: Id; from: string; to: string; reason: NameChangeReason };
+  capitalMoved: { polity: Id; from: Id; to: Id; reason: "lost" | "growth" | "conquest" | "disaster" };
+
+  polityFounded: {
+    polity: Id; capital: Id; founder: Id; gov: Government; culture: Id;
+    how: "chiefdom" | "secession" | "rebellion" | "successor" | "colony" | "migration" | "faction" | "restoration";
+    /** Polity it broke away from / succeeded, or -1. */
+    parent: Id;
+  };
+  polityUnified: { polity: Id; members: Id[]; how: "confederation" | "conquest" | "marriage" };
+  governmentChanged: { polity: Id; from: Government; to: Government; reason: string };
+  polityCollapsed: { polity: Id; successors: Id[]; causes: string[]; peakAreaKm2: number; age: number };
+  polityAnnexed: { polity: Id; by: Id; war: Id; last: Id };
+  independence: { polity: Id; from: Id; war: Id };
+  vassalized: { vassal: Id; overlord: Id; war: Id };
+  vassalFreed: { vassal: Id; overlord: Id; reason: "war" | "decline" | "overlordFell" };
+  union: { senior: Id; junior: Id; ruler: Id; kind: "personal" | "merger" };
+  partition: { polity: Id; among: Id[] };
+
+  birth: { person: Id; father: Id; mother: Id; polity: Id };
+  death: { person: Id; age: number; cause: DeathCause; polity: Id; ruler: boolean; place: Id; killer: Id };
+  marriage: { a: Id; b: Id; polities: Id[]; alliance: boolean };
+  accession: {
+    person: Id; polity: Id; predecessor: Id; age: number;
+    how: SuccessionLaw | "founding" | "usurpation" | "conquest" | "claim" | "restoration" | "union";
+    /** "Oshar III" at the time (epithets are posthumous; see Person.epithet). */
+    regnalName: string;
+    relation: string;
+  };
+  abdication: { person: Id; polity: Id; successor: Id; reason: string };
+  deposition: { person: Id; polity: Id; by: Id };
+  regency: { regent: Id; ward: Id; polity: Id };
+  dynastyFounded: { dynasty: Id; founder: Id; polity: Id; parent: Id };
+  successionCrisis: { polity: Id; deceased: Id; claimants: Id[] };
+  assassination: { victim: Id; polity: Id; culprit: Id; motive: string };
+  usurpation: { usurper: Id; deposed: Id; polity: Id; dynasty: Id };
+  coup: { polity: Id; leader: Id; from: Government; to: Government };
+
+  warDeclared: { war: Id; casusBelli: CasusBelli; attacker: Id; defender: Id; claimant: Id; targets: Id[] };
+  warJoined: { war: Id; polity: Id; side: "attacker" | "defender"; reason: "alliance" | "overlord" | "kin" | "faith" };
+  battle: { war: Id; battle: Id; victor: Id; loser: Id; kind: Battle["kind"]; attackerLosses: number; defenderLosses: number; decisive: boolean };
+  siege: { war: Id; battle: Id; settlement: Id; besieger: Id; defender: Id; outcome: "taken" | "repulsed"; walls: boolean };
+  conquest: { settlement: Id; from: Id; to: Id; war: Id };
+  sack: { settlement: Id; by: Id; war: Id; deaths: number; destroyed: boolean };
+  peace: { war: Id; treaty: string; site: Id; outcome: WarOutcome; transfers: number; years: number };
+  rebellion: { rebels: Id; against: Id; settlements: Id[]; leader: Id; cause: string };
+  revoltCrushed: { rebels: Id; polity: Id; leader: Id };
+  raid: { raider: Id; target: Id; settlement: Id; plunder: number; bySea: boolean };
+  massacre: { settlement: Id; by: Id; deaths: number; reason: string };
+  alliance: { a: Id; b: Id; reason: "marriage" | "faith" | "kin" | "threat" };
+  allianceBroken: { a: Id; b: Id; reason: string };
+
+  religionFounded: { religion: Id; founder: Id; holyCity: Id; kind: ReligionKind; parent: Id };
+  prophetBorn: { person: Id; religion: Id };
+  conversion: { polity: Id; ruler: Id; from: Id; to: Id };
+  stateReligion: { polity: Id; religion: Id; from: Id };
+  schism: { religion: Id; parent: Id; founder: Id; issue: string; center: Id };
+  heresySuppressed: { religion: Id; heresy: Id; polity: Id; ruler: Id };
+  templeBuilt: { wonder: Id; religion: Id; deity: Id; settlement: Id };
+  pilgrimage: { person: Id; religion: Id; holyCity: Id };
+  miracle: { religion: Id; settlement: Id; kind: string };
+
+  cultureSplit: { culture: Id; parent: Id; language: Id; cause: "distance" | "sea" | "realm" };
+  languageSplit: { language: Id; parent: Id; culture: Id };
+  languageEvolved: { language: Id; previous: Id; culture: Id; renamedPlaces: number };
+  languageShift: { culture: Id; from: Id; settlements: Id[]; polity: Id; cause: "conquest" | "migration" | "prestige" };
+  scriptInvented: { script: Id; culture: Id; settlement: Id; person: Id };
+  scriptAdopted: { script: Id; source: Id; culture: Id; via: "neighbours" | "trade" | "conquest" | "faith" };
+  invention: { tech: string; level: number; culture: Id; settlement: Id; person: Id; first: boolean };
+  techSpread: { tech: string; level: number; culture: Id; from: Id };
+  workWritten: { work: Id; author: Id; kind: WorkKind };
+  wonderBuilt: { wonder: Id; kind: WonderKind; polity: Id; builder: Id; settlement: Id; years: number };
+  wonderDestroyed: { wonder: Id; cause: NonNullable<Wonder["destroyCause"]>; by: Id };
+  goldenAge: { polity: Id; ruler: Id; reasons: string[] };
+  darkAge: { polity: Id; reasons: string[] };
+  featureNamed: { feature: Id; culture: Id; name: string; gloss: string; first: boolean };
+  firstContact: { a: Id; b: Id; settlementA: Id; settlementB: Id };
+  exploration: { person: Id; polity: Id; from: Id; landmass: Id };
+  migration: { culture: Id; polity: Id; from: number; to: number; settlements: Id[]; cause: string };
+
+  tradeRouteOpened: { route: Id; from: Id; to: Id; goods: string[]; kind: TradeRoute["kind"] };
+  tradeRouteClosed: { route: Id; reason: string };
+  plague: { disaster: Id; origin: Id; deaths: number; settlements: number; phase: "outbreak" | "arrival" | "end" };
+  famine: { disaster: Id; deaths: number; cause: string };
+  earthquake: { disaster: Id; deaths: number; settlement: Id; magnitude: number };
+  eruption: { disaster: Id; deaths: number; feature: Id; vei: number };
+  flood: { disaster: Id; deaths: number; feature: Id; settlement: Id };
+  drought: { disaster: Id; deaths: number; cause: string };
+}
+
+/** Compile-time guarantee that every EventType has its data documented above. */
+export type AllEventDataDocumented = { [K in EventType]: EventData[K] };
 
 // ---------------------------------------------------------------------------
 // Timeline (for scrubbing map layers through time)
@@ -660,4 +821,37 @@ export interface History {
   timeline: Timeline;
   /** Named ages of world history, derived after the simulation (e.g. "the Age of Bronze Kings"). */
   ages: { name: string; start: number; end: number; summary: string }[];
+  /** World-wide series sampled every `sampleStep` years (index k ↔ year k * sampleStep). */
+  worldStats: {
+    pop: number[];
+    settlements: number[];
+    /** Independent polities. */
+    polities: number[];
+    /** Wars in progress. */
+    wars: number[];
+    /** Global temperature anomaly, °C (cold and warm centuries). */
+    climate: number[];
+    /** Highest technology level reached by any people. */
+    tech: number[];
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Live preview
+// ---------------------------------------------------------------------------
+
+/** Small payload streamed every ~10 simulated years for the "history unfolding" preview. */
+export interface LiveSnapshot {
+  year: number;
+  endYear: number;
+  /** Owning polity per cell (copy; -1 = none). */
+  owner: Int32Array;
+  /** Colour and current core name of every polity present in `owner`. */
+  polities: Record<number, { color: RGB; name: string }>;
+  /** The most important events since the previous snapshot (≤ 6), with a plain one-line headline. */
+  events: { event: HEvent; headline: string }[];
+  stats: { settlements: number; polities: number; pop: number; wars: number };
+}
+
+/** Typed view of an event's data (the payload is stored untyped in `HEvent.data`). */
+export type EventDataOf<K extends EventType> = EventData[K];

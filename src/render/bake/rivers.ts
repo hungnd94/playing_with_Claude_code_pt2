@@ -13,6 +13,7 @@
  * Widths are proportional to log discharge.
  */
 import { Noise3 } from "../../core/noise";
+import { Biome } from "../../world/types";
 import { BakeContext, unwarp } from "./context";
 
 export interface RiverPath {
@@ -57,7 +58,7 @@ function buildRiverPathsUncached(ctx: BakeContext, opts: RiverOptions): RiverPat
   const world = ctx.world;
   const mesh = ctx.mesh;
   const n = mesh.n;
-  const { downstream, flow, riverOrder, lakeId, isLand } = world;
+  const { downstream, flow, riverOrder, lakeId, isLand, biome } = world;
   const minOrder = opts.minOrder ?? 1;
   const widthMul = opts.width ?? 1;
   const meanderMul = opts.meander ?? 1;
@@ -66,7 +67,8 @@ function buildRiverPathsUncached(ctx: BakeContext, opts: RiverOptions): RiverPat
   const isRiver = new Uint8Array(n);
   let minFlow = Infinity;
   for (let i = 0; i < n; i++) {
-    if (isLand[i] && lakeId[i] < 0 && riverOrder[i] >= minOrder) {
+    // No rivers on ice sheets: they start as meltwater at the glacier margin.
+    if (isLand[i] && lakeId[i] < 0 && riverOrder[i] >= minOrder && biome[i] !== Biome.IceSheet) {
       isRiver[i] = 1;
       if (flow[i] > 0 && flow[i] < minFlow) minFlow = flow[i];
     }

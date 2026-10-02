@@ -65,6 +65,9 @@ uniform float uTerrainFade;    // wash out terrain under fills
 uniform float uWash;           // 1 = watercolour edge darkening
 uniform int uHasHighlight;
 uniform uint uHighlight;       // highlighted group id
+uniform int uHlOn;             // a highlighted set of cells is shown
+uniform sampler2D uHlCells;    // R8 per cell: highlight strength
+uniform vec4 uHlColor;         // linear rgb + strength
 
 out vec4 outColor;
 
@@ -160,6 +163,7 @@ vec4 siteOf(uint i) { return texelFetch(uSites, dc(i), 0); }
 uint groupOf(uint i) { return texelFetch(uOvGroup, dc(i), 0).r; }
 uvec2 groupHops(uint i) { return texelFetch(uOvGroup, dc(i), 0).rg; }
 vec4 colorOf(uint i) { return texelFetch(uOvColor, dc(i), 0); }
+float hlOf(uint i) { return texelFetch(uHlCells, dc(i), 0).r; }
 
 vec2 dirToUV(vec3 p) {
   return vec2(atan(p.y, p.x) / (2.0 * PI) + 0.5, 0.5 - asin(clamp(p.z, -1.0, 1.0)) / PI);
@@ -224,26 +228,54 @@ vec3 background(vec2 fragCss, vec2 sNorm) {
 }
 
 // ---------------------------------------------------------------- clouds
-// Procedural cloud cover: domain-warped fbm modulated by latitude (busy
-// equatorial convergence zone and storm tracks, clear subtropics).
-float cloudField(vec3 p, int octaves) {
-  // Squash latitude so features stretch east–west (zonal flow), warp for swirls.
-  vec3 sp = vec3(p.x, p.y, p.z * 1.7);
-  vec3 w = sp * 1.5;
-  vec3 dw = vec3(snoise(w + vec3(1.7, 0.0, 3.1)), snoise(w + vec3(9.2, 2.2, 0.0)), snoise(w + vec3(0.0, 4.4, 7.7)));
-  vec3 c = sp * 3.1 + dw * 0.9;
-  float f = 0.0, a = 0.5, fr = 1.0;
-  for (int o = 0; o < 6; o++) {
-    if (o >= octaves) break;
-    f += a * snoise(c * fr + float(o) * 3.7);
-    fr *= 2.2;
-    a *= 0.5;
+// Procedural cloud cover. A large-scale "weather" field (plus latitude bands:
+// the equatorial convergence zone, mid-latitude storm tracks, clear
+// subtropics) sets the local coverage; billowy fbm thresholded at that
+// coverage gives connected cloud masses with fractal edges, scattered puffs
+// where coverage is low. A few cyclones twist the domain into comma-shaped
+// spirals.
+uniform vec4 uCyclones[8];   // xyz = centre (unit), w = twist (radians, signed)
+uniform int uCycloneCount;
+
+vec3 swirl(vec3 p, out float storm) {
+  vec3 q = p;
+  storm = 0.0;
+  for (int i = 0; i < 8; i++) {
+    if (i >= uCycloneCount) break;
+    vec3 c = uCyclones[i].xyz;
+    float d2 = 2.0 * max(1.0 - dot(q, c), 0.0);          // ≈ squared angular distance
+    float a = uCyclones[i].w * exp(-d2 / 0.045);
+    float ca = cos(a), sa = sin(a);
+    q = q * ca + cross(c, q) * sa + c * dot(c, q) * (1.0 - ca);
+    // Cloudier around the storm, with a small clear eye.
+    storm += exp(-d2 / 0.035) * (1.0 - exp(-d2 / 0.0012));
   }
+  return q;
+}
+
+float cloudField(vec3 p, int octaves) {
+  float storm;
+  vec3 q = swirl(p, storm);
+  vec3 sp = vec3(q.xy, q.z * 1.3);                         // gentle zonal stretch
+  vec3 w = vec3(snoise(sp * 1.4 + vec3(1.7, 0.0, 3.1)), snoise(sp * 1.4 + vec3(9.2, 2.2, 0.0)), snoise(sp * 1.4 + vec3(0.0, 4.4, 7.7)));
+  float weather = 0.5 + 0.5 * snoise(sp * 1.15 + w * 0.45 + vec3(5.3, 1.1, 2.9));
   float lat = asin(clamp(p.z, -1.0, 1.0));
   float al = abs(lat);
-  float band = 0.12 * exp(-pow(lat / 0.16, 2.0)) + 0.10 * exp(-pow((al - 1.0) / 0.22, 2.0)) - 0.12 * exp(-pow((al - 0.47) / 0.14, 2.0));
-  float d = smoothstep(0.02, 0.62, f + band);
-  return d * d * (1.6 - 0.6 * d);   // thin, translucent edges; denser cores
+  float band = 0.22 * exp(-pow(lat / 0.13, 2.0)) + 0.16 * exp(-pow((al - 0.95) / 0.22, 2.0)) - 0.2 * exp(-pow((al - 0.42) / 0.14, 2.0));
+  float cover = clamp(0.62 * weather + band - 0.03 + 0.3 * storm, 0.0, 0.95);
+  vec3 c = sp * 4.2 + w * 0.35;
+  float f = 0.0, a = 0.5, fr = 1.0;
+  for (int o = 0; o < 7; o++) {
+    if (o >= octaves) break;
+    float n = snoise(c * fr + float(o) * 3.7);
+    // Upper octaves turbulent (billows), lower ones smooth (masses).
+    f += a * (o < 2 ? n : (0.75 - 1.5 * abs(n)));
+    fr *= 2.07;
+    a *= 0.52;
+  }
+  f = 0.5 + 0.55 * f;
+  float d = smoothstep(1.0 - cover - 0.06, 1.0 - cover + 0.3, f);
+  return d * d * (3.0 - 2.0 * d);
 }
 
 // ---------------------------------------------------------------- lighting
@@ -275,15 +307,32 @@ vec3 shadeSurface(vec3 albedo, vec3 n, float water, vec3 q) {
 }
 
 // ---------------------------------------------------------------- overlay
-// Analytic cell ownership & border distance around the cell named by the id texture.
-void overlay(vec3 q, vec3 dqx, vec3 dqy, vec2 uv, bool wantWet,
-             out uint owner, out float borderPx, out float edgeAng) {
+// Analytic cell ownership & border distances around the cell named by the id
+// texture. The nearest site of the pixel's land/water class (to the warped
+// position q) is re-derived among that cell and its neighbours; then every
+// group present in the neighbourhood is scored with a soft-min of distances,
+//   S_g = Σ_{s ∈ g} exp(−|q − s|² / τ),
+// and the pixel belongs to the best-scoring group. With τ ≈ 0.15·spacing²
+// the boundaries follow the Voronoi edges but round off the cell corners, so
+// borders flow instead of zig-zagging. The distance to the border is
+// (log S_best − log S_second) over its analytic screen-space gradient: crisp
+// lines of constant pixel width at any zoom.
+//   owner       a cell of the winning group (for its fill colour)
+//   group       the winning group id
+//   borderPx    to the nearest border with another group (device px)
+//   edgeAng     smooth angular distance to the group's edge (watercolour band)
+//   hl          highlight strength of the pixel (soft membership of the set)
+//   hlBorderPx  to the boundary of the highlighted cell set (device px)
+const float SOFT_TAU = 0.15;
+void cellQuery(vec3 q, vec3 dqx, vec3 dqy, vec2 uv, bool wantWet,
+               out uint owner, out uint group, out float borderPx, out float edgeAng,
+               out float hl, out float hlBorderPx) {
   ivec2 tc = ivec2(floor(uv * vec2(uIdSize)));
   tc.x = ((tc.x % uIdSize.x) + uIdSize.x) % uIdSize.x;
   tc.y = clamp(tc.y, 0, uIdSize.y - 1);
   uvec4 iv = texelFetch(uIds, tc, 0);
   uint c = iv.r | (iv.g << 8) | (iv.b << 16);
-  owner = c;
+  uint near = c;
   float best = -2.0;
   vec4 sc = siteOf(c);
   if ((sc.w > 0.5) == wantWet) best = dot(q, sc.xyz);
@@ -294,32 +343,84 @@ void overlay(vec3 q, vec3 dqx, vec3 dqy, vec2 uv, bool wantWet,
     vec4 sj = siteOf(j);
     if ((sj.w > 0.5) != wantWet) continue;
     float d = dot(q, sj.xyz);
-    if (d > best) { best = d; owner = j; }
+    if (d > best) { best = d; near = j; }
   }
-  vec4 so = siteOf(owner);
-  uvec2 gho = groupHops(owner);
-  uint go = gho.x;
-  borderPx = 1e6;
-  // Smooth distance-to-border estimate from per-cell hop counts (a min of
-  // cones, hence continuous); refined below by the exact first-ring distance.
-  edgeAng = (float(gho.y) + 0.5) * uSpacing + acos(clamp(dot(q, so.xyz), -1.0, 1.0));
-  a0 = texelFetch(uAdjStart, dc(owner), 0).r;
-  a1 = min(texelFetch(uAdjStart, dc(owner + 1u), 0).r, a0 + 24u);
-  for (uint k = a0; k < a1; k++) {
-    uint j = texelFetch(uAdj, dc(k), 0).r;
-    vec4 sj = siteOf(j);
-    if ((sj.w > 0.5) != (so.w > 0.5)) continue;
-    uvec2 ghj = groupHops(j);
-    if (ghj.x == go) {
-      edgeAng = min(edgeAng, (float(ghj.y) + 0.5) * uSpacing + acos(clamp(dot(q, sj.xyz), -1.0, 1.0)));
-      continue;
+  vec4 sn = siteOf(near);
+  // Candidates: the nearest site and its same-class neighbours.
+  float invT = 2.0 / (SOFT_TAU * uSpacing * uSpacing);   // |q−s|² = 2(1 − q·s)
+  uint gid[8];
+  float gS[8];
+  vec3 gG[8];
+  float gBest[8];
+  uint gCell[8];
+  float gHW[8];
+  float gW[8];
+  int ng = 0;
+  hl = 0.0;
+  float sIn = 0.0, sOut = 0.0, hlBestIn = 0.0;
+  vec3 gIn = vec3(0.0), gOut = vec3(0.0);
+  a0 = texelFetch(uAdjStart, dc(near), 0).r;
+  a1 = min(texelFetch(uAdjStart, dc(near + 1u), 0).r, a0 + 24u);
+  for (uint k = a0; k <= a1; k++) {
+    uint j = k == a1 ? near : texelFetch(uAdj, dc(k), 0).r;
+    vec4 sj = k == a1 ? sn : siteOf(j);
+    if ((sj.w > 0.5) != wantWet) continue;
+    float e = exp(-(dot(q, sn.xyz) - dot(q, sj.xyz)) * invT);   // relative to the nearest: ≤ 1
+    if (uOvOn == 1) {
+      uvec2 gh = groupHops(j);
+      int slot = -1;
+      for (int t = 0; t < 8; t++) { if (t < ng && gid[t] == gh.x) { slot = t; break; } }
+      if (slot < 0 && ng < 8) { slot = ng; gid[ng] = gh.x; gS[ng] = 0.0; gG[ng] = vec3(0.0); gBest[ng] = 0.0; gCell[ng] = j; gHW[ng] = 0.0; gW[ng] = 0.0; ng++; }
+      if (slot >= 0) {
+        gS[slot] += e;
+        gG[slot] += e * sj.xyz;
+        if (e > gBest[slot]) { gBest[slot] = e; gCell[slot] = j; }
+        // Interior depth: hop counts to the group edge, smoothly interpolated
+        // with broad Gaussian weights (continuous across cell boundaries).
+        float w2 = exp(-(dot(q, sn.xyz) - dot(q, sj.xyz)) * invT * (SOFT_TAU / 0.35));
+        gHW[slot] += w2 * (float(gh.y) + 0.5);
+        gW[slot] += w2;
+      }
     }
-    vec3 nrm = so.xyz - sj.xyz;
-    nrm /= max(length(nrm), 1e-9);
-    float dAng = abs(dot(q, nrm));
-    vec2 g = vec2(dot(dqx, nrm), dot(dqy, nrm));
-    borderPx = min(borderPx, dAng / max(length(g), 1e-9));
-    edgeAng = min(edgeAng, dAng);
+    if (uHlOn == 1) {
+      float h = hlOf(j);
+      if (h > 0.0) { sIn += e; gIn += e * sj.xyz; if (e > hlBestIn) { hlBestIn = e; hl = h; } }
+      else { sOut += e; gOut += e * sj.xyz; }
+    }
+  }
+  owner = near;
+  group = 0u;
+  borderPx = 1e6;
+  edgeAng = 1e6;
+  float pxAng = max(length(dqx), 1e-9);   // radians per device px
+  if (uOvOn == 1 && ng > 0) {
+    int b0 = 0;
+    for (int t = 1; t < 8; t++) { if (t < ng && gS[t] > gS[b0]) b0 = t; }
+    owner = gCell[b0];
+    group = gid[b0];
+    int b1 = -1;
+    for (int t = 0; t < 8; t++) { if (t < ng && t != b0 && (b1 < 0 || gS[t] > gS[b1])) b1 = t; }
+    edgeAng = gHW[b0] / max(gW[b0], 1e-9) * uSpacing;
+    if (b1 >= 0) {
+      float f = log(gS[b0]) - log(gS[b1]);
+      vec3 grad = invT * (gG[b0] / gS[b0] - gG[b1] / gS[b1]);
+      grad -= q * dot(grad, q);
+      vec2 g = vec2(dot(dqx, grad), dot(dqy, grad));
+      borderPx = f / max(length(g), 1e-9);
+      edgeAng = min(edgeAng, f / max(length(grad), 1e-9));
+    }
+  }
+  hlBorderPx = 1e6;
+  if (uHlOn == 1) {
+    if (sIn <= 0.0) hl = 0.0;
+    if (sIn > 0.0 && sOut > 0.0) {
+      float f = log(sIn) - log(sOut);
+      vec3 grad = invT * (gIn / sIn - gOut / sOut);
+      grad -= q * dot(grad, q);
+      vec2 g = vec2(dot(dqx, grad), dot(dqy, grad));
+      hlBorderPx = abs(f) / max(length(g), 1e-9);
+      if (f < 0.0) hl = 0.0;
+    }
   }
 }
 
@@ -456,19 +557,19 @@ void main() {
         a *= 0.5;
       }
       float emboss = clamp((h1 - h0) * 1.6, -1.0, 1.0);
-      albedo *= 1.0 + mag * landMask * 0.4 * rough * rough * emboss;
+      albedo *= 1.0 + mag * landMask * 0.32 * smoothstep(0.3, 0.9, rough) * emboss;
     }
   }
 
   // ------------------------------------------------------------ overlay
+  bool wantWet = landMask < 0.5;
+  float ownerMask = wantWet ? 1.0 - landMask : landMask;
+  uint owner = 0u, group = 0u;
+  float borderPx = 1e6, edgeAng = 1e6, hl = 0.0, hlBorderPx = 1e6;
+  if (uOvOn == 1 || uHlOn == 1) cellQuery(q, dqx, dqy, uv, wantWet, owner, group, borderPx, edgeAng, hl, hlBorderPx);
   if (uOvOn == 1) {
-    bool wantWet = landMask < 0.5;
-    uint owner;
-    float borderPx, edgeAng;
-    overlay(q, dqx, dqy, uv, wantWet, owner, borderPx, edgeAng);
     vec4 fc = colorOf(owner);
     vec3 fcl = toLinear(fc.rgb);
-    float ownerMask = wantWet ? 1.0 - landMask : landMask;
     float a = fc.a * uOvOpacity * ownerMask;
     // Paper grain & pigment granulation.
     vec3 gq = q / uSpacing;
@@ -492,12 +593,20 @@ void main() {
     float band = (1.0 - smoothstep(0.0, bw * 0.5 + 3.0 * uDpr, borderPx)) * fc.a * ownerMask * uWash;
     albedo = mix(albedo, tinted * 0.6, band * 0.4);
     float line = 1.0 - smoothstep(bw * 0.5 - 0.6, bw * 0.5 + 0.6, borderPx);
-    // Highlighted group: deeper wash and a soft luminous rim inside its border.
-    if (uHasHighlight == 1 && groupOf(owner) == uHighlight && fc.a > 0.0) {
-      float rim = (1.0 - smoothstep(0.0, 7.0 * uDpr, min(borderPx, coastAng / max(length(dqx), 1e-9)))) * ownerMask;
-      albedo = mix(albedo, tinted * 1.1, 0.3 * ownerMask);
-      albedo = mix(albedo, vec3(1.0, 0.93, 0.75), rim * 0.45);
-      line = max(line, 1.0 - smoothstep(bw - 0.6, bw + 0.6, borderPx));
+    // Highlighted group: richer wash, a luminous rim inside its border and a
+    // heavier ink line; every other group recedes (desaturated, dimmer).
+    if (uHasHighlight == 1 && fc.a > 0.0) {
+      if (group == uHighlight) {
+        float edgePx = min(borderPx, coastAng / max(length(dqx), 1e-9));
+        float rim = exp(-edgePx / (5.0 * uDpr)) * ownerMask;
+        albedo = mix(albedo, fcl * mix(1.0, shadeT, 0.6) * 1.12, 0.42 * ownerMask);
+        albedo = mix(albedo, mix(fcl, vec3(1.0, 0.95, 0.82), 0.6) * 1.35, rim * 0.6);
+        line = max(line, 1.0 - smoothstep(bw - 0.6, bw + 0.6, borderPx));
+      } else {
+        float lg = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+        float k = ownerMask * fc.a;
+        albedo = mix(albedo, vec3(lg), 0.35 * k) * (1.0 - 0.16 * k);
+      }
     }
     albedo = mix(albedo, uBorderColor.rgb, line * uBorderColor.a * ownerMask);
     // Coastline ink.
@@ -508,15 +617,34 @@ void main() {
     }
   }
 
+  // Highlighted set of cells (selection, search hits, a basin…): a warm wash,
+  // a luminous inner glow and a bright hairline along the set's boundary.
+  if (uHlOn == 1) {
+    hl *= uHlColor.a;
+    float coastPx = abs(A - 0.5) / aw;
+    float line = (1.0 - smoothstep(0.6 * uDpr, 1.5 * uDpr, hlBorderPx)) * ownerMask;
+    if (hl > 0.0) {
+      float rimPx = min(hlBorderPx, coastPx);
+      float glow = exp(-rimPx / (7.0 * uDpr)) * ownerMask;
+      float lumA = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+      vec3 tint = uHlColor.rgb * clamp(pow(lumA / 0.16, 0.45), 0.5, 1.3);
+      albedo = mix(albedo, tint, 0.28 * hl * ownerMask);
+      albedo = mix(albedo, uHlColor.rgb * 1.25, 0.5 * glow * hl);
+    }
+    albedo = mix(albedo, mix(uHlColor.rgb, vec3(1.0), 0.35) * 1.3, line * 0.9 * uHlColor.a);
+  }
+
   // ------------------------------------------------------------ lighting
   float water = 1.0 - landMask;
   float cloud = 0.0;
   if (uClouds > 0.0 && uMode == 0) {
-    cloud = cloudField(p, 6) * uClouds;
+    cloud = cloudField(p, 7) * uClouds;
     // Soft shadow cast on the ground, offset away from the sun.
     vec3 sunT = normalize(uSun - p * dot(uSun, p) + 1e-6);
     float shadow = cloudField(normalize(p - sunT * 0.012), 3) * uClouds;
-    albedo *= 1.0 - 0.35 * shadow;
+    // A cloud hides its own shadow, and at grazing angles shadows vanish behind the clouds.
+    float muS = max(dot(p, uCenter), 0.0);
+    albedo *= 1.0 - 0.32 * shadow * (1.0 - cloud) * smoothstep(0.05, 0.5, muS);
     water *= 1.0 - cloud;
   }
   vec3 col = shadeSurface(albedo, p, water, q);
@@ -641,6 +769,7 @@ uniform int uMode;
 uniform vec2 uFlatCenter;
 uniform float uFlatScale;
 uniform float uRiverScale;   // device px per radian of (exaggerated) river half-width
+uniform float uLonShift;     // flat map: horizontal copy offset (radians)
 out vec3 vP;
 out float vV;
 out float vHwPx;
@@ -659,7 +788,7 @@ void main() {
     float lon = atan(p.y, p.x);
     float base = mod(aAnchor - uFlatCenter.x + PI, 2.0 * PI) - PI;
     float rel = mod(lon - aAnchor + PI, 2.0 * PI) - PI;
-    spx = uCenterPx + vec2(base + rel, lat - uFlatCenter.y) / uFlatScale;
+    spx = uCenterPx + vec2(base + rel + uLonShift, lat - uFlatCenter.y) / uFlatScale;
   }
   // Far-side fragments are discarded in the fragment shader (moving vertices
   // off-screen here would stretch triangles across the view).
@@ -692,5 +821,153 @@ void main() {
   vec3 col = shadeSurface(albedo, p, 0.6, p);
   col = toSRGB(grade(col * uExposure));
   outColor = vec4(col * a, a);
+}
+`;
+
+/**
+ * Polylines (routes, fronts, arrows): expanded in screen space to a constant
+ * pixel width with mitred joins; casing, dashes, dots and flow in the FS.
+ */
+export const LINE_VS = /* glsl */ `#version 300 es
+precision highp float;
+in vec3 aPos;
+in vec3 aPrev;
+in vec3 aNext;
+in float aSide;
+in float aDist;
+in vec4 aColor;
+in float aWidth;
+in float aCasing;
+in float aStyle;
+in float aKind;
+in float aLonU;
+in float aFlow;
+in float aCaseA;
+in float aAnchor;
+uniform vec2 uRes;
+uniform vec2 uCenterPx;
+uniform float uRadiusPx;
+uniform float uDpr;
+uniform vec3 uEast, uNorth, uCenter, uSun;
+uniform int uMode;
+uniform vec2 uFlatCenter;
+uniform float uFlatScale;
+uniform float uLonShift;
+uniform float uLighting;
+out vec4 vColor;
+out float vAcross;
+out float vAlong;
+out float vHalf;
+out float vCase;
+out float vCaseA;
+out float vStyle;
+out float vFlow;
+out float vKind;
+out vec3 vBary;
+const float PI = 3.14159265358979;
+float wrapPi(float a) { return mod(a + PI, 2.0 * PI) - PI; }
+vec2 screenOf(vec3 p, float lonU) {
+  if (uMode == 0) return uCenterPx + vec2(dot(p, uEast), dot(p, uNorth)) * uRadiusPx;
+  float lat = asin(clamp(p.z, -1.0, 1.0));
+  float x = wrapPi(aAnchor - uFlatCenter.x) + (lonU - aAnchor) + uLonShift;
+  return uCenterPx + vec2(x, lat - uFlatCenter.y) / uFlatScale;
+}
+void main() {
+  float lonP = aLonU + wrapPi(atan(aPrev.y, aPrev.x) - atan(aPos.y, aPos.x));
+  float lonN = aLonU + wrapPi(atan(aNext.y, aNext.x) - atan(aPos.y, aPos.x));
+  vec2 sc = screenOf(aPos, aLonU);
+  vec2 sp = screenOf(aPrev, lonP);
+  vec2 sn = screenOf(aNext, lonN);
+  vec2 d0 = sc - sp, d1 = sn - sc;
+  vec2 t1 = length(d1) > 1e-4 ? normalize(d1) : (length(d0) > 1e-4 ? normalize(d0) : vec2(1.0, 0.0));
+  vec2 t0 = length(d0) > 1e-4 ? normalize(d0) : t1;
+  vec2 pos;
+  vBary = vec3(0.0);
+  if (aKind < 0.5) {
+    vec2 n0 = vec2(-t0.y, t0.x), n1 = vec2(-t1.y, t1.x);
+    vec2 mt = n0 + n1;
+    mt = length(mt) > 1e-3 ? normalize(mt) : n0;
+    float halfW = (0.5 * aWidth + aCasing + 1.0) * uDpr;
+    pos = sc + mt * (halfW / max(dot(mt, n0), 0.5)) * aSide;
+    vAcross = aSide * halfW;
+  } else {
+    // Arrowhead: tip ahead of the last point, base corners behind it.
+    vec2 n = vec2(-t0.y, t0.x);
+    float L = (3.0 * aWidth + 7.0 + aCasing) * uDpr;
+    float Wd = (1.9 * aWidth + 4.0 + aCasing) * uDpr;
+    if (aSide > 0.5) { pos = sc - t0 * L * 0.45 + n * Wd; vBary = vec3(0.0, 0.0, 1.0); }
+    else if (aSide < -0.5) { pos = sc - t0 * L * 0.45 - n * Wd; vBary = vec3(1.0, 0.0, 0.0); }
+    else { pos = sc + t0 * L * 0.55; vBary = vec3(0.0, 1.0, 0.0); }
+    vAcross = 0.0;
+  }
+  float vis = 1.0;
+  float day = 1.0;
+  if (uMode == 0) {
+    vis = smoothstep(-0.005, 0.07, dot(aPos, uCenter));
+    day = mix(1.0, 0.55 + 0.45 * smoothstep(-0.3, 0.25, dot(aPos, uSun)), uLighting);
+  }
+  float pxPerRad = uMode == 0 ? uRadiusPx : 1.0 / uFlatScale;
+  vAlong = aDist * pxPerRad / uDpr;
+  vColor = vec4(aColor.rgb * day, aColor.a * vis);
+  vHalf = 0.5 * aWidth;
+  vCase = aCasing;
+  vCaseA = aCaseA * vis;
+  vStyle = aStyle;
+  vFlow = aFlow;
+  vKind = aKind;
+  gl_Position = vec4(pos / uRes * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
+
+export const LINE_FS = /* glsl */ `#version 300 es
+precision highp float;
+in vec4 vColor;
+in float vAcross;
+in float vAlong;
+in float vHalf;
+in float vCase;
+in float vCaseA;
+in float vStyle;
+in float vFlow;
+in float vKind;
+in vec3 vBary;
+uniform float uDpr;
+uniform float uTime;
+out vec4 outColor;
+void main() {
+  float lineA, caseA;
+  vec3 ink = vec3(0.07, 0.05, 0.04);
+  if (vKind > 0.5) {
+    // Distance (px) to the nearest edge of the arrowhead triangle.
+    float b = min(vBary.x, min(vBary.y, vBary.z));
+    float dpx = b / max(fwidth(b), 1e-5) / uDpr;
+    caseA = clamp(dpx + 0.5, 0.0, 1.0) * vCaseA;
+    lineA = clamp(dpx - vCase + 0.5, 0.0, 1.0);
+  } else {
+    float across = abs(vAcross) / uDpr;
+    float s = vAlong - uTime * vFlow;
+    if (vStyle > 1.5) {
+      float P = 2.0 * vHalf * 2.4 + 2.5;
+      float a = mod(s, P) - 0.5 * P;
+      float dd = length(vec2(a, across));
+      lineA = clamp(vHalf + 0.5 - dd, 0.0, 1.0);
+      caseA = clamp(vHalf + vCase + 0.5 - dd, 0.0, 1.0) * vCaseA;
+    } else {
+      lineA = clamp(vHalf + 0.5 - across, 0.0, 1.0);
+      caseA = clamp(vHalf + vCase + 0.5 - across, 0.0, 1.0) * vCaseA;
+      if (vStyle > 0.5) {
+        float dash = 6.0 * vHalf + 4.0, gap = 3.5 * vHalf + 3.0;
+        float f = mod(s, dash + gap);
+        float m = clamp(f + 0.5, 0.0, 1.0) * clamp(dash - f + 0.5, 0.0, 1.0);
+        lineA *= m;
+        caseA *= m;
+      }
+    }
+  }
+  float la = vColor.a * lineA;
+  vec3 c = vColor.rgb * la + ink * caseA * (1.0 - la);
+  float a = la + caseA * (1.0 - la);
+  if (a <= 0.003) discard;
+  outColor = vec4(c, a);
 }
 `;

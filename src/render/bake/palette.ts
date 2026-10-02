@@ -15,7 +15,7 @@ export const BIOME_RGB: Record<number, RGB> = {
   [Biome.Shallows]: [38, 98, 140],
   [Biome.SeaIce]: [214, 226, 236],
   [Biome.Lake]: [40, 92, 122],
-  [Biome.IceSheet]: [236, 241, 246],
+  [Biome.IceSheet]: [226, 233, 241],
   [Biome.Tundra]: [124, 120, 96],
   [Biome.Taiga]: [46, 72, 52],
   [Biome.Steppe]: [156, 148, 104],
@@ -23,7 +23,7 @@ export const BIOME_RGB: Record<number, RGB> = {
   [Biome.Mediterranean]: [128, 128, 80],
   [Biome.TemperateForest]: [58, 94, 48],
   [Biome.TemperateRainforest]: [38, 78, 50],
-  [Biome.HotDesert]: [210, 190, 146],
+  [Biome.HotDesert]: [212, 190, 138],
   [Biome.Savanna]: [158, 146, 88],
   [Biome.TropicalDryForest]: [100, 112, 54],
   [Biome.Rainforest]: [30, 72, 34],
@@ -48,8 +48,13 @@ export const TROPICAL_SHALLOW: RGB = [50, 122, 140];
 export const TROPICAL_SHELF: RGB = [32, 98, 138];
 export const LAKE_RGB: RGB = [36, 88, 116];
 export const SALT_LAKE_RGB: RGB = [92, 140, 142];
-export const SEA_ICE_RGB: RGB = [222, 232, 240];
-export const SNOW_RGB: RGB = [246, 248, 252];
+export const SEA_ICE_RGB: RGB = [224, 233, 241];
+/** Young, thin ice near the pack edge: grey-blue. */
+export const THIN_ICE_RGB: RGB = [158, 184, 204];
+/** Turbid, silty shallow water. */
+export const SILT_RGB: RGB = [78, 116, 112];
+export const LAKE_ICE_RGB: RGB = [200, 214, 226];
+export const SNOW_RGB: RGB = [238, 242, 248];
 export const ROCK_RGB: RGB = [118, 108, 98];
 export const RIVER_RGB: RGB = [30, 74, 112];
 export const BEACH_RGB: RGB = [196, 182, 140];

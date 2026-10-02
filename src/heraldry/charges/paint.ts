@@ -21,6 +21,8 @@ export interface ChargePaint {
   lineK: number;
   /** Draw interior detail (lines, ink, shine). Off for very small renderings. */
   detailOn: boolean;
+  /** Draw the translucent shine/shade tones (default true). Off for monochrome work. */
+  tone?: boolean;
 }
 
 function attrs(l: ArtLayer): string {
@@ -70,10 +72,10 @@ export function paintCharge(art: ChargeArt, p: ChargePaint): string {
         s += `<path d="${l.d}" fill="${p.detail}"${attrs(l)}/>`;
         break;
       case "shine":
-        if (p.detailOn) s += `<path d="${l.d}" fill="#fff" fill-opacity=".32"${attrs(l)}/>`;
+        if (p.detailOn && p.tone !== false) s += `<path d="${l.d}" fill="#fff" fill-opacity=".32"${attrs(l)}/>`;
         break;
       case "shade":
-        if (p.detailOn) s += `<path d="${l.d}" fill="#000" fill-opacity=".22"${attrs(l)}/>`;
+        if (p.detailOn && p.tone !== false) s += `<path d="${l.d}" fill="#000" fill-opacity=".22"${attrs(l)}/>`;
         break;
     }
   }

@@ -32,6 +32,7 @@ const VIEWS: Record<string, string> = {
   mountains: `g.setLayer("terrain"); v.setMode("globe"); const c = g.spot("mountain"); v.setView({lat: c[0], lon: c[1], zoom: 6});`,
   polclose: `g.setLayer("political"); v.setMode("globe"); const c = g.spot("border"); v.setView({lat: c[0], lon: c[1], zoom: 4});`,
   highlight: `g.setLayer("political"); v.setMode("globe"); const c = g.spot("border"); v.setView({lat: c[0], lon: c[1], zoom: 2.2}); g.highlightAt(c);`,
+  basin: `g.setLayer("terrain"); v.setMode("globe"); const c = g.spot("river"); v.setView({lat: c[0], lon: c[1], zoom: 2.5}); g.highlightBasinAt(c);`,
   lines: `g.setLayer("political"); g.showLines(true); v.setMode("globe"); const c = g.spot("border"); v.setView({lat: c[0], lon: c[1], zoom: 2});`,
   flat: `g.setLayer("political"); v.setMode("flat"); v.setView({lat: 0, lon: 0, zoom: 1});`,
   flatterrain: `g.setLayer("terrain"); v.setMode("flat"); v.setView({lat: 0, lon: 0, zoom: 1});`,
