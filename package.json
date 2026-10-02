@@ -1,0 +1,38 @@
+{
+  "name": "palimpsest",
+  "version": "1.0.0",
+  "description": "A world, its peoples, their tongues, and thousands of years of their history, grown from a single seed.",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "dev": "node tools/build.mjs --serve",
+    "test": "vitest run",
+    "typecheck": "tsc -p .",
+    "gen": "tsx tools/gen.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hungnd94/playing_with_Claude_code_pt2.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/hungnd94/playing_with_Claude_code_pt2/issues"
+  },
+  "homepage": "https://github.com/hungnd94/playing_with_Claude_code_pt2#readme",
+  "devDependencies": {
+    "@types/delaunator": "^5.0.3",
+    "@types/node": "^26.6.4",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.63.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "delaunator": "^5.1.0",
+    "preact": "^11.0.0"
+  },
+  "type": "module",
+  "private": true
+}
