@@ -466,3 +466,72 @@ export function polySpanAt(poly: readonly Pt[], y: number): [number, number] | n
   }
   return lo <= hi ? [lo, hi] : null;
 }
+
+// ---------------------------------------------------------------------------
+// Span tables: fast horizontal extents for layout searches
+
+interface SpanTable {
+  y0: number;
+  dy: number;
+  n: number;
+  lo: Float64Array;
+  hi: Float64Array;
+}
+
+const SPAN_ROWS = 600;
+const spanCache = new WeakMap<readonly Pt[], SpanTable>();
+
+/** Horizontal extents of a polygon sampled on a fine grid of rows (cached per polygon object). */
+function spanTable(poly: readonly Pt[]): SpanTable {
+  let t = spanCache.get(poly);
+  if (t) return t;
+  let ymin = Infinity, ymax = -Infinity;
+  for (const p of poly) {
+    if (p[1] < ymin) ymin = p[1];
+    if (p[1] > ymax) ymax = p[1];
+  }
+  const n = SPAN_ROWS;
+  const dy = Math.max(1e-9, (ymax - ymin) / (n - 1));
+  const lo = new Float64Array(n).fill(Infinity), hi = new Float64Array(n).fill(-Infinity);
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    const ya = Math.min(yi, yj), yb = Math.max(yi, yj);
+    const k0 = Math.max(0, Math.ceil((ya - ymin) / dy - 1e-9)), k1 = Math.min(n - 1, Math.floor((yb - ymin) / dy + 1e-9));
+    for (let k = k0; k <= k1; k++) {
+      const y = ymin + k * dy;
+      let x0: number, x1: number;
+      if (Math.abs(yj - yi) < 1e-12) {
+        x0 = Math.min(xi, xj);
+        x1 = Math.max(xi, xj);
+      } else {
+        x0 = x1 = xi + ((y - yi) * (xj - xi)) / (yj - yi);
+      }
+      if (x0 < lo[k]) lo[k] = x0;
+      if (x1 > hi[k]) hi[k] = x1;
+    }
+  }
+  t = { y0: ymin, dy, n, lo, hi };
+  spanCache.set(poly, t);
+  return t;
+}
+
+/**
+ * The horizontal extent common to every height in [y0, y1] (the widest box
+ * that fits in the polygon between those heights), or null if the polygon
+ * does not cover the whole band. Conservative to within a grid row.
+ */
+export function polySpanBetween(poly: readonly Pt[], y0: number, y1: number): [number, number] | null {
+  const t = spanTable(poly);
+  if (y1 < y0) [y0, y1] = [y1, y0];
+  const ka = Math.floor((y0 - t.y0) / t.dy), kb = Math.ceil((y1 - t.y0) / t.dy);
+  if (ka < 0 || kb > t.n - 1) return null;
+  let lo = -Infinity, hi = Infinity;
+  for (let k = ka; k <= kb; k++) {
+    const a = t.lo[k], b = t.hi[k];
+    if (a > b) return null;
+    if (a > lo) lo = a;
+    if (b < hi) hi = b;
+  }
+  return lo < hi ? [lo, hi] : null;
+}

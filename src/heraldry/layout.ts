@@ -10,7 +10,7 @@
 import type { Arrangement, Ordinary } from "./types";
 import { bandWidth, bendDir, chevronApex, CHEVRON_ANGLE, ordinaryBands, chiefHeight, bordureWidth } from "./geometry";
 import { insetPoly, spanOver, type Frame } from "./shapes";
-import { polySpanAt, resampleClosed, type Pt } from "./path";
+import { polySpanBetween, resampleClosed, type Pt } from "./path";
 
 export interface Slot {
   x: number;
@@ -61,14 +61,9 @@ export function fits(poly: Pt[], x: number, y: number, s: number, shape: ChargeS
 }
 
 function spanIn(poly: Pt[], y0: number, y1: number, margin: number): [number, number] | null {
-  let lo = -Infinity, hi = Infinity;
-  for (let i = 0; i <= 6; i++) {
-    const y = y0 + ((y1 - y0) * i) / 6;
-    const s = polySpanAt(poly, y);
-    if (!s) return null;
-    lo = Math.max(lo, s[0]);
-    hi = Math.min(hi, s[1]);
-  }
+  const s = polySpanBetween(poly, y0, y1);
+  if (!s) return null;
+  let [lo, hi] = s;
   lo += margin;
   hi -= margin;
   return lo < hi ? [lo, hi] : null;
