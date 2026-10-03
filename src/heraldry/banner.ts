@@ -119,6 +119,39 @@ export interface BannerRenderOptions {
   palette?: Palette | "illuminated" | "flat";
   finish?: "rich" | "flat";
   attrs?: string;
+  /**
+   * Draw the staff, crossbar, finial and cords (default true). With false only the
+   * cloth is drawn — the compact form for small icons in lists and on maps.
+   */
+  staff?: boolean;
+}
+
+const STAFF_W = 9;
+const FINIAL_S = 46;
+
+/** Extents of a rendered banner in its own units (for fitting it into a box before rendering). */
+export function bannerExtents(b: Banner, staff = true): { minX: number; minY: number; maxX: number; maxY: number; cx0: number; cy0: number } {
+  const cloth = clothOf(b);
+  if (!staff) {
+    const fr = cloth.fringeEdge && b.fringe ? 14 : 0;
+    const hang = cloth.mount === "hang";
+    return { minX: -3, minY: -3, maxX: cloth.w + 3 + (hang ? 0 : fr), maxY: cloth.h + 3 + (hang ? fr : 0), cx0: 0, cy0: 0 };
+  }
+  if (cloth.mount === "hang") {
+    return { minX: -14, maxX: cloth.w + 14, minY: -FINIAL_S - 30 - (b.cords ? 40 : 0), maxY: cloth.h + 70 + (cloth.fringeEdge ? 14 : 0), cx0: 0, cy0: 0 };
+  }
+  if (cloth.mount === "staff") {
+    const cx0 = STAFF_W / 2, cy0 = 18;
+    return { minX: -STAFF_W, maxX: cx0 + cloth.w + (cloth.fringeEdge ? 18 : 6), minY: -FINIAL_S - 4, maxY: cy0 + cloth.h + Math.max(80, cloth.h * 0.4), cx0, cy0 };
+  }
+  const cx0 = STAFF_W / 2, cy0 = 16;
+  return { minX: -STAFF_W, maxX: cx0 + cloth.w + 14, minY: -FINIAL_S - 4, maxY: cy0 + cloth.h + 60, cx0, cy0 };
+}
+
+/** Width / height of a rendered banner. */
+export function bannerAspect(b: Banner, staff = true): number {
+  const e = bannerExtents(b, staff);
+  return (e.maxX - e.minX) / (e.maxY - e.minY);
 }
 
 function gold(ctx: Ctx): string {
@@ -219,36 +252,13 @@ export function renderBannerSVG(input: Banner | Arms, opts: BannerRenderOptions 
   const b: Banner = "shape" in input && "arms" in input ? input : { shape: "banner", arms: input as Arms, finial: "spear" };
   const cloth = clothOf(b);
   const pal = resolvePalette(opts.palette);
-  const staffW = 9;
+  const staffW = STAFF_W;
+  const withStaff = opts.staff !== false;
   // Layout of the whole object in banner units.
-  let cx0 = 0, cy0 = 0; // cloth origin
   let parts = "";
-  let minX = 0, minY = 0, maxX = 0, maxY = 0;
   const size = opts.size ?? 240;
-  const finS = 46;
-  // First pass: compute extents for the pixel scale.
-  if (cloth.mount === "hang") {
-    cx0 = 0;
-    cy0 = 0;
-    minX = -14;
-    maxX = cloth.w + 14;
-    minY = -finS - 30 - (b.cords ? 40 : 0);
-    maxY = cloth.h + 70 + (cloth.fringeEdge ? 14 : 0);
-  } else if (cloth.mount === "staff") {
-    cx0 = staffW / 2;
-    cy0 = 18;
-    minX = -staffW;
-    maxX = cx0 + cloth.w + (cloth.fringeEdge ? 18 : 6);
-    minY = -finS - 4;
-    maxY = cy0 + cloth.h + Math.max(80, cloth.h * 0.4);
-  } else {
-    cx0 = staffW / 2;
-    cy0 = 16;
-    minX = -staffW;
-    maxX = cx0 + cloth.w + 14;
-    minY = -finS - 4;
-    maxY = cy0 + cloth.h + 60;
-  }
+  const finS = FINIAL_S;
+  const { minX, minY, maxX, maxY, cx0, cy0 } = bannerExtents(b, withStaff);
   const vw = maxX - minX, vh = maxY - minY;
   const px = size / vh;
   const ctx: Ctx = {
@@ -301,7 +311,9 @@ export function renderBannerSVG(input: Banner | Arms, opts: BannerRenderOptions 
     `<path d="${fr.d}" fill="none" stroke="${pal.contour}" stroke-width="${f(ctx.ow * 1.6)}" stroke-linejoin="round"/></g>`;
   const st = `stroke="${pal.contour}" stroke-width="${f(ctx.ow * 1.2)}"`;
   const fin = b.finial ?? "spear";
-  if (cloth.mount === "hang") {
+  if (!withStaff) {
+    parts += clothSVG;
+  } else if (cloth.mount === "hang") {
     const sx = cloth.w / 2;
     const barY = -6;
     const top = barY - (b.cords ? 40 : 18);

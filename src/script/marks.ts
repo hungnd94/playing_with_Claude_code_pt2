@@ -136,7 +136,7 @@ export function familyDifferentiators(rng: Rng, family: Family): Differentiator[
     linear: ["dotsOut", "bar", "tick", "dotIn"],
     tally: ["tick"],
     featural: ["bar", "tick", "dotOut"],
-    syllabic: ["dotOut", "bar", "tick"],
+    syllabic: ["bar", "tick", "hookEnd"],
   };
   const list = base[family].slice();
   if (rng.chance(0.5) && list.length > 1) [list[0], list[1]] = [list[1], list[0]];

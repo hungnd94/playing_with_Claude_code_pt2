@@ -44,8 +44,23 @@ Demo: `npx tsx tools/lang-demo.ts <seed>`.
 - `bridge.ts`: `toWName`, `toUtterance`, `displayParts`, `stageLabels`.
 - `deriveLanguage(..., { stage: true })` for Old/Middle/Modern stages.
 
-## In progress
-- Multi-seed critical review of the demo output; name quality.
+## Assessment at resume (session 3)
+- Tests pass (22), tsc clean for lang. Warm timings: proto 7 ms, derive 12-14 ms (budget 10),
+  names 30-120 µs (nameFeature over 0.1 ms). Hotspots: soundchange `count()` in template
+  weights (recomputed after every accepted change), naming `choose()` building full Names
+  (ipa, parts, titleCase, offensive check) for every rejected candidate.
+- Orthography incoherent in places: daughter "reforms" borrow 1-2 random consonant spellings
+  from any school (ň/č in an Andean-spelled language, ng' in a Polynesian one); long vowels
+  mix marks (ô and ō in one Turkic language); nasal vowels with tildes everywhere (ẽ ĩ ũ);
+  bantu ŋ "ng'" before k ("jing'kaya"); nahuatl w-after-vowel "uh" gives "ouh".
+- Names too long (6-7 syllable feature/deity names), "Place of Suns" glosses, too many
+  "(meaning lost)" settlements in proto-languages, male ending in hiatus ("Mungāō").
+- Daughter language names all share the parent's stem (Miden, Mide, Mideme, Midheni, Mize).
+- Grammar: article/adjective order bug ("hu mi man" = deep DEF river).
+
+## In progress (session 3)
+- Orthography coherence overhaul → name length/quality → daughter names → grammar fix →
+  performance → README + tests → multi-seed review.
 
 ## Todo
 1. README.md (API).

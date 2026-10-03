@@ -48,8 +48,14 @@ export function tinctureOk(over: Tint, under: Tint): boolean {
  * Visual contrast heuristic: like the rule of tincture but also treats furs by
  * their dominant ground, so the generator avoids ermine on argent etc.
  */
+/** Furs whose two tinctures cover the field in equal, large pieces (vair bells, potents). */
+const BOLD_FURS: readonly Tint[] = ["vair", "countervair", "potent"];
+
 export function readable(over: Tint, under: Tint): boolean {
   if (over === under) return false;
+  // Azure on vair vanishes into the blue bells, argent into the white ones.
+  if (BOLD_FURS.includes(under) && (FUR_PARTS[under as Fur] as Tint[]).includes(over)) return false;
+  if (BOLD_FURS.includes(over) && (FUR_PARTS[over as Fur] as Tint[]).includes(under)) return false;
   const a = dominant(over);
   const b = dominant(under);
   if (a === b) return false;

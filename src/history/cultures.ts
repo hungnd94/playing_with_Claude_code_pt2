@@ -137,7 +137,7 @@ export function makeCulture(
     id, rec, alive: true, lang: o.lang, langId: o.langId, stageDue: sim.year + rng.int(450, 800), tech: o.tech, script: o.script, techAnnounced: Math.floor(o.tech),
     values: o.values, archetype: o.archetype, style: st.style, core: o.homeCell, folk: parentState ? parentState.folk : -1, sets: 0, pop: 0,
     contacts: new Set(), cognatic: parentState ? parentState.cognatic : rng.chance(0.3), law: parentState ? parentState.law : lawFor(o.archetype, rng.next()),
-    raiders: false,
+    raiders: false, nextTech: 0, bigCity: -1, bigUrban: 0, wealth: 0, lastSplit: sim.year,
   };
   if (parentState) rec.folkReligion = parentState.folk;
   sim.C.push(c);

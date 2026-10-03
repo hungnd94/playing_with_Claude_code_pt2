@@ -294,90 +294,160 @@ function ordinaryNoun(o: Ordinary): string {
 
 // ---------------------------------------------------------------------------
 
-function blazonSimple(a: SimpleArms, opts: BlazonOptions): string {
-  const plain = a.field.partition === "plain" ? a.field.tinctures[0] : undefined;
-  const nm = new Namer(opts, plain);
-  let field = blazonField(a.field, nm);
-  if (a.semy) {
-    const term = SEMY_TERMS[a.semy.charge] ?? `semy of ${chargeDef(a.semy.charge).plural}`;
-    field += ` ${term} ${nm.name(a.semy.tincture)}`;
-  }
-  const parts: string[] = [];
+/**
+ * One clause of a blazon: text, then (optionally) a trailing tincture, then
+ * whatever must follow the tincture ("armed and langued Azure", "charged with…").
+ * Consecutive pieces that share their trailing tincture are merged, as heralds
+ * do: "Argent, a fess and a canton Gules"; "Sable, three piles within a bordure
+ * Or"; "Azure crusily and a lion rampant Or".
+ */
+interface Piece {
+  role: "semy" | "main" | "chief" | "canton" | "bordure" | "diff";
+  text: string;
+  tint: Tint | null;
+  after: string;
+  /** Can absorb a following piece of the same tincture with "and". */
+  openAnd: boolean;
+  /** Can absorb a following bordure of the same tincture with "within". */
+  openWithin: boolean;
+  /** Can itself be absorbed into the preceding piece. */
+  mergeIn: boolean;
+  /** Number of distinct groups of charges/ordinaries this piece names (for "all within"). */
+  weight: number;
+}
+
+function piece(role: Piece["role"], text: string, tint: Tint | null, after = "", o: Partial<Piece> = {}): Piece {
+  const simple = !after && tint !== null;
+  return { role, text, tint, after, openAnd: simple, openWithin: simple, mergeIn: tint !== null, weight: 1, ...o };
+}
+
+function mainPieces(a: SimpleArms, nm: Namer): Piece[] {
   const o = a.ordinary;
   if (o) {
     const oNoun = ordinaryNoun(o);
-    const oTint = o.counterchanged ? "counterchanged" : null;
+    const counterO = !!o.counterchanged;
     if (a.charges) {
-      const between = chargeText(a.charges, nm, false);
-      const sameTint = !o.counterchanged && !between.counter && between.tint === o.tincture && !between.after;
+      // Charges set about an ordinary take their places from it: no "in pale", "three, two and one".
+      const between = chargeText(a.charges, nm, true);
+      const sameTint = !counterO && !between.counter && between.tint === o.tincture && !between.after;
       if (o.charges) {
         // "on a chevron Or between three mullets Argent three roundels Gules"
         const onT = chargeText(o.charges, nm, true);
         const onNoun = o.charges.count === a.charges.count && o.charges.count > 1 ? onT.noun.replace(/^\w+/, "as many") : onT.noun;
-        if (sameTint) {
-          const t = nm.name(o.tincture);
-          parts.push(join(`on ${oNoun}`, "between", between.noun, t, onNoun, tintOf(onT, nm, true), onT.after));
-        } else {
-          const t1 = oTint ?? nm.name(o.tincture);
-          const t2 = tintOf(between, nm);
-          parts.push(join(`on ${oNoun}`, t1, "between", between.noun, t2, between.after, onNoun, tintOf(onT, nm, true), onT.after));
-        }
-      } else if (sameTint) {
-        parts.push(join(oNoun, "between", between.noun, nm.name(o.tincture)));
-      } else {
-        const t1 = oTint ?? nm.name(o.tincture);
-        parts.push(join(oNoun, t1, "between", between.noun, tintOf(between, nm), between.after));
+        const head = sameTint
+          ? join(`on ${oNoun}`, "between", between.noun, nm.name(o.tincture))
+          : join(`on ${oNoun}`, counterO ? "counterchanged" : nm.name(o.tincture), "between", between.noun, tintOf(between, nm), between.after);
+        const t = onT.counter ? null : onT.tint;
+        return [piece("main", join(head, onNoun, onT.counter ? "counterchanged" : ""), t, onT.after, { openAnd: false, openWithin: !onT.after && t !== null, mergeIn: false, weight: 3 })];
       }
-    } else if (o.charges) {
-      const onT = chargeText(o.charges, nm, true);
-      const t1 = oTint ?? nm.name(o.tincture);
-      parts.push(join(`on ${oNoun}`, t1, onT.noun, tintOf(onT, nm, true), onT.after));
-    } else {
-      parts.push(join(oNoun, oTint ?? nm.name(o.tincture)));
+      if (o.kind === "orle" && !counterO && !between.counter) {
+        // A charge inside an orle: "a martlet Argent within an orle Or".
+        const head = join(between.noun, sameTint ? "" : tintOf(between, nm), between.after, "within", oNoun);
+        return [piece("main", head, o.tincture, "", { openAnd: false, weight: 2, mergeIn: sameTint })];
+      }
+      if (sameTint) return [piece("main", join(oNoun, "between", between.noun), o.tincture, "", { openAnd: false, weight: 2 })];
+      const head = join(oNoun, counterO ? "counterchanged" : nm.name(o.tincture), "between", between.noun);
+      if (between.counter) return [piece("main", join(head, "counterchanged"), null, "", { weight: 2, mergeIn: false })];
+      return [piece("main", head, between.tint, between.after, { openAnd: false, openWithin: !between.after && between.tint !== null, mergeIn: false, weight: 2 })];
     }
-  } else if (a.charges) {
+    if (o.charges) {
+      const onT = chargeText(o.charges, nm, true);
+      const head = join(`on ${oNoun}`, counterO ? "counterchanged" : nm.name(o.tincture), onT.noun);
+      if (onT.counter) return [piece("main", join(head, "counterchanged"), null, "", { mergeIn: false, weight: 2 })];
+      return [piece("main", head, onT.tint, onT.after, { openAnd: false, openWithin: !onT.after && onT.tint !== null, mergeIn: false, weight: 2 })];
+    }
+    if (counterO) return [piece("main", join(oNoun, "counterchanged"), null)];
+    return [piece("main", oNoun, o.tincture)];
+  }
+  if (a.charges) {
     const p = chargeText(a.charges, nm, false);
     if (a.secondary) {
-      const s = chargeText(a.secondary, nm, false);
+      const sx = chargeText(a.secondary, nm, false);
       const orle = a.secondary.arrangement === "orle" || a.secondary.count >= 6;
-      const sNoun = orle ? `an orle of ${s.noun.replace(/ in orle$/, "")}` : s.noun;
+      const sNoun = orle ? `an orle of ${sx.noun.replace(/ in orle$/, "")}` : sx.noun;
       const link = orle ? "within" : "between";
-      const same = !p.counter && !s.counter && p.tint !== null && p.tint === s.tint && !p.after;
-      if (same) parts.push(join(p.noun, link, sNoun, tintOf(s, nm), s.after));
-      else parts.push(join(p.noun, tintOf(p, nm), p.after, link, sNoun, tintOf(s, nm), s.after));
-    } else {
-      parts.push(join(p.noun, tintOf(p, nm), p.after));
+      const same = !p.counter && !sx.counter && p.tint !== null && p.tint === sx.tint && !p.after;
+      const head = same ? join(p.noun, link, sNoun) : join(p.noun, tintOf(p, nm), p.after, link, sNoun);
+      if (sx.counter) return [piece("main", join(head, "counterchanged"), null, "", { weight: 2, mergeIn: false })];
+      return [piece("main", head, sx.tint, sx.after, { openAnd: false, openWithin: !sx.after && sx.tint !== null, mergeIn: same, weight: 2 })];
     }
+    if (p.counter) return [piece("main", join(p.noun, "counterchanged"), null)];
+    // Roundels named by tincture ("three bezants") carry no tincture word.
+    return [piece("main", p.noun, p.tint, p.after, p.tint === null ? { openAnd: false, openWithin: false, mergeIn: false } : {})];
   }
+  return [];
+}
+
+function blazonSimple(a: SimpleArms, opts: BlazonOptions): string {
+  const plain = a.field.partition === "plain" ? a.field.tinctures[0] : undefined;
+  const nm = new Namer(opts, plain);
+  const field = blazonField(a.field, nm);
+  const pieces: Piece[] = [];
+  if (a.semy) {
+    const term = SEMY_TERMS[a.semy.charge] ?? `semy of ${chargeDef(a.semy.charge).plural}`;
+    pieces.push(piece("semy", term, a.semy.tincture, "", { openWithin: false }));
+  }
+  pieces.push(...mainPieces(a, nm));
   if (a.chief) {
     const c = a.chief;
     const cn = join("a chief", lineWord(c.line));
     if (c.charges) {
       const t = chargeText(c.charges, nm, true);
-      parts.push(join(`on ${cn}`, nm.name(c.tincture), t.noun, tintOf(t, nm, true), t.after));
-    } else parts.push(join(cn, nm.name(c.tincture)));
+      const head = join(`on ${cn}`, nm.name(c.tincture), t.noun);
+      pieces.push(t.counter ? piece("chief", join(head, "counterchanged"), null) : piece("chief", head, t.tint, t.after, { openAnd: false, mergeIn: false }));
+    } else pieces.push(piece("chief", cn, c.tincture));
   }
   if (a.canton) {
     const c = a.canton;
     const cn = c.sinister ? "a canton sinister" : "a canton";
     if (c.charge) {
       const t = chargeText(c.charge, nm, true);
-      parts.push(join(`on ${cn}`, nm.name(c.tincture), t.noun, tintOf(t, nm, true), t.after));
-    } else parts.push(join(cn, nm.name(c.tincture)));
+      pieces.push(piece("canton", join(`on ${cn}`, nm.name(c.tincture), t.noun), t.tint, t.after, { openAnd: false, mergeIn: false }));
+    } else pieces.push(piece("canton", cn, c.tincture));
   }
   if (a.bordure) {
     const b = a.bordure;
-    let bn = join("a bordure", lineWord(b.line));
-    if (b.compony) bn = join(bn, "compony", nm.name(b.tincture), "and", nm.name(b.compony));
-    else bn = join(bn, nm.name(b.tincture));
-    if (b.charges) {
+    const bn = join("a bordure", lineWord(b.line));
+    if (b.compony) {
+      pieces.push(piece("bordure", join(bn, "compony", nm.name(b.tincture), "and", nm.name(b.compony)), null, "", { mergeIn: false }));
+    } else if (b.charges) {
       const t = chargeText(b.charges, nm, true);
-      bn = join(bn, "charged with", t.noun, tintOf(t, nm, true), t.after);
-    }
-    parts.push(parts.length ? join(parts.length > 1 ? "all within" : "within", bn) : bn);
+      pieces.push(piece("bordure", bn, b.tincture, join("charged with", t.noun, tintOf(t, nm, true), t.after)));
+    } else pieces.push(piece("bordure", bn, b.tincture));
   }
-  for (const d of a.difference ?? []) parts.push(differenceText(d, nm));
-  return finish(field, parts);
+  for (const d of a.difference ?? []) pieces.push(piece("diff", differenceText(d, nm), null, "", { mergeIn: false, openAnd: false, openWithin: false }));
+  return assemble(field, pieces, nm);
+}
+
+/** Merge pieces sharing a tincture and join everything into one blazon. */
+function assemble(field: string, pieces: Piece[], nm: Namer): string {
+  interface Group { text: string; tint: Tint | null; after: string; openAnd: boolean; openWithin: boolean; first: Piece }
+  const groups: Group[] = [];
+  let weightBefore = 0;
+  for (const p of pieces) {
+    const g = groups[groups.length - 1];
+    const within = p.role === "bordure" && weightBefore > 0 ? (weightBefore > 1 ? "all within" : "within") : "";
+    const canMerge =
+      g && p.mergeIn && g.tint !== null && g.tint === p.tint && !g.after && p.role !== "diff" &&
+      (p.role === "bordure" ? g.openWithin : g.openAnd && g.first.role !== "diff");
+    if (canMerge) {
+      g.text = join(g.text, p.role === "bordure" ? within : "and", p.text);
+      g.after = p.after;
+      g.openAnd = p.openAnd && g.first.role !== "semy" ? g.openAnd && p.openAnd : false;
+      g.openWithin = p.openWithin;
+    } else {
+      groups.push({ text: within ? join(within, p.text) : p.text, tint: p.tint, after: p.after, openAnd: p.openAnd, openWithin: p.openWithin, first: p });
+    }
+    weightBefore += p.role === "semy" || p.role === "diff" ? 0 : p.weight;
+  }
+  let s = field;
+  groups.forEach((g, i) => {
+    const text = join(g.text, g.tint !== null ? nm.name(g.tint) : "", g.after);
+    // The semé belongs to the field ("Azure semy-de-lis Or"); bordures attach with "within".
+    const attach = g.first.role === "semy" || /^(all )?within\b/.test(g.text) ? " " : ", ";
+    s += attach + text;
+  });
+  return s;
 }
 
 function differenceText(d: Difference, nm: Namer): string {
@@ -389,17 +459,6 @@ function differenceText(d: Difference, nm: Namer): string {
   };
   const n = names[d.mark];
   return join(`${article(n)} ${n}`, nm.name(d.tincture), "for difference");
-}
-
-function finish(field: string, parts: string[]): string {
-  if (!parts.length) return field;
-  // Bordures introduced with "all within" attach without a comma.
-  let s = field;
-  parts.forEach((p, i) => {
-    if (p.startsWith("all within") || p.startsWith("within")) s += " " + p;
-    else s += (i === 0 ? ", " : ", ") + p;
-  });
-  return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +486,8 @@ function blazonMarshalled(m: MarshalledArms, opts: BlazonOptions, depth: number)
       groups.push(`${num(1)} ${sub(q1)}`, `${num(2)} ${sub(q2)}`, `${num(3)} ${sub(q3)}`, `${num(4)} ${sub(q4)}`);
     }
     s = `${depth > 0 ? "quarterly" : "Quarterly"}, ${groups.join("; ")}`;
+  } else if (m.method === "single") {
+    s = sub(m.coats[0]);
   } else if (m.method === "impaled") {
     s = `${sub(m.coats[0])}; impaling ${sub(m.coats[1] ?? m.coats[0])}`;
   } else {

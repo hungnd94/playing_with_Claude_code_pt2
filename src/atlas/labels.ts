@@ -31,11 +31,16 @@ export interface TextStyle {
 }
 
 export interface PlacedGlyph {
+  /** Character drawn with the font (a Latin-1 base when the original is outside the face). */
   ch: string;
   x: number;
   y: number;
   /** Rotation, radians. */
   a: number;
+  /** Combining marks drawn procedurally above/below `ch` (e.g. "\u030C" for š), or "". */
+  marks: string;
+  /** Advance width (px). */
+  w: number;
 }
 
 export type LabelKind =
@@ -114,13 +119,47 @@ export interface Layout {
   maxTurn: number;
 }
 
+/**
+ * The map faces (IM Fell) cover Latin-1 only. A character outside it is split
+ * into the longest Latin-1 precomposed base and the remaining combining marks,
+ * which the renderer draws itself, so a name keeps one typeface ("š" → "s" +
+ * caron, "ǖ" → "ü" + macron). Characters with no Latin-1 base are kept whole.
+ */
+export function splitChar(ch: string): { base: string; marks: string } {
+  const cp = ch.codePointAt(0) ?? 0;
+  if (cp <= 0xff) return { base: ch, marks: "" };
+  const parts = Array.from(ch.normalize("NFD"));
+  if (parts.length < 2 || (parts[0].codePointAt(0) ?? 0) > 0xff) return { base: ch, marks: "" };
+  for (let i = parts.length - 1; i >= 1; i--) {
+    const c = parts.slice(0, i + 1).join("").normalize("NFC");
+    if (Array.from(c).length === 1 && (c.codePointAt(0) ?? 0) <= 0xff) return { base: c, marks: parts.slice(i + 1).join("") };
+  }
+  let base = parts[0];
+  const marks = parts.slice(1).join("");
+  // A mark above an i or j replaces its dot.
+  if (base === "i" && /[\u0300-\u030F\u0311]/.test(marks)) base = "\u0131";
+  return { base, marks };
+}
+
+export interface Advances {
+  chars: string[];
+  marks: string[];
+  w: number[];
+  total: number;
+}
+
 /** Advance widths of the characters of `text` (with letter spacing). */
-export function advances(measure: Measure, fnt: string, text: string, spacingPx: number): { chars: string[]; w: number[]; total: number } {
-  const chars = Array.from(text);
+export function advances(measure: Measure, fnt: string, text: string, spacingPx: number): Advances {
+  const chars: string[] = [], marks: string[] = [];
+  for (const c of Array.from(text.normalize("NFC"))) {
+    const sp = splitChar(c);
+    chars.push(sp.base);
+    marks.push(sp.marks);
+  }
   const w = chars.map((c) => measure(fnt, c));
   let total = 0;
   for (let i = 0; i < w.length; i++) total += w[i] + (i < w.length - 1 ? spacingPx : 0);
-  return { chars, w, total };
+  return { chars, marks, w, total };
 }
 
 function cumulative(path: Pt[]): number[] {
@@ -158,7 +197,7 @@ export function readable(path: Pt[]): Pt[] {
  * Lay text along a path, centred at arc length `centerS` (default: middle).
  * The path is the text's visual centre line. Returns null if it does not fit.
  */
-export function layoutOnPath(path: Pt[], adv: { chars: string[]; w: number[]; total: number }, spacingPx: number, size: number, centerS?: number): Layout | null {
+export function layoutOnPath(path: Pt[], adv: Advances, spacingPx: number, size: number, centerS?: number): Layout | null {
   const cum = cumulative(path);
   const L = cum[cum.length - 1];
   if (adv.total > L) return null;
@@ -179,7 +218,7 @@ export function layoutOnPath(path: Pt[], adv: { chars: string[]; w: number[]; to
       maxTurn = Math.max(maxTurn, d);
     }
     prevA = p.a;
-    glyphs.push({ ch: adv.chars[i], x: p.x, y: p.y, a: p.a });
+    glyphs.push({ ch: adv.chars[i], x: p.x, y: p.y, a: p.a, marks: adv.marks[i], w });
     if (adv.chars[i].trim() !== "") {
       const ca = Math.abs(Math.cos(p.a)), sa = Math.abs(Math.sin(p.a));
       const hw = (w / 2) * ca + hh * sa, hv = (w / 2) * sa + hh * ca;
@@ -191,7 +230,7 @@ export function layoutOnPath(path: Pt[], adv: { chars: string[]; w: number[]; to
 }
 
 /** Straight horizontal layout with the text's visual centre at (cx, cy). */
-export function layoutStraight(cx: number, cy: number, adv: { chars: string[]; w: number[]; total: number }, spacingPx: number, size: number): Layout {
+export function layoutStraight(cx: number, cy: number, adv: Advances, spacingPx: number, size: number): Layout {
   const path: Pt[] = [[cx - adv.total / 2 - 1, cy], [cx + adv.total / 2 + 1, cy]];
   return layoutOnPath(path, adv, spacingPx, size)!;
 }

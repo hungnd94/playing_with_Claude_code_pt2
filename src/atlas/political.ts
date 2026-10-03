@@ -1,7 +1,9 @@
 /**
  * Political geometry at a year: realm territories (closed loops for
- * watercolour washes), realm borders (drawn once, only over land), vassal
- * relations, and per-realm node sets for label axes.
+ * watercolour washes, slightly dilated into the sea so that washes clipped to
+ * the land meet the coastline exactly), realm borders (drawn once, only where
+ * land meets land), vassal relations, and the main territorial component of
+ * every realm (node positions for the label axis).
  */
 import type { History } from "../history/types";
 import type { PhysicalWorld } from "../world/types";
@@ -14,64 +16,138 @@ export interface RealmGeom {
   id: number;
   /** Wash colour (pigment), RGB. */
   color: [number, number, number];
+  /** Direct overlord at the year (-1 = independent). */
   overlord: number;
-  /** Closed screen loops (even-odd) of the territory. */
+  /** Top of the vassal chain (= id when independent). */
+  suzerain: number;
+  /** Closed screen loops (even-odd) of the territory (dilated into water). */
   loops: Pt[][];
-  /** Node count (area proxy). */
+  /** Land node count (area proxy). */
   nodes: number;
-  /** Node screen positions (subsampled) for the label axis. */
+  /** Node positions (subsampled) of the largest connected part, for the label axis. */
   xs: number[];
   ys: number[];
+  /** Node count of the largest connected part. */
+  mainNodes: number;
 }
 
 export interface BorderLine {
   pts: Pt[];
-  /** "realm" between independent realms; "vassal" between a vassal and its overlord or fellow vassals. */
-  kind: "realm" | "vassal";
+  /** "realm" between realms of different suzerainties; "vassal" inside one suzerainty; "frontier" against unclaimed land. */
+  kind: "realm" | "vassal" | "frontier";
 }
 
 export interface PoliticalGeom {
   realms: RealmGeom[];
   borders: BorderLine[];
-  /** Owner per grid node (-1 none / water). */
+  /** Owner per grid node, land only (-1 none / water). */
   ownerNode: Int32Array;
   /** Owner per cell at the year. */
   ownerCell: Int32Array;
 }
 
 export function buildPolitical(world: PhysicalWorld, h: History, year: number, f: FieldGrid, k: number): PoliticalGeom | null {
+  void world;
   const owner = ownerAt(h, year);
   if (!owner) return null;
   const { gx, gy, step } = f;
   const N = gx * gy;
   const ownerNode = new Int32Array(N).fill(-1);
   const counts = new Map<number, number>();
+  const alive = new Map<number, boolean>();
+  const isAlive = (o: number) => {
+    let a = alive.get(o);
+    if (a === undefined) {
+      a = !!h.polities[o] && polityAlive(h.polities[o], year);
+      alive.set(o, a);
+    }
+    return a;
+  };
   for (let q = 0; q < N; q++) {
     const c = f.landCell[q];
     if (c < 0 || f.coast[q] <= 0) continue;
     const o = owner[c];
-    if (o < 0 || !h.polities[o] || !polityAlive(h.polities[o], year)) continue;
+    if (o < 0 || !isAlive(o)) continue;
     ownerNode[q] = o;
     counts.set(o, (counts.get(o) ?? 0) + 1);
   }
-  const minNodes = Math.max(30, (N / 4000) | 0);
+  if (counts.size === 0) return { realms: [], borders: [], ownerNode, ownerCell: owner };
+
+  // Dilate into water by a few nodes (4-neighbour propagation), for the wash loops.
+  const dil = Int32Array.from(ownerNode);
+  const D = Math.max(2, Math.ceil((7 * k) / step));
+  let frontier: number[] = [];
+  for (let q = 0; q < N; q++) if (dil[q] >= 0) frontier.push(q);
+  for (let pass = 0; pass < D && frontier.length; pass++) {
+    const next: number[] = [];
+    for (const q of frontier) {
+      const i = q % gx, j = (q - i) / gx;
+      const o = dil[q];
+      if (i > 0 && dil[q - 1] < 0 && f.coast[q - 1] <= 0) { dil[q - 1] = o; next.push(q - 1); }
+      if (i < gx - 1 && dil[q + 1] < 0 && f.coast[q + 1] <= 0) { dil[q + 1] = o; next.push(q + 1); }
+      if (j > 0 && dil[q - gx] < 0 && f.coast[q - gx] <= 0) { dil[q - gx] = o; next.push(q - gx); }
+      if (j < gy - 1 && dil[q + gx] < 0 && f.coast[q + gx] <= 0) { dil[q + gx] = o; next.push(q + gx); }
+    }
+    frontier = next;
+  }
+
+  // Largest 4-connected component of each realm's land nodes.
+  const comp = new Int32Array(N).fill(-1);
+  const bestComp = new Map<number, { id: number; size: number }>();
+  let compId = 0;
+  const stack: number[] = [];
+  for (let q0 = 0; q0 < N; q0++) {
+    const o = ownerNode[q0];
+    if (o < 0 || comp[q0] >= 0) continue;
+    let size = 0;
+    comp[q0] = compId;
+    stack.push(q0);
+    while (stack.length) {
+      const q = stack.pop()!;
+      size++;
+      const i = q % gx;
+      if (i > 0 && comp[q - 1] < 0 && ownerNode[q - 1] === o) { comp[q - 1] = compId; stack.push(q - 1); }
+      if (i < gx - 1 && comp[q + 1] < 0 && ownerNode[q + 1] === o) { comp[q + 1] = compId; stack.push(q + 1); }
+      if (q >= gx && comp[q - gx] < 0 && ownerNode[q - gx] === o) { comp[q - gx] = compId; stack.push(q - gx); }
+      if (q + gx < N && comp[q + gx] < 0 && ownerNode[q + gx] === o) { comp[q + gx] = compId; stack.push(q + gx); }
+    }
+    const b = bestComp.get(o);
+    if (!b || size > b.size) bestComp.set(o, { id: compId, size });
+    compId++;
+  }
+
+  const suzerainOf = (id: number): number => {
+    let cur = id;
+    for (let guard = 0; guard < 8; guard++) {
+      const p = h.polities[cur];
+      if (!p) break;
+      const ov = overlordAt(p, year);
+      if (ov < 0 || ov === cur || !h.polities[ov] || !isAlive(ov)) break;
+      cur = ov;
+    }
+    return cur;
+  };
+
+  const minNodes = Math.max(8, Math.round((40 * k * k) / (step * step)));
   const realms: RealmGeom[] = [];
   const ids = [...counts.keys()].sort((a, b) => a - b);
   for (const id of ids) {
     const cnt = counts.get(id)!;
     if (cnt < minNodes) continue;
-    // Bounding box of the realm's nodes.
+    const bc = bestComp.get(id)!;
+    // Bounding box of the realm's dilated nodes, and the main component's node positions.
     let i0 = gx, i1 = 0, j0 = gy, j1 = 0;
     const xs: number[] = [], ys: number[] = [];
-    const sub = Math.max(1, Math.round(Math.sqrt(cnt / 3000)));
+    const sub = Math.max(1, Math.round(Math.sqrt(bc.size / 2500)));
     for (let j = 0; j < gy; j++)
       for (let i = 0; i < gx; i++) {
-        if (ownerNode[j * gx + i] !== id) continue;
+        const q = j * gx + i;
+        if (dil[q] !== id) continue;
         if (i < i0) i0 = i;
         if (i > i1) i1 = i;
         if (j < j0) j0 = j;
         if (j > j1) j1 = j;
-        if (i % sub === 0 && j % sub === 0) {
+        if (comp[q] === bc.id && i % sub === 0 && j % sub === 0) {
           xs.push(f.x0 + i * step);
           ys.push(f.y0 + j * step);
         }
@@ -82,17 +158,21 @@ export function buildPolitical(world: PhysicalWorld, h: History, year: number, f
       for (let i = 0; i < bw; i++) {
         const gi = i0 - 1 + i, gj = j0 - 1 + j;
         if (gi < 0 || gj < 0 || gi >= gx || gj >= gy) continue;
-        mask[j * bw + i] = ownerNode[gj * gx + gi] === id ? 1 : 0;
+        mask[j * bw + i] = dil[gj * gx + gi] === id ? 1 : 0;
       }
     const raw = marchingSquares(mask, bw, bh, 0.5, 0);
     const loops: Pt[][] = [];
     for (const l of raw) {
       const scr: Pt[] = l.pts.map(([i, j]) => [f.x0 + (i0 - 1 + i) * step, f.y0 + (j0 - 1 + j) * step]);
-      if (polylineLength(scr, true) < 10 * k) continue;
+      if (polylineLength(scr, true) < 8 * k) continue;
       loops.push(chaikin(decimate({ pts: scr, closed: true }, step * 0.8), 3).pts);
     }
     const p = h.polities[id];
-    realms.push({ id, color: pigment(p.color as [number, number, number]), overlord: overlordAt(p, year), loops, nodes: cnt, xs, ys });
+    const ov = overlordAt(p, year);
+    realms.push({
+      id, color: pigment(p.color as [number, number, number]), overlord: ov >= 0 && isAlive(ov) ? ov : -1, suzerain: suzerainOf(id),
+      loops, nodes: cnt, xs, ys, mainNodes: bc.size,
+    });
   }
 
   // Borders: walk each realm's loops; keep stretches where the other side is land of another owner.
@@ -105,10 +185,10 @@ export function buildPolitical(world: PhysicalWorld, h: History, year: number, f
     return ownerNode[q];
   };
   const realmSet = new Map(realms.map((r) => [r.id, r]));
-  const vassalPair = (a: number, b: number) => {
+  const sameSuzerainty = (a: number, b: number) => {
     const ra = realmSet.get(a), rb = b >= 0 ? realmSet.get(b) : undefined;
     if (!ra || !rb) return false;
-    return ra.overlord === b || rb.overlord === a || (ra.overlord >= 0 && ra.overlord === rb.overlord);
+    return ra.suzerain === rb.suzerain;
   };
   for (const r of realms) {
     for (const loop of r.loops) {
@@ -127,8 +207,10 @@ export function buildPolitical(world: PhysicalWorld, h: History, year: number, f
         // inside (mask high) is on the left: outside normal = (-dy, dx)
         const off = step * 1.6;
         const o = nodeOwnerAt(p[0] + (-dy / L) * off, p[1] + (dx / L) * off);
-        const draw = o !== null && o !== r.id && (o === -1 || !realmSet.has(o) || r.id < o);
-        const kind: BorderLine["kind"] = o !== null && o >= 0 && vassalPair(r.id, o) ? "vassal" : "realm";
+        const inside = nodeOwnerAt(p[0] - (-dy / L) * off, p[1] - (dx / L) * off);
+        // Draw each shared border once (from the lower id), and edges against unclaimed land.
+        const draw = o !== null && inside !== null && o !== r.id && (o === -1 || !realmSet.has(o) || r.id < o);
+        const kind: BorderLine["kind"] = o === -1 || (o !== null && !realmSet.has(o)) ? "frontier" : o !== null && sameSuzerainty(r.id, o) ? "vassal" : "realm";
         if (draw) {
           if (run.length && kind !== runKind) {
             run.push(p);

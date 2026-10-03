@@ -264,9 +264,17 @@ export interface Polity {
   predecessors: Id[];
   successors: Id[];
   capitals: { year: number; settlement: Id }[];
+  /** Founding (ruling) culture. */
   culture: Id;
+  /** Ruling culture over time (changes when the ruling people splits off a daughter people or shifts). */
+  cultures: { year: number; culture: Id }[];
+  /** State religion over time. */
   religions: { year: number; religion: Id }[];
-  /** Ruler sequence (persons), including regents/elected heads. */
+  /**
+   * Ruler sequence (persons): hereditary rulers, elected heads, appointed
+   * priests. `to` = -1 while still reigning at the end of the run. Regents are
+   * not listed here (they carry a "regent" role and a `regency` event).
+   */
   rulers: { person: Id; from: number; to: number }[];
   /** Overlord over time (-1 = independent). */
   overlords: { year: number; overlord: Id }[];

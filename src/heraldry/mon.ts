@@ -830,3 +830,60 @@ export function generateMon(rng: Rng, opts: MonOptions = {}): Mon {
   mon.ground = opts.ground ?? scheme[1];
   return mon;
 }
+
+// ---------------------------------------------------------------------------
+// Differencing (branch families)
+
+const ENCLOSURE_NEXT: Record<MonEnclosure, MonEnclosure[]> = {
+  none: ["ring", "ring", "thinRing", "doubleRing", "hexagon", "melon"],
+  ring: ["doubleRing", "thickRing", "hexagon", "melon", "square"],
+  thinRing: ["ring", "doubleRing", "hexagon"],
+  thickRing: ["ring", "doubleRing", "melon"],
+  doubleRing: ["ring", "hexagon", "melon"],
+  hexagon: ["ring", "doubleRing"],
+  lozenge: ["ring", "hexagon"],
+  square: ["ring", "melon"],
+  melon: ["ring", "doubleRing"],
+};
+
+/**
+ * A branch family's variant of a mon, made the way Japanese houses made them:
+ * set the device within (or change) an enclosure, alter the number of its
+ * elements, reverse the swirl of commas, turn a single creature into a facing
+ * pair, or exchange ink and ground. Never mutates the input.
+ */
+export function differenceMon(mon: Mon, rng: Rng): Mon {
+  const m = JSON.parse(JSON.stringify(mon)) as Mon;
+  const mo = m.motif;
+  const countable = mo.kind === "commas" || mo.kind === "leaves" || mo.kind === "radial" || (mo.kind === "flower" && mo.petal !== "rayed");
+  const how = rng.weighted([
+    ["enclosure", 6],
+    ["count", countable ? 3 : 0],
+    ["swirl", mo.kind === "commas" ? 2 : 0],
+    ["pair", mo.kind === "single" && CHARGES[mo.charge]?.attitudes ? 2 : 0],
+    ["swap", 1.2],
+  ] as [string, number][]);
+  switch (how) {
+    case "count":
+      if (mo.kind === "commas") mo.n = mo.n === 3 ? rng.pick([2, 4]) : 3;
+      else if (mo.kind === "leaves") mo.n = mo.n === 3 ? rng.pick([4, 5]) : 3;
+      else if (mo.kind === "radial") mo.n = mo.n >= 5 ? mo.n - 1 : mo.n + 1;
+      else if (mo.kind === "flower") mo.n = mo.n === 5 ? rng.pick([4, 6]) : 5;
+      break;
+    case "swirl":
+      if (mo.kind === "commas") mo.swirl = mo.swirl > 0 ? -1 : 1;
+      break;
+    case "pair":
+      if (mo.kind === "single") m.motif = { kind: "facing", charge: mo.charge, attitude: mo.attitude };
+      break;
+    case "swap": {
+      const ink = m.ink ?? "sable", ground = m.ground ?? "argent";
+      m.ink = ground;
+      m.ground = ink;
+      break;
+    }
+    default:
+      m.enclosure = rng.pick(ENCLOSURE_NEXT[m.enclosure]);
+  }
+  return m;
+}

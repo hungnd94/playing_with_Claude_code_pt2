@@ -12,7 +12,7 @@ import type { History, LiveSnapshot } from "../history/types";
 import type { BakedGlobe } from "../render/bake/index";
 
 export type ToWorker =
-  | { type: "generate"; job: number; seed: string; params?: Partial<WorldParams> }
+  | { type: "generate"; job: number; seed: string; params?: Partial<WorldParams>; engine?: "sim" | "mock" }
   | { type: "bake"; job: number; world: PhysicalWorld; widths: number[] };
 
 export type FromWorker =

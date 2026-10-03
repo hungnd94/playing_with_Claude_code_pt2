@@ -333,7 +333,8 @@ function spellRotate(s: Script, word: string[]): Cluster[] {
   const out: Cluster[] = [];
   const rotFor = (v: string, host: Cluster): void => {
     const [q, fm] = resolveVowel(s, v, o.rotations);
-    if (host.base) host.base = { ...host.base, rot: o.rotations[q] ?? 0 };
+    const ops = o.vowelOps[q];
+    if (host.base) host.base = ops?.length ? { ...host.base, rot: o.rotations[q] ?? 0, ops } : { ...host.base, rot: o.rotations[q] ?? 0 };
     for (const m of fm) attach(s, host, m);
     host.ph.push(v);
   };

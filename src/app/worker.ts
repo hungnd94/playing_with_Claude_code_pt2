@@ -6,7 +6,7 @@ import { Rng } from "../core/rng";
 import { generatePhysical } from "../geo/index";
 import { DEFAULT_PARAMS, type WorldParams } from "../world/types";
 import { bakeGlobe, bakedTransferables } from "../render/bake/index";
-import { runHistory, HISTORY_SOURCE } from "./engine/history";
+import { runHistory } from "./engine/history";
 import { collectBuffers, type FromWorker, type ToWorker } from "./protocol";
 
 const ctx = self as unknown as {
@@ -18,11 +18,11 @@ const post = (m: FromWorker, transfer: Transferable[] = []): void => ctx.postMes
 
 ctx.onmessage = (e) => {
   const m = e.data;
-  if (m.type === "generate") generate(m.job, m.seed, m.params ?? {});
+  if (m.type === "generate") generate(m.job, m.seed, m.params ?? {}, m.engine);
   else if (m.type === "bake") bake(m.job, m.world, m.widths);
 };
 
-function generate(job: number, seed: string, over: Partial<WorldParams>): void {
+function generate(job: number, seed: string, over: Partial<WorldParams>, engine?: "sim" | "mock"): void {
   const params: WorldParams = { ...DEFAULT_PARAMS, ...over, seed };
   let where = "physical";
   try {
@@ -39,7 +39,8 @@ function generate(job: number, seed: string, over: Partial<WorldParams>): void {
     const t1 = performance.now();
     let lastStage = "";
     let lastT = 0;
-    const history = runHistory(world, {
+    const { history, source } = runHistory(world, {
+      engine,
       onProgress: (stage, fraction) => {
         const now = performance.now();
         if (stage !== lastStage || now - lastT > 80) {
@@ -52,7 +53,7 @@ function generate(job: number, seed: string, over: Partial<WorldParams>): void {
     });
     const ms = performance.now() - t1;
     const transfer = [...collectBuffers(history.timeline)];
-    post({ type: "history", job, history, ms, source: HISTORY_SOURCE }, transfer);
+    post({ type: "history", job, history, ms, source }, transfer);
   } catch (err) {
     post({ type: "error", job, where, message: err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err) });
   }

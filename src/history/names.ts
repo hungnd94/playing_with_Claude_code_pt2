@@ -9,7 +9,7 @@ import type { Rng } from "../core/rng";
 import * as L from "../lang/index";
 import type { Language as LLang, Name as LName, NameKind, EtymStep } from "../lang/index";
 import { Biome, Resource, type GeoFeature } from "../world/types";
-import type { Language, WName, Id } from "./types";
+import type { Language, WName, Id, Utterance } from "./types";
 import type { Sim } from "./sim";
 
 export type { LLang, LName };
@@ -75,6 +75,14 @@ export class Names {
   }
   feature(lang: LLang, rng: Rng, kind: NameKind, d: L.FeatureDescriptors): LName {
     return L.nameFeature(lang, rng, kind, d, { registry: this.reg });
+  }
+
+  /** Convert a mini-grammar sentence into a History utterance. */
+  utter(s: L.Sentence): Utterance {
+    return L.toUtterance(s, (engineId) => this.idOf.get(engineId) ?? -1);
+  }
+  motto(lang: LLang, rng: Rng): Utterance {
+    return this.utter(L.motto(lang, rng));
   }
 
   /** A short noun phrase as a name ("Temple of the Sun", "Song of Oshar"), via the mini-grammar. */

@@ -17,6 +17,7 @@ import { classify, phonDistance, phoneticOrderKey } from "./ipa";
 import {
   addGlyph,
   article,
+  assignRotations,
   carrierFor,
   chooseInherent,
   computeOrder,
@@ -381,19 +382,13 @@ function adaptAbugidaVowels(b: Builder, inv: Inventory): void {
     o.vowelOps = { ...map, "": killer ?? ["kink"] };
     if (o.carrier < 0 || !glyph(s, o.carrier)) o.carrier = carrierFor(b);
   } else if (o.vowelMode === "rotate") {
-    const { map, missing } = remapTable(o.rotations, quals);
-    const usedCodes = new Set(Object.values(map));
-    for (const q of missing) {
-      const code = [3, 2, 0, 1, 4, 5, 6, 7].find((c) => !usedCodes.has(c));
-      if (code !== undefined) {
-        map[q] = code;
-        usedCodes.add(code);
-      } else {
-        const near = Object.keys(map).sort((x, y) => phonDistance(q, x) - phonDistance(q, y))[0];
-        o.marked[q] = [near, featureMark(b, "syllabic")];
-      }
-    }
-    o.rotations = map;
+    // Primary orientations carry over to the nearest new vowels; the rest are reassigned.
+    const primaries: Record<string, number> = {};
+    for (const [v, code] of Object.entries(o.rotations)) if (!o.vowelOps[v]?.length) primaries[v] = code;
+    const { map } = remapTable(primaries, quals);
+    o.vowelOps = {};
+    for (const [ph, m] of Object.entries(o.marked)) if (classify(ph).vowel && quals.includes(ph) && m[0] !== ph) delete o.marked[ph];
+    assignRotations(b, quals, map);
     // finals for consonants
     const finals: Record<string, number> = {};
     for (const ph of uniq(inv.consonants)) {

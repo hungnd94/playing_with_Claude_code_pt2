@@ -74,7 +74,7 @@ export function foundSettlement(sim: Sim, cell: number, culture: number, o: Foun
   const s: SetS = {
     id, rec, cell, alive: true, pop: o.pop, cap: o.pop * 1.5, food: sim.g.food[cell], urban: 0, culture, religion, owner: o.owner, occupier: -1, occWar: -1,
     loyalty: 0.8, loyaltyTarget: 0.8, ownerSince: sim.year, cultureSince: sim.year, walls: false, port: false, wealth: 0, devast: 0, lastPlague: -999,
-    name, nbrs: [], catchStart: 0, catchLen: 0, rank: 0, nextFoundTry: sim.year + rng.int(10, 30), capDist: 0, holy: false,
+    name, nbrs: [], catchStart: 0, catchLen: 0, rank: 0, nextFoundTry: sim.year + rng.int(10, 30), capDist: 0, holy: false, seat: id, lastSack: -999, routes: [],
   };
   s.urban = urbanOf(sim, s);
   sim.S.push(s);

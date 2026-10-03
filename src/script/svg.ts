@@ -267,7 +267,7 @@ function chartSections(s: Script): Section[] {
     const cells: Cell[] = [];
     for (const g of rows) {
       for (const v of vowels) {
-        const ref = o.vowelMode === "fused" ? { g: g.id, ops: o.vowelOps[v] } : { g: g.id, rot: o.rotations[v] };
+        const ref = o.vowelMode === "fused" ? { g: g.id, ops: o.vowelOps[v] } : { g: g.id, rot: o.rotations[v], ops: o.vowelOps[v] };
         const f = formOf(s, ref);
         const c = g.id === o.carrier ? "" : g.sound;
         cells.push(formCell(s, f?.strokes ?? [], `f${g.id}:${v}`, v === "" ? c + "̸" : c + v));

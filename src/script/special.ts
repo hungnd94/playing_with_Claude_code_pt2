@@ -9,7 +9,8 @@ import type { Stroke } from "./types";
 import { classify, phonDistance, type PlaceGroup } from "./ipa";
 import { circle, dot, line, poly, smooth, transformStrokes, strokesBBox, type P } from "./geom";
 import { COMPONENT_SHAPES, cursiveSkeleton, addDots, CURSIVE_SKELETONS, fitStrokes, type CursiveSkel, type GenCtx, type Shape } from "./families";
-import { GlyphFactory } from "./factory";
+import type { GlyphFactory } from "./factory";
+import { rasterize, maxSimilarity, type Raster } from "./raster";
 import { orient } from "./marks";
 
 // ---------------------------------------------------------------------------
@@ -212,6 +213,12 @@ export function vowelIsVertical(shape: Shape): boolean {
 // Syllabics (Canadian-like)
 // ---------------------------------------------------------------------------
 
+/**
+ * Base bodies in the unit box (y down). Canadian syllabics work because their
+ * few bodies are asymmetric: every turn and flip of one reads differently.
+ * Bodies that are symmetric under some turn or flip still serve scripts with
+ * few vowels; the orientation checks weed them out where they would clash.
+ */
 const SYLLABIC_BASES: (() => Stroke[])[] = [
   () => [poly([[0, 0], [0.5, 1], [1, 0]])], // V
   () => [poly([[0, 0], [0, 1], [1, 1], [1, 0]])], // U
@@ -229,50 +236,125 @@ const SYLLABIC_BASES: (() => Stroke[])[] = [
   () => [smooth([[0, 1], [0, 0.3], [0.45, 0.05], [0.9, 0.3]]), dot(0.75, 0.75, 0.07)], // hook + dot
   () => [smooth([[0, 0], [0, 0.65], [0.5, 1], [1, 0.65], [1, 0]]), line(0.5, 1, 0.5, 0.3)],
   () => [poly([[0, 0], [0.5, 1], [1, 0]]), circle(0.5, 0.12, 0.12)],
+  // Asymmetric bodies (any turn or flip reads differently).
+  () => [circle(0.32, 0.3, 0.26), line(0.58, 0.3, 0.58, 1)], // ring + stem (ᑫ)
+  () => [line(0.15, 0, 0.15, 1), smooth([[0.15, 1], [0.6, 0.98], [0.9, 0.72], [0.62, 0.48], [0.15, 0.5]])], // stem + low bowl (ᖃ)
+  () => [smooth([[0.95, 0.15], [0.55, 0], [0.12, 0.25], [0.12, 0.75], [0.55, 1], [0.95, 0.8]]), line(0.95, 0.8, 0.55, 0.8)], // G
+  () => [line(0.1, 0.5, 0.9, 0.5), poly([[0.55, 0.15], [0.9, 0.5], [0.55, 0.85]]), line(0.1, 0.5, 0.1, 1)], // arrow with a heel
+  () => [smooth([[0.1, 0.1], [0.75, 0.05], [0.9, 0.5], [0.6, 0.95], [0.1, 0.9]]), line(0.1, 0.1, 0.1, 0.55)], // D open below
+  () => [line(0.5, 0, 0.5, 1), line(0.5, 0.3, 0.05, 0.3), smooth([[0.5, 1], [0.8, 0.95], [0.95, 0.75]])], // stem, arm, foot hook (ᔭ)
+  () => [poly([[0, 0], [1, 0], [0.5, 1]]), line(0.5, 1, 0.95, 1)], // Δ with a foot
+  () => [smooth([[0.1, 1], [0.1, 0.4], [0.45, 0.1], [0.9, 0.35]]), line(0.1, 0.62, 0.62, 0.62)], // arch with a bar
+  () => [circle(0.5, 0.5, 0.42), line(0.92, 0.5, 0.92, 0)], // ring with a tail up (ᑬ-like)
+  () => [poly([[0.9, 0], [0.1, 0], [0.1, 1], [0.9, 1]]), dot(0.55, 0.3, 0.075)], // [ with a dot
 ];
+
+/** Extra elements that make a new body from an old one (Inuktitut/Carrier-style series). */
+function syllabicVariant(rng: Rng, s: Stroke[]): Stroke[] {
+  const ends = s.filter((st) => st.dot === undefined && !st.closed && st.pts.length >= 2);
+  const pick = ends.length ? ends[rng.int(0, ends.length - 1)] : null;
+  const end = pick ? (rng.chance(0.5) ? pick.pts[0] : pick.pts[pick.pts.length - 1]) : null;
+  switch (rng.int(0, 4)) {
+    case 0: // ring on a terminal
+      if (end) return [...s, circle(end[0] + (end[0] < 0.5 ? -0.1 : 0.1), end[1] + (end[1] < 0.5 ? -0.06 : 0.06), 0.1)];
+      return [...s, circle(0.85, 0.15, 0.1)];
+    case 1: // serif bar across a terminal
+      if (end) return [...s, line(end[0] - 0.16, end[1], end[0] + 0.16, end[1])];
+      return [...s, line(0.2, 0.5, 0.8, 0.5)];
+    case 2: // dot beside the body, off-centre
+      return [...s, dot(rng.chance(0.5) ? 0.82 : 0.18, rng.chance(0.5) ? 0.22 : 0.78, 0.075)];
+    case 3: // a short stroke parallel to the first segment
+      if (pick) {
+        const [a, b] = [pick.pts[0], pick.pts[1]];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const L = Math.hypot(dx, dy) || 1;
+        const nx = (-dy / L) * 0.16;
+        const ny = (dx / L) * 0.16;
+        return [...s, line(a[0] + nx + dx * 0.15, a[1] + ny + dy * 0.15, a[0] + nx + dx * 0.65, a[1] + ny + dy * 0.65)];
+      }
+      return [...s, line(0.3, 0.2, 0.7, 0.2)];
+    default: // hooked terminal
+      if (end) {
+        const sx = end[0] < 0.5 ? -1 : 1;
+        return [...s, smooth([[end[0], end[1]], [end[0] + sx * 0.12, end[1] + 0.02], [end[0] + sx * 0.14, end[1] - 0.12]])];
+      }
+      return [...s, dot(0.5, 0.5, 0.075)];
+  }
+}
 
 /** Orientation codes for up to 8 vowels (Canadian style: 4 rotations, then mirrors). */
 export const ORIENT_ORDER = [3, 2, 0, 1, 4, 5, 6, 7];
+/** Indices into ORIENT_ORDER: upright, mirrored, half turn, flipped, then the quarter turns. */
+const CHECK_ORDER = [2, 4, 3, 5, 0, 1, 6, 7];
 
 /**
- * Generate consonant base shapes whose orientations are all mutually distinct.
- * Returns shapes in order (first = vowel-only series).
+ * Generate consonant base shapes whose orientations are all mutually distinct
+ * (and distinct from every glyph registered with the factory). Returns shapes
+ * in order (first = the vowel-only series). Each base gets a bounded number of
+ * candidates; if none passes, the least confusable one is taken.
  */
 export function syllabicBases(rng: Rng, factory: GlyphFactory, count: number, nOrient: number, W: number): Shape[] {
   const out: Shape[] = [];
-  const pool = rng.shuffle(SYLLABIC_BASES.map((f, i) => i));
-  let k = 0;
-  // the vowel series: a triangle (like ᐁ ᐃ ᐅ ᐊ)
+  const pool = rng.shuffle(SYLLABIC_BASES.map((_, i) => i));
+  let next = 0;
+  // The vowel series: a triangle (like ᐁ ᐃ ᐅ ᐊ).
   const tri: Shape = { strokes: [poly([[0, 0], [W, 0], [W / 2, 1]], undefined, true)], w: W };
-  const candidates: (() => Shape)[] = [() => tri];
-  for (const i of pool) candidates.push(() => ({ strokes: fitStrokes(SYLLABIC_BASES[i](), 0, 0, W, 1), w: W }));
-  // variants: add a dot / small ring / bar to base shapes when we run out
-  const variants = (s: Shape, v: number): Shape => {
-    const extra: Stroke[] = v % 3 === 0 ? [dot(W * 0.5, 0.5, 0.06)] : v % 3 === 1 ? [line(W * 0.2, 0.5, W * 0.8, 0.5)] : [circle(W * 0.85, 0.15, 0.08)];
-    return { strokes: [...s.strokes, ...extra], w: W };
+  const candidate = (): Shape => {
+    if (next < pool.length) return { strokes: fitStrokes(SYLLABIC_BASES[pool[next++]](), 0, 0, W, 1), w: W };
+    // Pool exhausted: a body with an extra element.
+    const body = SYLLABIC_BASES[pool[rng.int(0, pool.length - 1)]]();
+    return { strokes: fitStrokes(syllabicVariant(rng, body), 0, 0, W, 1), w: W };
   };
-  let v = 0;
-  while (out.length < count && k < 400) {
-    let shape: Shape;
-    if (k < candidates.length) shape = candidates[k]();
-    else {
-      shape = variants(candidates[1 + ((k - candidates.length) % (candidates.length - 1))](), v++);
-    }
-    k++;
+  const LOCAL = 0.9;
+  const GLOBAL = 0.88;
+  /** Rasters of all forms if every one is distinct, else the worst similarity met. */
+  const test = (shape: Shape): { rs: Raster[] | null; worst: number } => {
     const forms = ORIENT_ORDER.slice(0, nOrient).map((c) => orient(shape, c));
-    // all orientations must be distinct from each other and from existing glyphs
-    const local = new GlyphFactory(rng, "syllabic", factory.ctx, factory.style);
-    local.thresh = 0.9;
-    let ok = true;
-    for (const f of forms) {
-      if (factory.similarityTo(f) > 0.88 || !local.tryAccept(f)) {
-        ok = false;
+    const rs: Raster[] = new Array(forms.length);
+    const local: Raster[] = [];
+    for (const i of CHECK_ORDER) {
+      if (i >= forms.length) continue;
+      const r = rasterize(forms[i].strokes, forms[i].w);
+      // (An early exit stops at the first look-alike; the true maximum ranks fallbacks.)
+      if (maxSimilarity(r, local, LOCAL) >= LOCAL) return { rs: null, worst: maxSimilarity(r, local) + 0.02 };
+      if (maxSimilarity(r, factory.rasters, GLOBAL) > GLOBAL) return { rs: null, worst: maxSimilarity(r, factory.rasters) };
+      rs[i] = r;
+      local.push(r);
+    }
+    return { rs, worst: 0 };
+  };
+  const accept = (shape: Shape, rs: Raster[]): void => {
+    for (const r of rs) factory.registerRaster(r);
+    out.push(shape);
+  };
+  {
+    const t = test(tri);
+    accept(tri, t.rs ?? ORIENT_ORDER.slice(0, nOrient).map((c) => {
+      const f = orient(tri, c);
+      return rasterize(f.strokes, f.w);
+    }));
+  }
+  while (out.length < count) {
+    let best: Shape | null = null;
+    let bestWorst = Infinity;
+    let done = false;
+    for (let tries = 0; tries < 24; tries++) {
+      const shape = candidate();
+      const t = test(shape);
+      if (t.rs) {
+        accept(shape, t.rs);
+        done = true;
         break;
       }
+      if (t.worst < bestWorst) {
+        bestWorst = t.worst;
+        best = shape;
+      }
     }
-    if (!ok && out.length > 0 && k < 200) continue;
-    for (const f of forms) factory.register(f);
-    out.push(shape);
+    if (done) continue;
+    const forms = ORIENT_ORDER.slice(0, nOrient).map((c) => orient(best!, c));
+    accept(best!, forms.map((f) => rasterize(f.strokes, f.w)));
   }
   return out;
 }
@@ -384,7 +466,7 @@ export function cursiveAssign(rng: Rng, phonemes: string[], ctx: GenCtx, factory
       const cand = cursiveSkeleton(kind, rng, ctx);
       // skeleton variety once the pool is exhausted: jitter width
       if (si >= skels.length) cand.w *= rng.range(0.85, 1.25);
-      if (factory.similarityTo(cand) < 0.97 || si >= skels.length) {
+      if (si >= skels.length || factory.similarityTo(cand, 0.97) < 0.97) {
         base = cand;
         break;
       }

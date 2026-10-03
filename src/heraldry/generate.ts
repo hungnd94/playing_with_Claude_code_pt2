@@ -17,7 +17,7 @@ import type {
 } from "./types";
 import { CHARGES, ALL_CHARGE_IDS } from "./charges/index";
 import type { ChargeDef } from "./charges/art";
-import { isFur, isMetal, readable, tinctureOk, FUR_PARTS } from "./tinctures";
+import { isColour, isFur, isMetal, readable, tinctureOk, FUR_PARTS } from "./tinctures";
 import { resolveStyle, type HeraldryStyle, type StyleName } from "./styles";
 
 export interface GenerateOptions {
@@ -89,6 +89,12 @@ class Gen {
     const pairs: [Tint, number][] = [];
     for (const [t, w] of this.tw) if ((opts.furs || !isFur(t)) && okAll(t)) pairs.push([t, w]);
     if (pairs.length) return this.rng.weighted(pairs);
+    // Nothing contrasts with every part (a metal-and-colour division): take a tincture that at least
+    // differs from all the parts and contrasts with the first.
+    const distinct = (t: Tint) => !avoid.includes(t) && !unders.includes(t) && readable(t, unders[0]);
+    const alt: [Tint, number][] = [];
+    for (const [t, w] of this.tw) if ((opts.furs || !isFur(t)) && distinct(t)) alt.push([t, w]);
+    if (alt.length) return this.rng.weighted(alt);
     return this.pickTint((t) => !avoid.includes(t) && readable(t, unders[0]), !!opts.furs);
   }
 
@@ -348,36 +354,57 @@ export function generateArms(rng: Rng, opts: GenerateOptions = {}): SimpleArms {
     }
     case "divided": {
       const part = g.pickPartition(false);
-      const t0 = g.pickTint(() => true, g.chance(0.15));
       const three = part === "perPall" || part === "tiercedInPale" || part === "tiercedInFess";
-      const colourColour = !three && g.chance(0.12);
-      const t1 = colourColour
-        ? g.pickTint((t) => t !== t0 && !isMetal(t) && !isMetal(t0) && !isFur(t0), false)
-        : g.over([t0], { avoid: [t0] });
-      const tints: Tint[] = [t0, t1];
-      if (three) tints.push(g.pickTint((t) => !tints.includes(t) && readable(t, t1), false));
+      // What will lie on the division decides how it is tinctured, as it did for real heralds:
+      // charges over a metal-and-colour division are counterchanged; a metal charge lies on two
+      // colours ("Per pale Azure and Gules, three lions Or"); a colour on two metals.
+      const r = g.rng.next();
+      const content: "none" | "charges" | "ordinary" = three ? (r < 0.75 ? "none" : "ordinary") : r < 0.36 - g.cx * 0.12 ? "none" : r < 0.78 ? "charges" : "ordinary";
+      const scheme = three || content === "none"
+        ? "metalColour"
+        : g.rng.weighted([["counter", 58], ["colours", 30], ["metals", 8], ["fur", 4]] as [string, number][]);
+      let tints: Tint[];
+      if (scheme === "colours") {
+        const t0 = g.pickTint((t) => isColour(t), false);
+        tints = [t0, g.pickTint((t) => isColour(t) && t !== t0 && t !== "sanguine" && !(t0 === "sanguine" && t === "gules"), false)];
+      } else if (scheme === "metals") tints = g.rng.chance(0.5) ? ["or", "argent"] : ["argent", "or"];
+      else if (scheme === "fur") {
+        const fur = g.pickTint((t) => isFur(t) && t !== "vair" && t !== "countervair" && t !== "potent", true);
+        const other = g.over([fur], { avoid: [fur] });
+        tints = g.chance(0.5) ? [fur, other] : [other, fur];
+      } else {
+        const t0 = g.pickTint(() => true, g.chance(0.12));
+        tints = [t0, g.over([t0], { avoid: [t0] })];
+      }
+      if (three) {
+        const t2 = g.pickTint((t) => !tints.includes(t) && readable(t, tints[1]) && !isFur(t), false);
+        tints.push(t2);
+      }
       const field: Field = { partition: part, tinctures: tints };
       const ln = part === "quarterly" || part === "gyronny" || three ? g.line(0.08) : g.line(0.3);
       if (ln !== "straight") field.line = ln;
       if (part === "gyronny" && g.chance(0.2)) field.count = 12;
       a = { kind: "simple", field };
-      const r = g.rng.next();
-      const counterOk = !three;
-      if (r < 0.38 - g.cx * 0.15) {
-        // the division alone
-      } else if (r < 0.78) {
+      const t0 = tints[0];
+      const overAll = (): Tint =>
+        scheme === "colours" ? g.pickTint((t) => isMetal(t), false)
+        : scheme === "metals" ? g.pickTint((t) => isColour(t), false)
+        : scheme === "fur" ? g.over(tints.filter((t) => !isFur(t)), { avoid: tints })
+        : pickOverDivision(g, tints);
+      if (content === "charges") {
         const id = g.pickCharge("principal", true);
         const n = g.pickCount(id, "principal");
-        const counter = counterOk && g.chance(0.42);
-        const t = counter ? t0 : pickOverDivision(g, tints);
-        const grp = g.group(id, n, t, tints);
+        const counter = scheme === "counter";
+        const grp = g.group(id, n, counter ? t0 : overAll(), tints);
         if (counter) grp.counterchanged = true;
         a.charges = grp;
-      } else {
+      } else if (content === "ordinary") {
         const kind = g.rng.weighted([["chevron", 4], ["fess", 3], ["bend", 3], ["cross", 2], ["saltire", 2], ["pale", 1.5]] as [OrdinaryKind, number][]);
-        const counter = counterOk && part !== "quarterly" && g.chance(0.45);
-        const o: Ordinary = { kind, tincture: counter ? t0 : pickOverDivision(g, tints) };
+        const counter = scheme === "counter" && part !== "quarterly" && !(part === "perPale" && (kind === "pale" || kind === "cross")) && !(part === "perFess" && kind === "fess");
+        const o: Ordinary = { kind, tincture: counter ? t0 : overAll() };
         if (counter) o.counterchanged = true;
+        // On a tierced field the fess or pale lies on the middle tier: make it stand out from all three.
+        if (three) o.tincture = g.over(tints, { avoid: tints });
         a.ordinary = o;
       }
       additions(g, a, !!a.charges || !!a.ordinary);
@@ -446,10 +473,7 @@ export function generateArms(rng: Rng, opts: GenerateOptions = {}): SimpleArms {
 function pickOverDivision(g: Gen, tints: Tint[]): Tint {
   const metals = tints.filter((t) => isMetal(t));
   const colours = tints.filter((t) => !isMetal(t) && !isFur(t));
-  if (metals.length && colours.length) {
-    if (g.chance(0.12)) return g.pickTint((t) => isFur(t) && !tints.includes(t) && readable(t, colours[0]), true);
-    return g.pickTint((t) => !isMetal(t) && !isFur(t) && !tints.includes(t), false);
-  }
+  if (metals.length && colours.length) return g.pickTint((t) => !isMetal(t) && !isFur(t) && !tints.includes(t), false);
   if (!metals.length) return g.pickTint((t) => isMetal(t) && !tints.includes(t), false);
   return g.pickTint((t) => !isMetal(t) && !isFur(t), false);
 }

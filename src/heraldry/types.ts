@@ -171,14 +171,15 @@ export interface SimpleArms {
   exception?: string;
 }
 
-export const MARSHALLING = ["quarterly", "impaled", "perFess"] as const;
+/** "single": one coat with an escutcheon (of pretence) set over all. */
+export const MARSHALLING = ["quarterly", "impaled", "perFess", "single"] as const;
 export type MarshallingMethod = (typeof MARSHALLING)[number];
 
 /** Several coats combined on one shield. */
 export interface MarshalledArms {
   kind: "marshalled";
   method: MarshallingMethod;
-  /** quarterly: exactly 4 (1, 2, 3, 4 — repeats allowed); impaled/perFess: 2. */
+  /** quarterly: exactly 4 (1, 2, 3, 4 — repeats allowed); impaled/perFess: 2; single: 1. */
   coats: Arms[];
   /** An escutcheon of pretence set over all. */
   escutcheon?: Arms;

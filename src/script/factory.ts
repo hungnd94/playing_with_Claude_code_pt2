@@ -37,8 +37,14 @@ export class GlyphFactory {
     return r;
   }
 
-  similarityTo(shape: Shape): number {
-    return maxSimilarity(rasterize(shape.strokes, shape.w, this.scratch), this.rasters);
+  /** Highest similarity to a registered glyph (with a `stop`, only a threshold test: see maxSimilarity). */
+  similarityTo(shape: Shape, stop = 2): number {
+    return maxSimilarity(rasterize(shape.strokes, shape.w, this.scratch), this.rasters, stop);
+  }
+
+  /** Register an already rasterised shape (must not be a scratch raster). */
+  registerRaster(r: Raster): void {
+    this.rasters.push(r);
   }
 
   /**

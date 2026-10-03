@@ -508,20 +508,18 @@ function buildAbugida(b: Builder, inv: Inventory): void {
 
   if (o.vowelMode === "rotate") {
     const cons = uniq(inv.consonants);
-    const plan = planLetters(b, cons, false);
+    // Syllabics mark related consonants systematically (a stroke added to a
+    // shared shape), which also keeps the number of distinct bodies small.
+    b.systematic = Math.max(b.systematic, b.rng.range(0.45, 0.85));
+    const plan = planLetters(b, cons, true);
     const indep = plan.filter((n) => n.how === "indep").map((n) => n.ph).sort((x, y) => phoneticOrderKey(x) - phoneticOrderKey(y));
-    const nOrient = Math.min(8, ownSorted.length);
+    const nOrient = Math.min(4, ownSorted.length);
     const bases = syllabicBases(b.rng, b.factory, indep.length + 1, nOrient, b.ctx.W);
     o.carrier = addGlyph(b, bases[0], "vowel", "∅", { note: "vowel series" });
     const custom = new Map<string, Shape>();
     indep.forEach((ph, i) => custom.set(ph, bases[i + 1] ?? b.factory.fresh()));
     realizeLetters(b, plan, "consonant", custom);
-    ownSorted.slice(0, 8).forEach((v, i) => (o.rotations[v] = ORIENT_ORDER[i]));
-    // Vowels beyond 8 orientations: a dot above the nearest.
-    for (const v of ownSorted.slice(8)) {
-      const near = ownSorted.slice(0, 8).sort((x, y) => phonDistance(v, x) - phonDistance(v, y))[0];
-      o.marked[v] = [near, featureMark(b, "syllabic")];
-    }
+    assignRotations(b, ownSorted, {});
     // Finals: small raised consonant shapes.
     for (const ph of cons) {
       const id = o.letters[ph];
@@ -600,6 +598,56 @@ function buildAbugida(b: Builder, inv: Inventory): void {
   o.virama = addGlyph(b, { strokes: vk, w: 0 }, "mark", "◌̸", { mark: "below", note: "vowel killer" });
   o.conjuncts = b.rng.chance(0.3) ? "stack" : "virama";
   o.carrier = o.letters["ʔ"] ?? -1;
+}
+
+/**
+ * Syllabics vowel orientations. As in Cree, the four commonest vowel
+ * qualities turn the consonant's shape a quarter or half turn; further
+ * qualities take the orientation of their nearest primary plus a dot beside
+ * the sign (Carrier-style), then a ring above; beyond that a combining mark.
+ * `keep` holds orientations inherited from a parent script.
+ */
+export function assignRotations(b: Builder, quals: string[], keep: Record<string, number>): void {
+  const o = b.script.ortho;
+  const rotations: Record<string, number> = {};
+  const used = new Set<number>();
+  for (const [v, code] of Object.entries(keep)) {
+    if (!quals.includes(v) || code > 3 || used.has(code)) continue;
+    rotations[v] = code;
+    used.add(code);
+  }
+  const rest = quals.filter((v) => rotations[v] === undefined);
+  const primaries = rest
+    .slice()
+    .sort((x, y) => commonness(y) - commonness(x) || phoneticOrderKey(x) - phoneticOrderKey(y))
+    .slice(0, 4 - used.size);
+  for (const v of primaries.sort((x, y) => phoneticOrderKey(x) - phoneticOrderKey(y))) {
+    const code = ORIENT_ORDER.slice(0, 4).find((c) => !used.has(c))!;
+    rotations[v] = code;
+    used.add(code);
+  }
+  const prim = Object.keys(rotations);
+  const extraOps: VowelOp[] = ["dotRight", "ringTop"];
+  const taken = new Set<string>();
+  for (const v of rest.filter((x) => rotations[x] === undefined)) {
+    let placed = false;
+    for (const op of extraOps) {
+      const near = prim
+        .filter((p) => !taken.has(`${p}|${op}`))
+        .sort((x, y) => phonDistance(v, x) - phonDistance(v, y))[0];
+      if (!near) continue;
+      taken.add(`${near}|${op}`);
+      rotations[v] = rotations[near];
+      o.vowelOps[v] = [op];
+      placed = true;
+      break;
+    }
+    if (!placed) {
+      const near = prim.slice().sort((x, y) => phonDistance(v, x) - phonDistance(v, y))[0];
+      o.marked[v] = [near, featureMark(b, "syllabic")];
+    }
+  }
+  o.rotations = rotations;
 }
 
 function buildSyllabary(b: Builder, inv: Inventory): void {

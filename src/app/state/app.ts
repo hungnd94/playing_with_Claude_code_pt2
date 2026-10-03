@@ -53,8 +53,16 @@ export interface AppState {
   baked: BakedGlobe | null;
   bakedWidth: number;
   live: LiveSnapshot | null;
-  /** The genesis experience is running (captions, replay of history). */
+  /** The genesis experience is running (captions, live history or its replay). */
   genesis: boolean;
+  /** Genesis is replaying the finished history on the timeline (mock engine: no live snapshots). */
+  replay: boolean;
+  /** Live snapshots were received for this generation. */
+  liveSeen: boolean;
+  /** Generation stages seen so far, with the time each started (ms since start). */
+  stages: { phase: "physical" | "history"; stage: string; t: number }[];
+  /** Ticker of major events during genesis (newest last). */
+  ticker: { key: number; year: number; text: string }[];
   year: number;
   playing: boolean;
   /** Years per second while playing. */
@@ -90,6 +98,10 @@ export const app = createStore<AppState>({
   bakedWidth: 0,
   live: null,
   genesis: true,
+  replay: false,
+  liveSeen: false,
+  stages: [],
+  ticker: [],
   year: 0,
   playing: false,
   speed: 50,

@@ -192,9 +192,9 @@ export function smooth(pts: P[], sharp?: number[], closed = false): Stroke {
 
 /** Centripetal Catmull–Rom segment from p1 to p2 (p0, p3 neighbours), appended without p1. */
 function sampleCR(p0: P, p1: P, p2: P, p3: P, step: number, out: number[]): void {
-  const d01 = Math.max(1e-4, Math.pow(Math.hypot(p1[0] - p0[0], p1[1] - p0[1]), 0.5));
-  const d12 = Math.max(1e-4, Math.pow(Math.hypot(p2[0] - p1[0], p2[1] - p1[1]), 0.5));
-  const d23 = Math.max(1e-4, Math.pow(Math.hypot(p3[0] - p2[0], p3[1] - p2[1]), 0.5));
+  const d01 = Math.max(1e-4, Math.sqrt(Math.sqrt((p1[0] - p0[0]) ** 2 + (p1[1] - p0[1]) ** 2)));
+  const d12 = Math.max(1e-4, Math.sqrt(Math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)));
+  const d23 = Math.max(1e-4, Math.sqrt(Math.sqrt((p3[0] - p2[0]) ** 2 + (p3[1] - p2[1]) ** 2)));
   // Tangents (Barry–Goldman form converted to Hermite).
   const m1x = (p1[0] - p0[0]) / d01 - (p2[0] - p0[0]) / (d01 + d12) + (p2[0] - p1[0]) / d12;
   const m1y = (p1[1] - p0[1]) / d01 - (p2[1] - p0[1]) / (d01 + d12) + (p2[1] - p1[1]) / d12;
@@ -204,7 +204,7 @@ function sampleCR(p0: P, p1: P, p2: P, p3: P, step: number, out: number[]): void
   const t1y = m1y * d12;
   const t2x = m2x * d12;
   const t2y = m2y * d12;
-  const L = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+  const L = d12 * d12;
   const n = Math.max(3, Math.ceil((L * 1.3) / step));
   for (let i = 1; i <= n; i++) {
     const t = i / n;

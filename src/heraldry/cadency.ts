@@ -148,9 +148,14 @@ export function marshalArms(coats: Arms[], opts: MarshalOptions = {}): Arms {
   const method = opts.method ?? "quarterly";
   if (coats.length === 1) {
     if (!opts.escutcheon) return clone(coats[0]);
-    return { kind: "marshalled", method: "quarterly", coats: [coats[0], coats[0], coats[0], coats[0]].map(clone), escutcheon: clone(opts.escutcheon) };
+    return { kind: "marshalled", method: "single", coats: [clone(coats[0])], escutcheon: clone(opts.escutcheon) };
   }
   let m: MarshalledArms;
+  if (method === "single") {
+    // Only one coat can fill the shield: the others go over all as an escutcheon.
+    m = { kind: "marshalled", method: "single", coats: [clone(coats[0])], escutcheon: clone(opts.escutcheon ?? (coats.length === 2 ? coats[1] : marshalArms(coats.slice(1)))) };
+    return m;
+  }
   if (method === "impaled" || method === "perFess") {
     const second = coats.length === 2 ? coats[1] : marshalArms(coats.slice(1), { method: "quarterly" });
     m = { kind: "marshalled", method, coats: [clone(coats[0]), clone(second)] };

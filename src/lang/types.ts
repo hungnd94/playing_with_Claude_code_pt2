@@ -167,10 +167,13 @@ export interface Morphology {
 export interface SpellingRule {
   p: string;
   s: string;
-  /** Next segment: front vowel, any vowel, non-vowel (consonant or end), end of word. */
-  before?: "front" | "back" | "vowel" | "nonvowel" | "end";
-  /** Previous segment: vowel, consonant, start of word. */
-  after?: "vowel" | "consonant" | "start";
+  /**
+   * Next segment: front vowel, back vowel, any vowel, non-vowel (consonant or end), end of
+   * word, labial consonant, velar consonant.
+   */
+  before?: "front" | "back" | "vowel" | "nonvowel" | "end" | "labial" | "velar";
+  /** Previous segment: vowel, back rounded vowel (o, u), consonant, start of word. */
+  after?: "vowel" | "backvowel" | "consonant" | "start";
 }
 
 export interface Orthography {
@@ -180,6 +183,14 @@ export interface Orthography {
   rules: SpellingRule[];
   /** Spell geminates by doubling the first letter of a digraph ("sh"+"sh" → "ssh"). */
   geminateFirstLetter: boolean;
+  /** How long vowels are written ("double", "macron", "acute", "circumflex"); inherited by daughters. */
+  long?: string;
+  /** How nasal vowels are written ("n": an/am, "tilde-ao": ã õ + en/in, "ogonek": ą ę ǫ, "tilde"). */
+  nasal?: string;
+  /** Diacritic/special-letter types this tradition uses natively (see orthography.ts `markTypes`). */
+  marks?: string[];
+  /** Letter-level clean-ups applied after spelling, as [regex source, replacement] pairs. */
+  fixups?: [string, string][];
 }
 
 /** One element of a sound-change environment. */

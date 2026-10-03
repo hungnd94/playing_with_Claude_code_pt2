@@ -82,34 +82,48 @@ export interface SetS {
   /** Distance (travel cost) to its owner's capital. */
   capDist: number;
   holy: boolean;
+  /** Seat (settlement id) of the province it belongs to; = own id for seats and unowned towns. */
+  seat: number;
+  /** Year walls were raised or -1 (mirrors rec.walled). */
+  lastSack: number;
+  /** Trade routes touching the town (ids). */
+  routes: number[];
 }
 
 export interface PolS {
   id: number;
   rec: Polity;
   alive: boolean;
+  /** Current ruling culture. */
   culture: number;
   capital: number;
   gov: Government;
   law: SuccessionLaw;
   ruler: number;
-  /** Designated heir, or -1. */
+  /** Heir apparent/presumptive, or -1. */
   heir: number;
   dynasty: number;
   religion: number;
   overlord: number;
-  /** Ruler shares the throne with this senior polity (personal union), or -1. */
+  /** The senior realm this one shares a ruler with (personal union), or -1. */
   unionWith: number;
-  stability: number;
+  /** 0..1: how firmly the ruler holds the realm (legitimacy of the line, recent troubles). */
   legitimacy: number;
   prestige: number;
   treasury: number;
+  /** 0..~2: accumulated war weariness (decays in peace). */
   warWeariness: number;
-  /** Current settlements (rebuilt every year). */
+  /** Current settlements (rebuilt every year, ascending ids). */
   sets: number[];
+  /** Provinces: seat settlement → member settlements (seat included). Rebuilt every 10 years and after transfers. */
+  provinces: Map<number, number[]>;
+  /** District population (towns + hinterland). */
   pop: number;
+  /** Soldiers the realm can raise. */
   strength: number;
   cells: number;
+  /** Land area, km² (with `cells`, refreshed with the layers). */
+  area: number;
   allies: number[];
   /** polity id → year until which a truce holds. */
   truces: Map<number, number>;
@@ -117,24 +131,33 @@ export interface PolS {
   claims: Map<number, number>;
   /** polity id → grudge strength (decays). */
   grudges: Map<number, number>;
+  /** polity id → year of the last royal marriage between the houses. */
+  ties: Map<number, number>;
   wars: number[];
   name: LName;
   color: RGB;
-  general: number;
   lastSuccession: number;
-  /** A temporary faction/rebel polity (ended when its war ends badly). */
+  /** A faction/rebel polity created for a civil war or revolt. */
   rebel: boolean;
-  /** Years of crisis-like conditions (for collapse). */
+  /** Accumulated crisis (succession troubles, lost wars, plague, revolts); collapse when high. */
   crisis: number;
+  /** Year the current golden age ends (or 0). */
   goldenAge: number;
   regent: number;
+  regentUntil: number;
   founded: number;
   /** Count of revolts in the last decades (decays). */
   revolts: number;
-  /** Land area, km² (with `cells`, refreshed with the layers). */
-  area: number;
   lastWonder: number;
-  titleStyle: number;
+  lastWar: number;
+  /** Year of the last government change. */
+  govSince: number;
+  /** Settlements gained by conquest in the last decades (decays) — drives empire formation and "the Conqueror". */
+  conquests: number;
+  /** Strongest peak of strength reached (for decline detection). */
+  peakStrength: number;
+  /** Set of cultures among its settlements (rebuilt yearly): culture → district pop. */
+  cultureMix: Map<number, number>;
 }
 
 export interface CulS {
@@ -163,8 +186,17 @@ export interface CulS {
   /** Female succession allowed (cognatic). */
   cognatic: boolean;
   law: SuccessionLaw;
-  /** Name pools are per language; this records which personal-name language to use. */
+  /** Sea raiders (cold-coast seafarers who plunder rather than trade). */
   raiders: boolean;
+  /** Index of the next named technology (see tech.ts TECHS) this people has not yet mastered. */
+  nextTech: number;
+  /** Largest town (urban pop) of the people, refreshed every few years. */
+  bigCity: number;
+  bigUrban: number;
+  /** Mean trade wealth of its towns. */
+  wealth: number;
+  /** Year it last split off a daughter people (cooldown). */
+  lastSplit: number;
 }
 
 export interface PerS {
@@ -174,8 +206,12 @@ export interface PerS {
   spouse: number;
   /** Polities this person currently rules. */
   rules: number[];
-  /** Track births for this person's marriages. */
-  royal: boolean;
+  /**
+   * Generations from a ruler (0 = ruler or heir; 1 = their children; 2 =
+   * grandchildren; 9 = untracked noble/consort). Births are simulated only
+   * for couples where one partner has `dist` 0.
+   */
+  dist: number;
   martial: number;
   diplomacy: number;
   stewardship: number;
@@ -184,7 +220,10 @@ export interface PerS {
   tally: Record<string, number>;
   /** Accession age (for "the Child"). */
   accAge: number;
+  /** Home polity (where the person lives / belongs), or -1. */
   polity: number;
+  /** Children born (all, including those who died). */
+  births: number;
 }
 
 export interface RelS {

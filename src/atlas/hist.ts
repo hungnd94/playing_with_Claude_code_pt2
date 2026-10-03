@@ -142,3 +142,10 @@ export function languageDataAt(h: History, culture: number, y: number): unknown 
   if (!l) return undefined;
   return h.languages[l.lang]?.data;
 }
+
+/** Ruling culture of a polity at a year (`Polity.cultures` when present, else the founding culture). */
+export function polityCultureAt(h: History, polity: number, y: number): number {
+  const p = h.polities[polity] as Polity & { cultures?: { year: number; culture: number }[] };
+  if (!p) return -1;
+  return atYear(p.cultures, y)?.culture ?? p.culture;
+}

@@ -399,7 +399,9 @@ function orleSlotsFor(fr: Frame, fit: Pt[], count: number): Slot[] {
 function renderMarshalled(m: MarshalledArms, fr: Frame, ctx: Ctx): string {
   const { x, y, w, h, fx, fy } = fr;
   const parts: Frame[] = [];
-  if (m.method === "quarterly") {
+  if (m.method === "single") {
+    parts.push(fr);
+  } else if (m.method === "quarterly") {
     parts.push(subFrame(fr, x, y, fx - x, fy - y), subFrame(fr, fx, y, x + w - fx, fy - y), subFrame(fr, x, fy, fx - x, y + h - fy), subFrame(fr, fx, fy, x + w - fx, y + h - fy));
   } else if (m.method === "impaled") {
     parts.push(subFrame(fr, x, y, w / 2, h), subFrame(fr, x + w / 2, y, w / 2, h));
@@ -417,7 +419,7 @@ function renderMarshalled(m: MarshalledArms, fr: Frame, ctx: Ctx): string {
   const ln = (a: Pt, b: Pt) => `<path d="M${f(a[0])} ${f(a[1])}L${f(b[0])} ${f(b[1])}" stroke="${ctx.pal.contour}" stroke-width="${f(ctx.ow * 1.4)}"/>`;
   if (m.method === "quarterly") s += ln([fx, y - 5], [fx, y + h + 5]) + ln([x - 5, fy], [x + w + 5, fy]);
   else if (m.method === "impaled") s += ln([x + w / 2, y - 5], [x + w / 2, y + h + 5]);
-  else s += ln([x - 5, fy], [x + w + 5, fy]);
+  else if (m.method === "perFess") s += ln([x - 5, fy], [x + w + 5, fy]);
   if (m.escutcheon) {
     const ew = w * 0.36;
     const sh = SHAPES.heater;

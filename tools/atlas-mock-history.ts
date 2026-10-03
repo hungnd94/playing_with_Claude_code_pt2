@@ -13,6 +13,7 @@ import { MinHeap } from "../src/core/heap";
 import type { PhysicalWorld } from "../src/world/types";
 import type { History, WName } from "../src/history/types";
 import * as lang from "../src/lang/index";
+import { createScript } from "../src/script/index";
 
 type LangObj = ReturnType<typeof lang.createProtoLanguage>;
 
@@ -48,7 +49,8 @@ export function makeMockHistory(world: PhysicalWorld, seed: string, endYear = 15
     for (let q = 0; q < nn; q++) s += C[r.int(0, C.length - 1)] + V[r.int(0, V.length - 1)] + (r.chance(0.3) ? C[r.int(0, C.length - 1)] : "");
     return s[0].toUpperCase() + s.slice(1);
   };
-  const toW = (nm: { roman: string; gloss?: string; ipa?: string } | null, li: number, r: Rng): WName => nm ? { roman: nm.roman, gloss: nm.gloss ?? "", lang: li, ipa: nm.ipa } : { roman: syll(r), gloss: "", lang: li };
+  const toW = (nm: { roman: string; gloss?: string; ipa?: string; phonemes?: string[] } | null, li: number, r: Rng): WName =>
+    nm ? { roman: nm.roman, gloss: nm.gloss ?? "", lang: li, ipa: nm.ipa, phonemes: nm.phonemes?.slice() } : { roman: syll(r), gloss: "", lang: li };
 
   // Culture of every land cell: nearest home by hops over land.
   const cultureOf = new Int32Array(n).fill(-1);
@@ -83,9 +85,25 @@ export function makeMockHistory(world: PhysicalWorld, seed: string, endYear = 15
     return {
       id: i, name: nm, adjective: nm.roman, parent: -1, children: [], born: 0, ended: -1, homeCell: h, archetype: "riverine",
       values: { martial: 0.5, mercantile: 0.5, piety: 0.5, art: 0.5, expansion: 0.5, seafaring: 0.5 },
-      languages: [{ year: 0, lang: i }], scripts: [], tech: [{ year: 0, level: 1 }], heraldicStyle: "arms", color: [120, 100, 80],
+      languages: [{ year: 0, lang: i }], scripts: [] as { year: number; script: number }[], tech: [{ year: 0, level: 1 }], heraldicStyle: "arms", color: [120, 100, 80],
       titles: {}, folkReligion: -1, family: i, namedAfter: -1,
     };
+  });
+  // Writing: about two thirds of the peoples become literate at some point.
+  const scripts: History["scripts"] = [];
+  cultures.forEach((c, i) => {
+    const L = langs[i];
+    const r = rng.fork(`script${i}`);
+    if (!L || r.chance(0.34)) return;
+    try {
+      const born = r.int(150, Math.round(endYear * 0.6));
+      const data = createScript(lang.inventory(L), r, { bornYear: born });
+      const id = scripts.length;
+      scripts.push({ id, name: `${c.name.roman} script`, kind: data.kind, parent: -1, children: [], born, culture: i, how: "invented", origin: -1, data } as History["scripts"][number]);
+      (c.scripts as { year: number; script: number }[]).push({ year: born, script: id });
+    } catch {
+      /* script engine unavailable: stay illiterate */
+    }
   });
   const languages = homes.map((_, i) => ({
     id: i, name: cultures[i].name.roman, endonym: cultures[i].name, parent: -1, children: [], born: 0, ended: -1,
@@ -340,7 +358,7 @@ export function makeMockHistory(world: PhysicalWorld, seed: string, endYear = 15
   }
 
   const h = {
-    endYear, sampleStep, cultures, languages, scripts: [], settlements, polities, persons: [], dynasties: [], religions: [], deities: [], myths: [],
+    endYear, sampleStep, cultures, languages, scripts, settlements, polities, persons: [], dynasties: [], religions: [], deities: [], myths: [],
     wars, battles, wonders: [], works: [], tradeRoutes, disasters: [], featureNames, events: [],
     timeline: {
       step, keyEvery, snapshots,

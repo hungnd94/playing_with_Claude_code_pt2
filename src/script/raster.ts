@@ -55,7 +55,7 @@ export function rasterize(strokes: Stroke[], boxW: number, into?: Raster): Raste
       splatPad(acc, st.pts[0][0] * sx, st.pts[0][1], 1.6);
       continue;
     }
-    const xy = sampleRaw(st, 0.045).xy;
+    const xy = sampleRaw(st, 0.06).xy;
     for (let i = 0; i < xy.length; i += 2) {
       const fx = (xy[i] * sx - X0) * SX - 0.5 + 2;
       const fy = (xy[i + 1] - Y0) * SY - 0.5 + 2;
@@ -152,14 +152,18 @@ function bound(a: Raster, b: Raster): number {
 }
 
 /**
- * Highest similarity of `r` to any raster in `others`, exact; stops early
- * once it exceeds `stop`. Comparisons whose block bound cannot beat the
- * current best are skipped.
+ * Highest similarity of `r` to any raster in `others` (exact with the default
+ * `stop`). With a threshold `stop` ≤ 1 the call only answers "does anything
+ * reach `stop`?": it returns at the first similarity above `stop` (not
+ * necessarily the maximum), and skips rasters whose block bound cannot reach
+ * `stop`, so a result below `stop` is a lower bound of the true maximum.
  */
 export function maxSimilarity(r: Raster, others: readonly Raster[], stop = 2): number {
   let best = 0;
+  const floor = stop <= 1 ? stop : 0;
   for (const o of others) {
-    if (bound(r, o) <= best) continue;
+    const b = bound(r, o);
+    if (b <= best || b < floor) continue;
     const s = similarity(r, o);
     if (s > best) {
       best = s;
