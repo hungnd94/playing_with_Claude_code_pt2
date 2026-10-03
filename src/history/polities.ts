@@ -22,13 +22,22 @@ import { conquestRename } from "./divergence";
 
 /** Administrative reach (travel cost from the capital a realm can hold firmly). */
 export function reach(sim: Sim, P: PolS): number {
-  const t = sim.C[P.culture].tech;
+  const C = sim.C[P.culture];
+  const t = C.tech;
+  // A chief rules the villages within a few days' walk; kings rule through
+  // officials and roads, so reach grows with the state as much as with tools.
+  if (P.gov === "tribe" || P.gov === "chiefdom") return (300 + 160 * t) * (C.archetype === "steppe" ? 1.5 : 1);
   let r = 650 + 300 * t;
   if (P.gov === "empire") r *= 1.25;
   if (P.gov === "horde") r *= 1.4;
-  if (P.gov === "tribe" || P.gov === "chiefdom") r *= 0.7;
   if (P.gov === "cityState") r *= 0.6;
   return r;
+}
+
+/** Estimated travel cost from P's capital to a site next to settlement `via` (for new or drifting towns). */
+export function estCapDist(sim: Sim, via: number, cell: number): number {
+  const v = sim.S[via];
+  return v.capDist + sim.distKm(v.cell, cell) * 1.25;
 }
 
 /** Fraction of district population under arms. */
@@ -183,7 +192,7 @@ export function createPolity(sim: Sim, o: NewPolity): PolS {
     legitimacy: 0.7, prestige: 0, treasury: 0, warWeariness: 0, sets: [], provinces: new Map(), pop: 0, strength: 0, cells: 0, area: 0, allies: [], truces: new Map(),
     claims: new Map(), grudges: new Map(), ties: new Map(), wars: [], name, color, lastSuccession: sim.year, rebel: !!o.rebel, crisis: 0, goldenAge: 0, regent: -1, regentUntil: 0,
     cohesion: o.how === "chiefdom" ? 0.95 : 1.05, decay: rng.range(0.55, 1.45),
-    founded: sim.year, revolts: 0, lastWonder: sim.year, lastWar: -999, govSince: sim.year, conquests: 0, peakStrength: 0, cultureMix: new Map(),
+    founded: sim.year, revolts: 0, lastWonder: sim.year, lastWar: -999, govSince: sim.year, conquests: 0, peakStrength: 0, cultureMix: new Map(), absorbed: [],
   };
   sim.P.push(P);
   // Territory.
@@ -218,7 +227,7 @@ export function createPolity(sim: Sim, o: NewPolity): PolS {
       polity: id, capital: o.capital, founder: ruler, gov: o.gov, culture: o.culture, how: o.how, parent: o.parent,
     });
   } else if (!o.quiet) {
-    sim.emit("polityFounded", o.importance ?? 2, cap.cell, { polities: [id, o.parent], settlements: [o.capital], persons: [ruler], cultures: [o.culture] }, {
+    sim.emit("polityFounded", Math.min(2, o.importance ?? 2), cap.cell, { polities: [id, o.parent], settlements: [o.capital], persons: [ruler], cultures: [o.culture] }, {
       polity: id, capital: o.capital, founder: ruler, gov: o.gov, culture: o.culture, how: o.how, parent: o.parent,
     });
   }
@@ -476,14 +485,19 @@ function integrate(sim: Sim): void {
       const o = sim.S[n].owner;
       if (o < 0 || !sim.P[o].alive) continue;
       const P = sim.P[o];
+      // Only towns the realm could govern drift into it.
+      if (estCapDist(sim, n, s.cell) > reach(sim, P)) continue;
       const k = sim.S[n].culture === s.culture ? 1 : sim.familyOf(sim.S[n].culture) === sim.familyOf(s.culture) ? 0.5 : 0.25;
-      const sc = k * Math.log(2 + P.strength) * (sim.S[n].capDist < reach(sim, P) ? 1 : 0.3);
+      const sc = k * Math.log(2 + P.strength);
       if (sc > bs) {
         bs = sc;
         best = o;
       }
     }
-    if (best >= 0 && rng.chance(Math.min(0.5, 0.025 * bs))) transfer(sim, sid, best, false);
+    if (best >= 0 && rng.chance(Math.min(0.5, 0.025 * bs))) {
+      transfer(sim, sid, best, false);
+      s.capDist = estCapDist(sim, s.nbrs.find((n) => sim.S[n].owner === best) ?? sid, s.cell);
+    }
   }
 }
 

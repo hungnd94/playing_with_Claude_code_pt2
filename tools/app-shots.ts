@@ -74,6 +74,9 @@ const browser = await chromium.launch({
 try {
   const ctx = await browser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: +(flags.dpr ?? 1), colorScheme: theme, reducedMotion: flags.reduced ? "reduce" : "no-preference" });
   const page = await ctx.newPage();
+  // Google Fonts are unreachable from the sandbox (and stall screenshots waiting for fonts):
+  // abort them so the locally installed copies of the faces are used.
+  await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
   page.on("console", (m) => {
     if (m.type() === "error" || m.type() === "warning") {
       const t = m.text();

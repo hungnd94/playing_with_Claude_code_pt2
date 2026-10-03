@@ -15,9 +15,10 @@ import { generatePhysical } from "../src/geo/index";
 import { DEFAULT_PARAMS } from "../src/world/types";
 import { runSimulation } from "../src/history/index";
 import { describeEvent, historyNamer } from "../src/history/describe";
-import { polityTitle, regnalName, rulerTitle, polityName, settlementName, populationAt } from "../src/history/query";
+import { polityTitle, regnalName, rulerTitle, polityName, settlementName, populationAt, layerAt } from "../src/history/query";
 import type { History } from "../src/history/types";
 import { MapCanvas, politicalMap, layerMap } from "./history-map";
+import { validateHistory } from "../src/history/validate";
 
 const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const flags = new Set(process.argv.slice(2).filter((a) => a.startsWith("--")));
@@ -42,6 +43,10 @@ const fmt = (x: number) => Math.round(x).toLocaleString("en-US");
 console.log(`seed "${seed}": physical ${(tPhys / 1000).toFixed(2)} s, history ${(tHist / 1000).toFixed(2)} s wall / ${((cpu.user + cpu.system) / 1e6).toFixed(2)} s CPU (${snaps} live snapshots)`);
 console.log("timings (ms): " + Object.entries(sim.timings).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(", "));
 
+// ---------------------------------------------------------------- validity
+const problems = validateHistory(h, 30);
+console.log(problems.length ? `validateHistory: ${problems.length} problem(s):\n  ` + problems.join("\n  ") : "validateHistory: ok");
+
 // ---------------------------------------------------------------- counts
 const importance = [0, 0, 0, 0, 0, 0];
 for (const e of h.events) importance[e.importance]++;
@@ -61,14 +66,26 @@ console.log(`events ${h.events.length}; by importance 1..5: ${importance.slice(1
 console.log("events by type: " + [...byType.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", "));
 
 // ---------------------------------------------------------------- per century
-console.log("\nyear   setl  polities  wars   pop(M)  tech  clim  langs  rels");
+console.log("\nyear   setl  polities  wars  +wars   pop(M)  tech  clim  langs  rels  top%  (top realm)");
 const ws = h.worldStats;
+let landCells = 0;
+for (let i = 0; i < world.mesh.n; i++) if (world.isLand[i] && world.lakeId[i] < 0) landCells++;
+let maxShare = 0, maxShareAt = "";
 for (let y = 0; y <= h.endYear; y += 100) {
   const k = y / h.sampleStep;
   const langs = h.languages.filter((l) => l.born <= y && (l.ended < 0 || l.ended > y)).length;
   const rels = h.religions.filter((r) => r.founded <= y && (r.ended < 0 || r.ended > y)).length;
-  console.log(`${String(y).padStart(4)} ${String(ws.settlements[k]).padStart(6)} ${String(ws.polities[k]).padStart(9)} ${String(ws.wars[k]).padStart(5)} ${(ws.pop[k] / 1e6).toFixed(1).padStart(8)} ${ws.tech[k].toFixed(2).padStart(5)} ${ws.climate[k].toFixed(2).padStart(5)} ${String(langs).padStart(6)} ${String(rels).padStart(5)}`);
+  const started = h.wars.filter((w) => w.start >= y && w.start < y + 100).length;
+  const layer = layerAt(h.timeline.owner, h.timeline, Math.min(y, (h.timeline.snapshots - 1) * h.timeline.step));
+  const cnt = new Map<number, number>();
+  for (let i = 0; i < layer.length; i++) if (layer[i] >= 0) cnt.set(layer[i], (cnt.get(layer[i]) ?? 0) + 1);
+  let top = -1, tc = 0;
+  for (const [p, c] of cnt) if (c > tc) { tc = c; top = p; }
+  const share = (100 * tc) / landCells;
+  if (share > maxShare) { maxShare = share; maxShareAt = `${top >= 0 ? polityName(h, top, y).roman : "-"} in ${y}`; }
+  console.log(`${String(y).padStart(4)} ${String(ws.settlements[k]).padStart(6)} ${String(ws.polities[k]).padStart(9)} ${String(ws.wars[k]).padStart(5)} ${String(started).padStart(6)} ${(ws.pop[k] / 1e6).toFixed(1).padStart(8)} ${ws.tech[k].toFixed(2).padStart(5)} ${ws.climate[k].toFixed(2).padStart(5)} ${String(langs).padStart(6)} ${String(rels).padStart(5)} ${share.toFixed(1).padStart(5)}  ${top >= 0 ? polityName(h, top, y).roman : ""}`);
 }
+console.log(`largest realm ever: ${maxShare.toFixed(1)}% of land (${maxShareAt}); land cells ${landCells}`);
 
 // ---------------------------------------------------------------- top polities
 console.log("\nTop 20 polities by peak area:");

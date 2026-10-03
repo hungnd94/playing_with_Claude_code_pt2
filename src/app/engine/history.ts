@@ -17,7 +17,7 @@ import { mockHistory } from "../dev/mockHistory";
  * real engine only runs when forced (`?history=sim` on the page URL, or
  * `--engine=sim` in tools/app-mock.ts).
  */
-export const SIM_READY = false;
+export const SIM_READY = true;
 
 export interface RunHistoryOptions {
   /** Force an engine; default: the simulation if SIM_READY, else the mock. */

@@ -687,7 +687,15 @@ export interface EventData {
     /** Polity it broke away from / succeeded, or -1. */
     parent: Id;
   };
-  polityUnified: { polity: Id; members: Id[]; how: "confederation" | "conquest" | "marriage" };
+  /**
+   * A realm unites (most of) a people: a league of kindred chiefs
+   * ("confederation"), or a realm that has subdued its rivals ("conquest", or
+   * "marriage" when crowns were joined by inheritance). `members` are the
+   * realms absorbed on the way; `culture` the people united (absent on old
+   * data); `first` = the first time this people was ever united; `share` =
+   * fraction of the people's towns the realm now holds.
+   */
+  polityUnified: { polity: Id; members: Id[]; how: "confederation" | "conquest" | "marriage"; culture?: Id; first?: boolean; share?: number; ruler?: Id };
   governmentChanged: { polity: Id; from: Government; to: Government; reason: string };
   polityCollapsed: { polity: Id; successors: Id[]; causes: string[]; peakAreaKm2: number; age: number };
   polityAnnexed: { polity: Id; by: Id; war: Id; last: Id };
@@ -706,6 +714,8 @@ export interface EventData {
     /** "Oshar III" at the time (epithets are posthumous; see Person.epithet). */
     regnalName: string;
     relation: string;
+    /** Set when the predecessor's line had died out and the magnates chose a new house: the dynasty that ended. */
+    endedLine?: Id;
   };
   abdication: { person: Id; polity: Id; successor: Id; reason: string };
   deposition: { person: Id; polity: Id; by: Id };

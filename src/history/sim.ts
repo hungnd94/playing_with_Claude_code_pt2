@@ -168,6 +168,14 @@ export interface PolS {
   peakStrength: number;
   /** Set of cultures among its settlements (rebuilt yearly): culture → district pop. */
   cultureMix: Map<number, number>;
+  /** Realms it has swallowed (annexed, absorbed, merged), in order — the members of a unification. */
+  absorbed: number[];
+}
+
+/** How much a realm matters to the chronicle: 0 minor, 1 sizeable, 2 great (an empire or a realm of 35+ towns). */
+export function stature(P: PolS): 0 | 1 | 2 {
+  if (P.gov === "empire" || P.sets.length >= 35) return 2;
+  return P.sets.length >= 10 ? 1 : 0;
 }
 
 export interface CulS {
@@ -362,6 +370,12 @@ export class Sim {
   agenda: { year: number; run: () => void }[] = [];
   /** Cross-system callbacks filled in by modules (avoids import cycles). */
   hooks: { scripture?: (sim: Sim, religion: number) => void } = {};
+  /**
+   * Unity of each people: `divided` once no single realm holds most of its
+   * towns (set when the people is split among rival realms), cleared when
+   * one realm unites it again; `united` = times it has been united.
+   */
+  unity = new Map<number, { divided: boolean; since: number; united: number }>();
   /** Prophets born and awaiting their calling. */
   prophecies: { person: number; city: number; culture: number; due: number }[] = [];
   /** Scratch per-cell stamp for de-duplicating cell visits (bump `stampGen` before use). */
