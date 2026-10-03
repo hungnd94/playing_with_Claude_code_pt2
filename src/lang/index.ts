@@ -97,11 +97,12 @@ export {
   type PersonOptions,
 } from "./naming";
 
-export { evolveName, borrowName, adaptWord, evolveWord, renderEtymology, ancestorLabel, pathBetween, type BorrowOptions } from "./etymology";
+export { evolveName, borrowName, adaptWord, evolveWord, renderEtymology, ancestorLabel, pathBetween, wordEtymology, type BorrowOptions, type EtymologyRenderOptions } from "./etymology";
 
 export { sentence, phrase, motto, proverb, inscription, type NP, type Clause, type Phrase, type Sentence, type Relation } from "./grammar";
 
-export { asciiFold } from "./util";
+export { asciiFold, obscene } from "./util";
+export { loanwords, withLoanwords, type LoanOptions } from "./contact";
 
 export { toWName, toUtterance, displayParts, stageLabels, type WNameOptions } from "./bridge";
 export { SOUND_STYLES, type SoundStyle } from "./styles";

@@ -33,8 +33,9 @@ import {
   type Differentiator,
 } from "./marks";
 import { cursiveAssign, featuralConsonant, featuralDesign, featuralVowels, syllabicBases, tallyShapes, tallyVowels, ORIENT_ORDER } from "./special";
-import { line, strokesBBox, transformStrokes } from "./geom";
+import { dot, line, strokesBBox, transformStrokes } from "./geom";
 import { rasterize, similarity } from "./raster";
+import { ensureDistinct } from "./distinct";
 
 export interface CreateOptions {
   id?: string;
@@ -381,15 +382,27 @@ export function deriveShape(b: Builder, base: Glyph, n: Need & { how: "derived" 
   }
   for (const d of b.diffs) tries.push(() => differentiate(bs, d, b.rng));
   for (const k of b.script.morph.diacritics) tries.push(() => addDiacritic(bs, k, "above"));
-  // Derived letters are meant to look related (Ž from Z): accept anything visibly different.
-  for (const t of tries) {
-    const s = t();
-    const ok = b.factory.tryAccept(s, 0.972);
-    if (ok) return ok;
+  for (const k of b.script.morph.diacritics) tries.push(() => addDiacritic(bs, k, "right"));
+  // Derived letters are meant to look related (Ž from Z) yet plainly distinct
+  // from their base: the added mark must not vanish into the letter's own
+  // strokes. First pass strict, second lenient, else the most distinct try.
+  const baseR = rasterize(bs.strokes, bs.w);
+  const shapes = tries.map((t) => t());
+  const toBase = shapes.map((sh) => similarity(rasterize(sh.strokes, sh.w), baseR));
+  for (const [limBase, limAll] of [
+    [0.955, 0.972],
+    [0.972, 0.972],
+  ]) {
+    for (let i = 0; i < shapes.length; i++) {
+      if (toBase[i] >= limBase) continue;
+      const ok = b.factory.tryAccept(shapes[i], limAll);
+      if (ok) return ok;
+    }
   }
-  const s = tries[0]();
-  b.factory.register(s);
-  return s;
+  let best = 0;
+  for (let i = 1; i < shapes.length; i++) if (toBase[i] < toBase[best]) best = i;
+  b.factory.register(shapes[best]);
+  return shapes[best];
 }
 
 // ---------------------------------------------------------------------------
@@ -483,13 +496,22 @@ function buildAbugida(b: Builder, inv: Inventory): void {
   const fam = b.script.morph.family;
   const vowels = uniq(inv.vowels);
   o.inherent = chooseInherent(vowels);
-  o.vowelMode = fam === "syllabic" ? "rotate" : fam === "geometric" || fam === "linear" ? (b.rng.chance(0.75) ? "fused" : "sign") : b.rng.chance(0.15) ? "fused" : "sign";
+  // Fused vowel forms need plain consonant shapes to show their small
+  // additions; curly and hanging bodies take vowel signs instead.
+  const fusedChance = fam === "geometric" || fam === "linear" ? 0.75 : fam === "square" || fam === "stave" ? 0.3 : 0;
+  o.vowelMode = fam === "syllabic" ? "rotate" : b.rng.chance(fusedChance) ? "fused" : "sign";
+  // Fused and rotated forms run out of legible variants quickly (Ethiopic has
+  // seven orders): long and nasal vowels are then written with a mark, and a
+  // vowel system still too large for fused forms is written with signs.
+  const qualities = uniq(vowels.map((v) => stripAll(v)));
+  if (o.vowelMode === "fused" && qualities.length > 9) o.vowelMode = "sign";
+  const compact = o.vowelMode !== "sign";
   // Which vowels get their own sign: plain qualities + those whose secondary is treated as "letter".
   const own: string[] = [];
   for (const v of vowels) {
     const i = classify(v);
     const sec = FEATURE_ORDER.find((f) => i.secondary.includes(f));
-    if (!sec || b.treat[sec] === "letter" || stripFeature(v, sec) === v) own.push(v);
+    if (!sec || (!compact && b.treat[sec] === "letter") || stripFeature(v, sec) === v) own.push(v);
   }
   for (const v of vowels) {
     if (own.includes(v)) continue;
@@ -774,15 +796,22 @@ function buildFeatural(b: Builder, inv: Inventory): void {
   const cons = uniq(inv.consonants).sort((x, y) => phoneticOrderKey(x) - phoneticOrderKey(y));
   const made: { ph: string; s: Shape }[] = [];
   const seen: ReturnType<typeof rasterize>[] = [];
+  // Marks that set apart two consonants the feature system would write alike
+  // (a dot above, below, or both corners; then a short bar), as Hangul's
+  // extended letters do.
+  const extras: Stroke[][] = [
+    [dot(0.92, 0.04, 0.06)],
+    [dot(0.92, 1.02, 0.06)],
+    [dot(0.08, 0.04, 0.06), dot(0.92, 0.04, 0.06)],
+    [line(0.8, 0.06, 1.0, 0.06)],
+  ];
   for (const c of cons) {
-    let s = featuralConsonant(design, c);
+    const s0 = featuralConsonant(design, c);
+    let s = s0;
     let r = rasterize(s.strokes, s.w);
-    let k = 0;
-    while (seen.some((q) => similarity(q, r) > 0.97) && k < 4) {
-      // disambiguate look-alikes with an extra mark
-      s = { ...s, strokes: [...s.strokes, ...[line(0.86, 0.02 + k * 0.08, 0.98, 0.02 + k * 0.08)]] };
+    for (let k = 0; k < extras.length && seen.some((q) => similarity(q, r) > 0.965); k++) {
+      s = { ...s0, strokes: [...s0.strokes, ...extras[k]] };
       r = rasterize(s.strokes, s.w);
-      k++;
     }
     seen.push(r);
     made.push({ ph: c, s });
@@ -847,18 +876,42 @@ export function newBuilder(script: Script, rng: Rng): Builder {
   };
 }
 
+/**
+ * Which kind of writing a language invites. Inventors write what they hear
+ * as units: a language of few vowels is written by its consonants (abjad), a
+ * small inventory of simple syllables by syllable signs, a rich vowel system
+ * by letters for every sound.
+ */
+export function kindWeights(inv: Inventory): [ScriptKind, number][] {
+  const quals = uniq(inv.vowels.map((v) => stripAll(v))).length;
+  const cons = uniq(inv.consonants).length;
+  let alphabet = 0.3;
+  let abjad = 0.2;
+  let abugida = 0.25;
+  let syllabary = 0.17;
+  const featural = 0.08;
+  if (quals <= 3) abjad *= 2.2;
+  else if (quals >= 7) {
+    abjad *= 0.4;
+    alphabet *= 1.5;
+  }
+  const signs = (cons + 1) * quals;
+  if (signs <= 70) syllabary *= 2;
+  else if (signs > 130) syllabary *= 0.35;
+  if (cons >= 26) abugida *= 1.3;
+  return [
+    ["alphabet", alphabet],
+    ["abjad", abjad],
+    ["abugida", abugida],
+    ["syllabary", syllabary],
+    ["featural", featural],
+  ];
+}
+
 /** Invent a new writing system for a language with the given inventory. */
 export function createScript(inventory: Inventory, rng: Rng, opts: CreateOptions = {}): Script {
   const r = rng.fork("script");
-  let kind: ScriptKind =
-    opts.kind ??
-    r.weighted<ScriptKind>([
-      ["alphabet", 0.3],
-      ["abjad", 0.2],
-      ["abugida", 0.25],
-      ["syllabary", 0.17],
-      ["featural", 0.08],
-    ]);
+  let kind: ScriptKind = opts.kind ?? r.weighted<ScriptKind>(kindWeights(inventory));
   let family: Family = opts.family ?? r.weighted(KIND_FAMILIES[kind]);
   if (!compatible(kind, family)) {
     if (opts.family && !opts.kind) {
@@ -917,6 +970,7 @@ export function createScript(inventory: Inventory, rng: Rng, opts: CreateOptions
       break;
   }
   if (family === "cursive" && direction === "ltr") mirrorCursive(script);
+  ensureDistinct(b);
   finishScript(script, r.fork("order"));
   script.history.push(`invented as ${article(kind)} ${kind} written with ${toolPhrase(tool)}`);
   return script;

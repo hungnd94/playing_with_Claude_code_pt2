@@ -13,7 +13,7 @@ import type { Arms, Attitude, ChargeId, ShieldShape } from "./types";
 import { CHARGES, chargeArt, chargeDef } from "./charges/index";
 import { paintCharge } from "./charges/paint";
 import { autoId, defsMarkup, mix, uid, type Ctx } from "./ctx";
-import { circleD, f, polyD, type Pt } from "./path";
+import { circleD, f, polyD, samplePath, type Pt } from "./path";
 import { fitScale } from "./place";
 import { renderCoat } from "./render";
 import { SHAPES, shapeFrame } from "./shapes";
@@ -269,15 +269,71 @@ function fieldPattern(ctx: Ctx, g: SealGeom, kind: Seal["field"]): string {
   return `<g clip-path="url(#${clip})"><path d="${s}" fill="#fff" stroke="#fff" stroke-width=".8"/></g>`;
 }
 
+/** Points along the legend's path, clockwise from the top, evenly spaced. */
+function legendLoop(g: SealGeom, n = 180): Pt[] {
+  const pts = samplePath(g.legendPath, 2)[0] ?? [];
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const total = cum[cum.length - 1] || 1;
+  const out: Pt[] = [];
+  let j = 0;
+  for (let k = 0; k < n; k++) {
+    const sv = (k / n) * total;
+    while (j < cum.length - 2 && cum[j + 1] < sv) j++;
+    const t = (sv - cum[j]) / (cum[j + 1] - cum[j] || 1);
+    out.push([pts[j][0] + (pts[j + 1][0] - pts[j][0]) * t, pts[j][1] + (pts[j + 1][1] - pts[j][1]) * t]);
+  }
+  return out;
+}
+
+/**
+ * The legend round the seal, in capitals with medieval word stops. A long
+ * legend runs right round the band; a short one is set across the top at its
+ * natural spacing, and the rest of the band is filled with pellets and a
+ * rosette at the foot, as seal engravers did.
+ */
 function legendMarkup(ctx: Ctx, g: SealGeom, legend: string, font: string): string {
-  const pid = uid(ctx, "lp");
-  ctx.defs.set(pid, `<path id="${pid}" d="${g.legendPath}"/>`);
-  const text = `✠ ${legend.toUpperCase()} `;
-  const fs = 13.5;
-  const natural = text.length * fs * 0.7;
+  const words = legend.toUpperCase().split(/\s+/).filter(Boolean);
+  const text = `✠ ${words.join(" · ")}`;
   const L = g.legendLen * 0.985;
-  const adjust = natural > L ? "spacingAndGlyphs" : "spacing";
-  return `<text font-family="${font}" font-size="${fs}" font-weight="700" fill="#fff" dominant-baseline="central" textLength="${f(L)}" lengthAdjust="${adjust}"><textPath href="#${pid}" startOffset="0">${escapeXml(text)}</textPath></text>`;
+  const est = (fs: number) => [...text].length * fs * 0.72;
+  if (est(13.5) > L * 0.62) {
+    const pid = uid(ctx, "lp");
+    ctx.defs.set(pid, `<path id="${pid}" d="${g.legendPath}"/>`);
+    const fs = 13.5;
+    const adjust = est(fs) + fs > L ? "spacingAndGlyphs" : "spacing";
+    return `<text font-family="${font}" font-size="${fs}" font-weight="700" fill="#fff" dominant-baseline="central" textLength="${f(L)}" lengthAdjust="${adjust}"><textPath href="#${pid}" startOffset="0">${escapeXml(text + " ·")}</textPath></text>`;
+  }
+  // Short legend: centred on the top, on a path that starts at the foot.
+  const loop = legendLoop(g);
+  const n = loop.length;
+  const bottom = loop.reduce((bi, p, i) => (p[1] > loop[bi][1] ? i : bi), 0);
+  const fromFoot = [...loop.slice(bottom), ...loop.slice(0, bottom), loop[bottom]];
+  const pid = uid(ctx, "lp");
+  ctx.defs.set(pid, `<path id="${pid}" d="${polyD(fromFoot, false)}"/>`);
+  const fs = 15;
+  const span = Math.min(L * 0.62, est(fs) * 1.12);
+  let ornament = "";
+  const total = g.legendLen;
+  for (let k = 0; k < n; k++) {
+    const sv = (k / n) * total;
+    const fromTop = Math.min(sv, total - sv);
+    if (fromTop < span / 2 + 7) continue;
+    const [x, y] = loop[k];
+    const atFoot = Math.abs(fromTop - total / 2) < total / n / 2 + 1e-6;
+    if (atFoot) {
+      // a cinquefoil rosette
+      for (let q = 0; q < 5; q++) {
+        const a = (q / 5) * Math.PI * 2 - Math.PI / 2;
+        ornament += circleD(x + Math.cos(a) * 3, y + Math.sin(a) * 3, 2.2);
+      }
+    } else if (k % 3 === 0) ornament += circleD(x, y, Math.abs(fromTop - total / 2) < total * 0.12 ? 1.9 : 1.5);
+  }
+  return (
+    `<text font-family="${font}" font-size="${fs}" font-weight="700" fill="#fff" dominant-baseline="central" text-anchor="middle" textLength="${f(span)}" lengthAdjust="spacing">` +
+    `<textPath href="#${pid}" startOffset="50%">${escapeXml(text)}</textPath></text>` +
+    (ornament ? `<path d="${ornament}" fill="#fff"/>` : "")
+  );
 }
 
 function escapeXml(s: string): string {
@@ -407,7 +463,7 @@ export function describeSeal(s: Seal): string {
   }
   const field = s.field === "diaper" ? " on a diapered field" : s.field === "stars" ? " on a field strewn with stars" : s.field === "sprigs" ? " on a field of sprigs" : "";
   const mat = s.material === "lead" ? ", a leaden bulla" : ` ${MATERIAL_TEXT[s.material]}`;
-  const legend = s.legend ? `; legend: ✠ ${s.legend.toUpperCase()}` : "";
+  const legend = s.legend ? `; legend: ✠ ${s.legend.toUpperCase().split(/\s+/).join(" · ")}` : "";
   return `${shape}${mat}: ${dev}${field}${legend}.`;
 }
 
@@ -438,7 +494,7 @@ export function generateSeal(rng: Rng, opts: SealOptions = {}): Seal {
   else if (opts.mon) device = { kind: "mon", mon: opts.mon };
   else if (shape === "square" && rng.chance(0.5)) device = { kind: "mon", mon: generateMon(rng.fork("mon"), { motifs }) };
   else {
-    const charge: ChargeId = motifs.length && rng.chance(0.9)
+    const charge: ChargeId = motifs.length && rng.chance(0.97)
       ? rng.pick(motifs)
       : rng.weighted([["lion", 4], ["eagle", 4], ["tower", 2], ["castle", 2], ["key", 2], ["ship", 2], ["fleurDeLis", 2], ["crown", 2], ["stag", 1.5], ["horse", 1.5], ["sun", 1.5], ["star", 1], ["tree", 1.5], ["cup", 1], ["hand", 1], ["bell", 1]] as [ChargeId, number][]);
     const def = CHARGES[charge];

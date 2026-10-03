@@ -11,9 +11,9 @@ import { chargeArt, chargeDef } from "./charges/index";
 import { paintCharge } from "./charges/paint";
 import { autoId, chargeFill, defsMarkup, detailColor, regionFill, uid, type Ctx } from "./ctx";
 import { bendDir, bordureWidth, cantonBox, chiefHeight, chiefPoly, divideField, ordinaryShape } from "./geometry";
-import { betweenSlots, bordureSlots, chiefSlots, fieldSlots, onOrdinarySlots, rows, type ChargeShape, type Slot } from "./layout";
+import { aroundSlots, betweenSlots, bordureSlots, chiefSlots, fieldSlots, onOrdinarySlots, rows, type ChargeShape, type Slot } from "./layout";
 import { patternLine } from "./lines";
-import { f, polyD, resampleClosed, type Pt } from "./path";
+import { circleD, f, polyD, resampleClosed, type Pt } from "./path";
 import { insetPoly, rectFrame, SHAPES, shapeFrame, subFrame, type Frame } from "./shapes";
 import { ILLUMINATED, PALETTES, isMetal, type Palette } from "./tinctures";
 
@@ -190,24 +190,45 @@ function aspectOf(g: ChargeGroup): ChargeShape {
 }
 
 function renderOrdinary(o: Ordinary, fr: Frame, ctx: Ctx, info: FieldInfo): string {
+  if (o.kind === "fret") return renderFret(o, fr, ctx);
   const shape = ordinaryShape(o, fr);
   const paint = (t: Tint) => regionFill(ctx, t, fr.u);
   let s = shape.evenodd ? strokeFill(shape.evenodd, paint(o.tincture), ctx, true) : unionFill(shape.polys, paint(o.tincture), ctx);
-  if (o.kind === "fret") {
-    // A mascle interlaced with the saltire.
-    const { fx, fy, w, h } = fr;
-    const a = w * 0.25, b = h * 0.25, t = w * 0.07;
-    const outer = polyD([[fx, fy - b - t * 1.4], [fx + a + t, fy], [fx, fy + b + t * 1.4], [fx - a - t, fy]]);
-    const inner = polyD([[fx, fy - b + t * 1.4], [fx + a - t, fy], [fx, fy + b - t * 1.4], [fx - a + t, fy]]);
-    s += strokeFill(outer + inner, paint(o.tincture), ctx, true);
-    // Re-lay the saltire over the mascle at two crossings for the interlace.
-    const patch = clipDef(ctx, polyD([[fx - w, fy - h], [fx, fy], [fx - w, fy + h * 0.05]]) + polyD([[fx + w, fy + h], [fx, fy], [fx + w, fy - h * 0.05]]));
-    s += `<g clip-path="url(#${patch})">${unionFill(shape.polys, paint(o.tincture), ctx)}</g>`;
-  }
   if (o.counterchanged && info.t1 && info.region) {
     const clip = clipDef(ctx, info.region, true);
     const alt = info.t0;
     s += `<g clip-path="url(#${clip})">${shape.evenodd ? strokeFill(shape.evenodd, paint(alt), ctx, true) : unionFill(shape.polys, paint(alt), ctx)}</g>`;
+  }
+  return s;
+}
+
+/**
+ * A fret: a mascle interlaced with a saltire of the same width. One arm of the
+ * saltire passes over the mascle at both its crossings, the other under it,
+ * so the weave alternates all the way round the mascle.
+ */
+function renderFret(o: Ordinary, fr: Frame, ctx: Ctx): string {
+  const paint = regionFill(ctx, o.tincture, fr.u);
+  const bw = fr.w * 0.088, hw = bw / 2;
+  const C: Pt = [fr.fx, fr.fy];
+  const d1 = bendDir(fr, false), d2 = bendDir(fr, true);
+  const L = fr.w * 3;
+  const arm = (d: Pt): Pt[] => {
+    const nx = -d[1] * hw, ny = d[0] * hw;
+    return [[C[0] - d[0] * L + nx, C[1] - d[1] * L + ny], [C[0] + d[0] * L + nx, C[1] + d[1] * L + ny], [C[0] + d[0] * L - nx, C[1] + d[1] * L - ny], [C[0] - d[0] * L - nx, C[1] - d[1] * L - ny]];
+  };
+  // Mascle with sides square to the saltire's arms.
+  const A = fr.w * 0.3, B = (A * d1[0]) / d1[1];
+  const r = (A * B) / Math.hypot(A, B);
+  const loz = (k: number): Pt[] => [[C[0], C[1] - B * k], [C[0] + A * k, C[1]], [C[0], C[1] + B * k], [C[0] - A * k, C[1]]];
+  const mascle = polyD(loz((r + hw) / r)) + polyD(loz((r - hw) / r));
+  let s = unionFill([arm(d1), arm(d2)], paint, ctx);
+  s += strokeFill(mascle, paint, ctx, true);
+  // Re-lay the dexter arm where it crosses over the mascle.
+  for (const sgn of [-1, 1]) {
+    const p: Pt = [C[0] + d1[0] * r * sgn, C[1] + d1[1] * r * sgn];
+    const clip = clipDef(ctx, circleD(p[0], p[1], bw * 0.95));
+    s += `<g clip-path="url(#${clip})">${unionFill([arm(d1)], paint, ctx)}</g>`;
   }
   return s;
 }
@@ -220,62 +241,79 @@ function renderBordure(a: SimpleArms, fr: Frame, ctx: Ctx): string {
   const inner = patternLine(innerBase, b.line, { u: fr.u, side: 1, closed: true, scale: 0.75, anchor: [fr.fx, fr.y] });
   const d = polyD(outer) + polyD(inner);
   let s = strokeFill(d, regionFill(ctx, b.tincture, fr.u), ctx, true);
-  if (b.compony) {
-    // alternate segments
-    const ring = resampleClosed(innerBase, 1);
-    let perim = 0;
-    for (let i = 0; i < innerBase.length; i++) {
-      const p = innerBase[i], q = innerBase[(i + 1) % innerBase.length];
-      perim += Math.hypot(q[0] - p[0], q[1] - p[1]);
-    }
-    const n = Math.max(12, Math.round(perim / (fr.w * 0.21) / 2) * 2);
-    const segs: string[] = [];
-    const cum = [0];
-    for (let i = 1; i <= ring.length; i++) {
-      const p = ring[i - 1], q = ring[i % ring.length];
-      cum.push(cum[i - 1] + Math.hypot(q[0] - p[0], q[1] - p[1]));
-    }
-    const total = cum[ring.length];
-    const pointAt = (sv: number): Pt => {
-      sv = ((sv % total) + total) % total;
-      let j = 0;
-      while (j < ring.length - 1 && cum[j + 1] < sv) j++;
-      const p = ring[j], q = ring[(j + 1) % ring.length];
-      const t = (sv - cum[j]) / (cum[j + 1] - cum[j] || 1);
-      return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
-    };
-    const start = 0;
-    const step = total / n;
-    const cxm = fr.fx, cym = fr.fy;
-    for (let k = 0; k < n; k += 2) {
-      const pts: Pt[] = [];
-      for (let j = 0; j <= 6; j++) pts.push(pointAt(start + step * (k + j / 6)));
-      const outerPts = pts.map(([px, py]) => {
-        const dx = px - cxm, dy = py - cym;
-        const L = Math.hypot(dx, dy) || 1;
-        return [px + (dx / L) * fr.w * 0.5, py + (dy / L) * fr.w * 0.5] as Pt;
-      });
-      segs.push(polyD([...pts, ...outerPts.reverse()]));
-    }
-    const clip = clipDef(ctx, d, true);
-    s += `<g clip-path="url(#${clip})"><path d="${segs.join("")}" fill="${regionFill(ctx, b.compony, fr.u)}" stroke="${ctx.pal.contour}" stroke-width="${f(ctx.ow * 0.9)}"/></g>`;
-  }
+  if (b.compony) s += componySegments(ctx, innerBase, fr, bw, d, b.compony);
   if (b.charges) s += drawCharges(ctx, b.charges, bordureSlots(fr, b.charges.count), b.tincture);
   return s;
 }
 
-function renderDifference(d: Difference, fr: Frame, ctx: Ctx, hasChief: boolean): string {
+/**
+ * The alternate pieces of a bordure compony: equal lengths of the bordure's inner
+ * edge, each pushed outward along its own normals, the first centred at the top.
+ */
+function componySegments(ctx: Ctx, inner: Pt[], fr: Frame, bw: number, bordureD: string, t: Tint): string {
+  const ring = resampleClosed(inner, 1);
+  const m = ring.length;
+  let area = 0;
+  for (let i = 0; i < m; i++) {
+    const q = ring[(i + 1) % m];
+    area += ring[i][0] * q[1] - q[0] * ring[i][1];
+  }
+  const sgn = area > 0 ? 1 : -1; // inward normal = (-ty, tx) * sgn, as in insetPoly
+  const cum = [0];
+  for (let i = 1; i <= m; i++) {
+    const p = ring[i - 1], q = ring[i % m];
+    cum.push(cum[i - 1] + Math.hypot(q[0] - p[0], q[1] - p[1]));
+  }
+  const total = cum[m];
+  const n = Math.max(12, Math.round(total / (fr.w * 0.2) / 2) * 2);
+  const step = total / n;
+  // arc position of the top centre
+  let s0 = 0, best = Infinity;
+  for (let i = 0; i < m; i++) {
+    const dd = Math.abs(ring[i][0] - fr.fx) + (ring[i][1] > fr.fy ? 1e6 : 0);
+    if (dd < best) { best = dd; s0 = cum[i]; }
+  }
+  const at = (sv: number): { p: Pt; nrm: Pt } => {
+    sv = ((sv % total) + total) % total;
+    let lo = 0, hi = m - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cum[mid] <= sv) lo = mid; else hi = mid - 1;
+    }
+    const a = ring[lo], b = ring[(lo + 1) % m];
+    const tt = (sv - cum[lo]) / (cum[lo + 1] - cum[lo] || 1);
+    const tx = b[0] - a[0], ty = b[1] - a[1];
+    const L = Math.hypot(tx, ty) || 1;
+    return { p: [a[0] + tx * tt, a[1] + ty * tt], nrm: [(ty / L) * sgn, (-tx / L) * sgn] };
+  };
+  const reach = bw * 2.2;
+  let d = "";
+  for (let k = 0; k < n; k += 2) {
+    const a0 = s0 - step / 2 + k * step;
+    const pts: Pt[] = [], outer: Pt[] = [];
+    for (let j = 0; j <= 8; j++) {
+      const { p, nrm } = at(a0 + (step * j) / 8);
+      pts.push(p);
+      outer.push([p[0] + nrm[0] * reach, p[1] + nrm[1] * reach]);
+    }
+    d += polyD([...pts, ...outer.reverse()]);
+  }
+  const clip = clipDef(ctx, bordureD, true);
+  return `<g clip-path="url(#${clip})"><path d="${d}" fill="${regionFill(ctx, t, fr.u)}" stroke="${ctx.pal.contour}" stroke-width="${f(ctx.ow * 0.9)}" stroke-linejoin="round"/></g>`;
+}
+
+function renderDifference(d: Difference, fr: Frame, ctx: Ctx, hasChief: boolean, spot: MarkSpot = "chief"): string {
   const { x, y, w, h, fx } = fr;
   if (d.mark === "label") {
     const n = d.points ?? 3;
-    const top = y + (hasChief ? h * 0.07 : h * 0.09);
-    const bh = w * 0.05;
-    const x0 = x + w * (n === 5 ? 0.12 : 0.2), x1 = x + w * (n === 5 ? 0.88 : 0.8);
+    const top = y + (hasChief ? h * 0.035 : h * 0.07);
+    const bh = w * 0.045;
+    const x0 = x + w * (n === 5 ? 0.13 : 0.22), x1 = x + w * (n === 5 ? 0.87 : 0.78);
     const polys: Pt[][] = [[[x - w, top], [x + 2 * w, top], [x + 2 * w, top + bh], [x - w, top + bh]]];
     for (let i = 0; i < n; i++) {
       const cx = x0 + ((x1 - x0) * (i + 0.5)) / n;
-      const tw = w * (n === 5 ? 0.04 : 0.05), bw2 = w * (n === 5 ? 0.06 : 0.075);
-      const L = w * 0.13;
+      const tw = w * (n === 5 ? 0.032 : 0.042), bw2 = w * (n === 5 ? 0.05 : 0.065);
+      const L = w * (hasChief ? 0.1 : 0.12);
       polys.push([[cx - tw, top + bh * 0.5], [cx + tw, top + bh * 0.5], [cx + bw2, top + bh + L], [cx - bw2, top + bh + L]]);
     }
     // A label couped: trim the bar to the points' extent.
@@ -300,27 +338,107 @@ function renderDifference(d: Difference, fr: Frame, ctx: Ctx, hasChief: boolean)
     rose: "rose", crossMoline: "crossMoline", quatrefoil: "quatrefoil",
   };
   const charge = map[d.mark];
+  void h; void fx;
+  return drawCharges(ctx, { charge, count: 1, tincture: d.tincture }, [spotPoint(spot, fr, hasChief)], "argent");
+}
+
+/** Where everything on a simple coat goes, in a given frame. */
+export interface CoatLayout {
+  /** Frame left once a chief is taken off the top. */
+  main: Frame;
+  /** Polygon charges must fit in (inside any bordure). */
+  fit: Pt[];
+  charges: Slot[];
+  secondary: Slot[];
+  onOrdinary: Slot[];
+  chief: Slot[];
+  canton: Slot[];
+}
+
+export function layoutSimple(a: SimpleArms, fr: Frame): CoatLayout {
+  const ch = a.chief ? chiefHeight(fr) : 0;
+  const main = a.chief ? subFrame(fr, fr.x, fr.y + ch, fr.w, fr.h - ch) : fr;
+  // keep the fess point of the reduced frame where a herald would put it
+  if (a.chief) main.fy = Math.min(main.fy, fr.y + ch + (fr.fy - fr.y) * 0.95);
+  let fit = main.poly;
+  if (a.bordure) fit = insetPoly(fit, bordureWidth(fr, !!a.bordure.charges) * 1.05);
+  else if (a.chief) fit = insetPoly(fit, fr.w * 0.012);
+  const L: CoatLayout = { main, fit, charges: [], secondary: [], onOrdinary: [], chief: [], canton: [] };
+  if (a.charges) {
+    const g = a.charges;
+    const def = chargeDef(g.charge);
+    if (a.ordinary) L.charges = betweenSlots(a.ordinary, main, fit, g.count, aspectOf(g));
+    else if (a.secondary && (a.secondary.arrangement === "orle" || a.secondary.count >= 6)) {
+      // A charge within an orle of others: it takes the space the orle leaves free.
+      const orle = secondarySlots(main, fit, a.secondary.count, aspectOf(a.secondary), "orle");
+      const inner = insetPoly(fit, (fit === main.poly ? main.w * 0.13 : main.w * 0.094) + (orle[0]?.s ?? 0) * 0.55);
+      L.charges = fieldSlots(main, inner, g.count, g.arrangement, aspectOf(g), !!def.long);
+    } else if (a.secondary) L.charges = principalWithSecondarySlots(main, fit, g, aspectOf(g));
+    else L.charges = fieldSlots(main, fit, g.count, g.arrangement, aspectOf(g), !!def.long);
+    if (a.secondary && !a.ordinary) {
+      const sec = a.secondary;
+      L.secondary = g.count === 1 && sec.count <= 5 && sec.arrangement !== "orle"
+        ? aroundSlots(L.charges[0], main, fit, sec.count, aspectOf(sec))
+        : secondarySlots(main, fit, sec.count, aspectOf(sec), sec.arrangement);
+    }
+  }
+  if (a.ordinary?.charges) {
+    const g = a.ordinary.charges;
+    L.onOrdinary = onOrdinarySlots(a.ordinary, main, fit, g.count, aspectOf(g), !!chargeDef(g.charge).symmetric, !!chargeDef(g.charge).long);
+  }
+  if (a.chief?.charges) L.chief = chiefSlots(fr, a.chief.charges.count, aspectOf(a.chief.charges), !!chargeDef(a.chief.charges.charge).long);
+  if (a.canton?.charge) {
+    const [cx, cy, cw] = cantonBox(fr, a.canton.sinister);
+    const sub = rectFrame(cx, cy, cw, cw);
+    L.canton = rows(sub.poly, { x0: cx + cw * 0.12, y0: cy + cw * 0.12, x1: cx + cw * 0.88, y1: cy + cw * 0.88 }, [1], aspectOf(a.canton.charge));
+  }
+  return L;
+}
+
+export type MarkSpot = NonNullable<Difference["at"]>;
+
+/** Centre and size of a brisure at a given spot. */
+function spotPoint(spot: MarkSpot, fr: Frame, hasChief: boolean): Slot {
+  const { x, y, w, h, fx, fy } = fr;
   const s = w * 0.13;
-  const slot: Slot = { x: fx, y: y + (hasChief ? chiefHeight(fr) * 0.5 : h * 0.13), s };
-  return drawCharges(ctx, { charge, count: 1, tincture: d.tincture }, [slot], "argent");
+  switch (spot) {
+    case "fess": return { x: fx, y: fy, s };
+    case "dexterChief": return { x: x + w * 0.2, y: y + (hasChief ? chiefHeight(fr) * 0.5 : h * 0.14), s };
+    case "sinisterChief": return { x: x + w * 0.8, y: y + (hasChief ? chiefHeight(fr) * 0.5 : h * 0.14), s };
+    default: return { x: fx, y: y + (hasChief ? chiefHeight(fr) * 0.5 : h * 0.13), s };
+  }
+}
+
+/** Ordinaries that cover the fess point. */
+const THROUGH_FESS = ["fess", "pale", "bend", "bendSinister", "cross", "saltire", "pall", "pallReversed"];
+
+/**
+ * Where a brisure (mark of cadency) should go on a coat — the middle chief,
+ * else the fess point, else the dexter chief, whichever no charge occupies —
+ * and the tinctures it will lie on there.
+ */
+export function markSpot(a: SimpleArms): { at: MarkSpot; under: Tint[] } {
+  const fr = shapeFrame("heater");
+  const L = layoutSimple(a, fr);
+  const occupied = [...L.charges, ...L.secondary, ...L.onOrdinary, ...L.chief, ...L.canton];
+  const free = (sl: Slot) => occupied.every((o) => Math.hypot(o.x - sl.x, o.y - sl.y) > o.s * 0.5 + sl.s * 0.45);
+  const cands: MarkSpot[] = a.canton && !a.canton.sinister ? ["chief", "fess", "sinisterChief"] : ["chief", "fess", "dexterChief", "sinisterChief"];
+  const at = cands.find((c) => free(spotPoint(c, fr, !!a.chief))) ?? "fess";
+  let under: Tint[];
+  if (at === "fess") under = a.ordinary && THROUGH_FESS.includes(a.ordinary.kind) ? [a.ordinary.tincture] : a.field.tinctures;
+  else if (a.chief) under = [a.chief.tincture];
+  else if (at === "chief" && a.ordinary && ["pale", "cross", "pall"].includes(a.ordinary.kind)) under = [a.ordinary.tincture];
+  else under = a.field.partition === "plain" ? a.field.tinctures : [a.field.tinctures[0]];
+  return { at, under };
 }
 
 export function renderSimple(a: SimpleArms, fr: Frame, ctx: Ctx): string {
   const field = renderField(a, fr, ctx);
   let s = field.svg;
   const info = field.info;
-  // Frame left for ordinaries and charges once a chief is taken off the top.
-  const ch = a.chief ? chiefHeight(fr) : 0;
-  const main = a.chief ? subFrame(fr, fr.x, fr.y + ch, fr.w, fr.h - ch) : fr;
-  if (a.chief) {
-    // keep the fess point of the reduced frame where a herald would put it
-    main.fy = Math.min(main.fy, fr.y + ch + (fr.fy - fr.y) * 0.95);
-  }
-  let fit = main.poly;
-  if (a.bordure) fit = insetPoly(fit, bordureWidth(fr, !!a.bordure.charges) * 1.05);
-  else if (a.chief) fit = insetPoly(fit, fr.w * 0.012);
+  const L = layoutSimple(a, fr);
+  const { main } = L;
   const under = fieldUnder(a);
-
   if (a.semy) {
     const sp = fr.w * 0.205;
     const slots: Slot[] = [];
@@ -331,30 +449,13 @@ export function renderSimple(a: SimpleArms, fr: Frame, ctx: Ctx): string {
     s += drawCharges(ctx, { charge: a.semy.charge, count: slots.length, tincture: a.semy.tincture }, slots, under);
   }
   if (a.ordinary) s += renderOrdinary(a.ordinary, main, ctx, info);
-  if (a.charges) {
-    const g = a.charges;
-    const def = chargeDef(g.charge);
-    const slots = a.ordinary
-      ? betweenSlots(a.ordinary, main, fit, g.count, aspectOf(g))
-      : a.secondary
-        ? principalWithSecondarySlots(main, fit, g, aspectOf(g))
-        : fieldSlots(main, fit, g.count, g.arrangement, aspectOf(g), !!def.long);
-    s += placeGroup(ctx, g, slots, info, under);
-  }
-  if (a.secondary && a.charges && !a.ordinary) {
-    const g = a.secondary;
-    const slots = secondarySlots(main, fit, g.count, aspectOf(g), g.arrangement);
-    s += placeGroup(ctx, g, slots, info, under);
-  }
-  if (a.ordinary?.charges) {
-    const g = a.ordinary.charges;
-    const def = chargeDef(g.charge);
-    s += drawCharges(ctx, g, onOrdinarySlots(a.ordinary, main, fit, g.count, aspectOf(g), !!def.symmetric), a.ordinary.tincture);
-  }
+  if (a.charges) s += placeGroup(ctx, a.charges, L.charges, info, under);
+  if (a.secondary && a.charges && !a.ordinary) s += placeGroup(ctx, a.secondary, L.secondary, info, under);
+  if (a.ordinary?.charges) s += drawCharges(ctx, a.ordinary.charges, L.onOrdinary, a.ordinary.tincture);
   if (a.bordure) s += renderBordure(a, fr, ctx);
   if (a.chief) {
     s += strokeFill(polyD(chiefPoly(fr, a.chief.line)), regionFill(ctx, a.chief.tincture, fr.u), ctx);
-    if (a.chief.charges) s += drawCharges(ctx, a.chief.charges, chiefSlots(fr, a.chief.charges.count, aspectOf(a.chief.charges)), a.chief.tincture);
+    if (a.chief.charges) s += drawCharges(ctx, a.chief.charges, L.chief, a.chief.tincture);
   }
   if (a.canton) {
     const [cx, cy, cw] = cantonBox(fr, a.canton.sinister);
@@ -363,13 +464,9 @@ export function renderSimple(a: SimpleArms, fr: Frame, ctx: Ctx): string {
       ? [[cx, cy - pad], [cx + cw + pad, cy - pad], [cx + cw + pad, cy + cw], [cx, cy + cw]]
       : [[cx - pad, cy - pad], [cx + cw, cy - pad], [cx + cw, cy + cw], [cx - pad, cy + cw]];
     s += strokeFill(polyD(poly), regionFill(ctx, a.canton.tincture, fr.u), ctx);
-    if (a.canton.charge) {
-      const sub = rectFrame(cx, cy, cw, cw);
-      const sl = rows(sub.poly, { x0: cx + cw * 0.12, y0: cy + cw * 0.12, x1: cx + cw * 0.88, y1: cy + cw * 0.88 }, [1], aspectOf(a.canton.charge));
-      s += drawCharges(ctx, a.canton.charge, sl, a.canton.tincture);
-    }
+    if (a.canton.charge) s += drawCharges(ctx, a.canton.charge, L.canton, a.canton.tincture);
   }
-  for (const d of a.difference ?? []) s += renderDifference(d, fr, ctx, !!a.chief);
+  for (const d of a.difference ?? []) s += renderDifference(d, fr, ctx, !!a.chief, d.at ?? (d.mark === "label" || d.mark === "bendlet" ? "chief" : markSpot(a).at));
   return s;
 }
 
@@ -436,7 +533,7 @@ function renderMarshalled(m: MarshalledArms, fr: Frame, ctx: Ctx): string {
       `<g clip-path="url(#${clip})">${inner}</g>` +
       `<path d="${efr.d}" fill="none" stroke="${ctx.pal.contour}" stroke-width="${f(sub.ow * 1.6)}"/></g>`;
   }
-  for (const d of m.difference ?? []) s += renderDifference(d, fr, ctx, false);
+  for (const d of m.difference ?? []) s += renderDifference(d, fr, ctx, false, d.at ?? "fess");
   return s;
 }
 

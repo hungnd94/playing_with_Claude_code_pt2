@@ -249,14 +249,17 @@ export function isKnown(p: string): boolean {
   return features(p) !== undefined;
 }
 
-const VOWEL_SET = new Set<string>();
-const NONVOWEL_SET = new Set<string>();
+/**
+ * Every vowel phoneme begins with a character no consonant begins with (a, ə, ɛ, …),
+ * so a lookup on the first character code is exact for the engine's phonemes and much
+ * faster than a map lookup — this is the hottest function of sound change.
+ */
+const VOWEL_FIRST = new Uint8Array(0x300);
+for (const [ipa] of BASE_VOWELS) VOWEL_FIRST[ipa.charCodeAt(0)] = 1;
+for (const [ipa] of BASE_CONSONANTS) if (VOWEL_FIRST[ipa.charCodeAt(0)]) throw new Error(`phoneme table: ${ipa} starts like a vowel`);
 export function isVowel(p: string): boolean {
-  if (VOWEL_SET.has(p)) return true;
-  if (NONVOWEL_SET.has(p)) return false;
-  const v = features(p)?.kind === "V";
-  (v ? VOWEL_SET : NONVOWEL_SET).add(p);
-  return v;
+  const c = p.charCodeAt(0);
+  return c < 0x300 && VOWEL_FIRST[c] === 1;
 }
 export function isConsonant(p: string): boolean {
   return !isVowel(p);

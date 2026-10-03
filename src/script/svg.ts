@@ -6,8 +6,8 @@
  * unique with `idPrefix` (or an internal counter), so many SVGs can share a page.
  */
 import type { Glyph, Script, Stroke } from "./types";
-import { layoutWord, layoutText, outlineStrokes, type LayoutOptions, type WordLayout } from "./layout";
-import { formOf, glyphOf } from "./spell";
+import { layoutWord, layoutText, outlineStrokes, transformPath, type LayoutOptions, type WordLayout } from "./layout";
+import { formOf, glyphOf, vowelOpsOf } from "./spell";
 import { classify, phoneticOrderKey } from "./ipa";
 import { strokesBBox, transformStrokes, translate, circle, type Mat } from "./geom";
 
@@ -28,6 +28,17 @@ export interface SvgOptions extends LayoutOptions {
 }
 
 const FONT = "'Gentium Book Plus','Gentium Plus','Charis SIL','Noto Serif','DejaVu Serif',serif";
+
+/**
+ * Chart colours. Defaults are theme-neutral: ink in `currentColor`, labels
+ * and rules in `currentColor` at reduced opacity, so charts sit on light and
+ * dark pages alike; pass explicit colours to override.
+ */
+const fillAttr = (c: string | undefined, op: number): string => (c ? `fill="${c}"` : `fill="currentColor" fill-opacity="${op}"`);
+const strokeAttr = (c: string | undefined, op: number): string => (c ? `stroke="${c}"` : `stroke="currentColor" stroke-opacity="${op}"`);
+/** Accent for derived glyphs, changed sounds etc.: legible on vellum and on lapis-black. */
+const ACCENT = "#b8692f";
+const ACCENT2 = "#4f8c99";
 let idCounter = 0;
 const nextId = (p?: string): string => p ?? `scr${(++idCounter).toString(36)}`;
 
@@ -76,6 +87,56 @@ export function renderWordSVG(script: Script, word: string[], opts: SvgOptions =
 /** Several words with the script's word divider. */
 export function renderTextSVG(script: Script, words: string[][], opts: SvgOptions = {}): string {
   return layoutToSvg(layoutText(script, words, opts), opts);
+}
+
+/** A written word or phrase as one outline in pixel space (for canvas `Path2D`, or an SVG `<path>`). */
+export interface TextOutline {
+  /** Absolute path data (M/L/Z), pixels, origin at the top-left of the ink box plus padding. */
+  d: string;
+  width: number;
+  height: number;
+  /** Baseline y in pixels (vertical scripts: the middle of the column). */
+  baseline: number;
+  /** How the outline reads: "ltr", "rtl" or "ttb". */
+  direction: Script["direction"];
+}
+
+function layoutToOutline(l: WordLayout, opts: SvgOptions): TextOutline {
+  const size = opts.size ?? 32;
+  const sc = size / 100;
+  const pad = (opts.padding ?? 0.1) * 100;
+  const ox = l.x0 - pad;
+  const oy = l.y0 - pad;
+  const d = l.items
+    .filter((it) => it.d)
+    .map((it) => {
+      const m = it.m;
+      // pixel = (word - origin) * sc
+      const pm: Mat = [m[0] * sc, m[1] * sc, m[2] * sc, m[3] * sc, (m[4] - ox) * sc, (m[5] - oy) * sc];
+      return transformPath(it.d, pm);
+    })
+    .join("");
+  return {
+    d,
+    width: Math.round((l.x1 - l.x0 + 2 * pad) * sc * 10) / 10,
+    height: Math.round((l.y1 - l.y0 + 2 * pad) * sc * 10) / 10,
+    baseline: Math.round((l.direction === "ttb" ? (l.y0 + l.y1) / 2 - oy : 100 - oy) * sc * 10) / 10,
+    direction: l.direction,
+  };
+}
+
+/**
+ * A word as a single pixel-space outline: map labels draw it with
+ * `ctx.fill(new Path2D(o.d))` beneath the romanised name. Pass
+ * `horizontal: true` to set a vertical script on the label's line.
+ */
+export function wordOutline(script: Script, word: string[], opts: SvgOptions = {}): TextOutline {
+  return layoutToOutline(layoutWord(script, word, opts), opts);
+}
+
+/** Several words (a multi-word name) as one outline, with the script's word divider. */
+export function textOutline(script: Script, words: string[][], opts: SvgOptions = {}): TextOutline {
+  return layoutToOutline(layoutText(script, words, opts), opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +249,12 @@ export interface ChartOptions {
   /** Section headings (default true). */
   headings?: boolean;
   background?: string;
+  /** Grid sections (syllabaries, fused abugidas): cells across before splitting into side-by-side panels. Default 14. */
+  gridCells?: number;
+  /** Grid sections: rows per panel before splitting. Default 12. */
+  gridRows?: number;
+  /** Marker colours for derived and repurposed glyphs. */
+  accentColors?: [string, string];
 }
 
 interface Cell {
@@ -267,7 +334,8 @@ function chartSections(s: Script): Section[] {
     const cells: Cell[] = [];
     for (const g of rows) {
       for (const v of vowels) {
-        const ref = o.vowelMode === "fused" ? { g: g.id, ops: o.vowelOps[v] } : { g: g.id, rot: o.rotations[v], ops: o.vowelOps[v] };
+        const ops = vowelOpsOf(s, g.id, v);
+        const ref = o.vowelMode === "fused" ? { g: g.id, ops } : { g: g.id, rot: o.rotations[v], ops };
         const f = formOf(s, ref);
         const c = g.id === o.carrier ? "" : g.sound;
         cells.push(formCell(s, f?.strokes ?? [], `f${g.id}:${v}`, v === "" ? c + "̸" : c + v));
@@ -333,7 +401,8 @@ function wordArt(s: Script, word: string[], cx: number, cy: number, em: number, 
   const l = layoutWord(s, word, { jitter: false, pointed: true });
   const sc = fitScale((em * familyScale(s)) / 100, l.x1 - l.x0, l.y1 - l.y0, fit);
   const mx = (l.x0 + l.x1) / 2;
-  const my = s.direction === "ttb" ? (l.y0 + l.y1) / 2 : 50;
+  // Centre on the ink: vowel signs below or above must not run into the cell's label.
+  const my = (l.y0 + l.y1) / 2;
   const g = l.items
     .filter((it) => it.d)
     .map((it) => {
@@ -347,11 +416,12 @@ function wordArt(s: Script, word: string[], cx: number, cy: number, em: number, 
 /** A chart of the script's glyphs with their sound values. */
 export function scriptChartSVG(script: Script, opts: ChartOptions = {}): string {
   const em = opts.size ?? 40;
-  const color = opts.color ?? "#1f160c";
-  const lc = opts.labelColor ?? "#6b5a45";
-  const rc = opts.ruleColor ?? "#d8ccb4";
+  const color = opts.color ?? "currentColor";
+  const LF = fillAttr(opts.labelColor, 0.62);
+  const RS = strokeAttr(opts.ruleColor, 0.22);
   const cols = opts.columns ?? 10;
   const headings = opts.headings !== false;
+  const accent = opts.accentColors ?? [ACCENT, ACCENT2];
   const cw = em * 1.75;
   const ch = em * 2.45;
   const rtl = script.direction === "rtl";
@@ -361,40 +431,52 @@ export function scriptChartSVG(script: Script, opts: ChartOptions = {}): string 
   let maxW = 0;
   for (const sec of sections) {
     if (headings) {
-      parts.push(`<text x="0" y="${n1(y + em * 0.42)}" font-family="${FONT}" font-size="${n1(em * 0.32)}" font-style="italic" fill="${lc}">${esc(sec.title)}</text>`);
+      parts.push(`<text x="0" y="${n1(y + em * 0.42)}" font-family="${FONT}" font-size="${n1(em * 0.32)}" font-style="italic" ${LF}>${esc(sec.title)}</text>`);
       y += em * 0.7;
     }
     const grid = !!sec.colHeads;
     const ncol = grid ? sec.colHeads!.length : Math.min(cols, sec.cells.length);
     const nrow = Math.ceil(sec.cells.length / Math.max(1, ncol));
-    const ox = grid ? em * 0.9 : 0;
-    if (grid) {
-      sec.colHeads!.forEach((h, i) => {
-        const cx = ox + (rtl ? ncol - 1 - i : i) * cw + cw / 2;
-        parts.push(`<text x="${n1(cx)}" y="${n1(y + em * 0.35)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" fill="${lc}">${esc(h)}</text>`);
-      });
-      y += em * 0.55;
-    }
-    for (let r = 0; r < nrow; r++) {
-      if (grid && sec.rowHeads) {
-        parts.push(`<text x="${n1(em * 0.45)}" y="${n1(y + ch * 0.42)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" fill="${lc}">${esc(sec.rowHeads[r] ?? "")}</text>`);
+    // Tall grids (Ethiopic-style charts, syllabaries) are set in side-by-side panels.
+    const rowHeadW = grid ? em * 0.9 : 0;
+    const panelGap = em * 0.5;
+    const panels = grid ? Math.max(1, Math.min(Math.floor((opts.gridCells ?? 14) / ncol), Math.ceil(nrow / (opts.gridRows ?? 12)))) : 1;
+    const perPanel = Math.ceil(nrow / panels);
+    const panelW = rowHeadW + ncol * cw;
+    const y0 = y;
+    let yEnd = y;
+    for (let p = 0; p < panels; p++) {
+      const ox = p * (panelW + panelGap) + rowHeadW;
+      y = y0;
+      if (grid) {
+        sec.colHeads!.forEach((h, i) => {
+          const cx = ox + (rtl ? ncol - 1 - i : i) * cw + cw / 2;
+          parts.push(`<text x="${n1(cx)}" y="${n1(y + em * 0.35)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" ${LF}>${esc(h)}</text>`);
+        });
+        y += em * 0.55;
       }
-      for (let c = 0; c < ncol; c++) {
-        const k = r * ncol + c;
-        if (k >= sec.cells.length) break;
-        const cell = sec.cells[k];
-        const col = rtl ? ncol - 1 - c : c;
-        const x0 = ox + col * cw;
-        parts.push(`<rect x="${n1(x0 + 1)}" y="${n1(y + 1)}" width="${n1(cw - 2)}" height="${n1(ch - 2)}" rx="${n1(em * 0.08)}" fill="none" stroke="${rc}" stroke-width="1"/>`);
-        parts.push(cell.art(x0 + cw / 2, y + ch * 0.4, em, color, [cw * 0.9, ch * 0.66]));
-        if (cell.label)
-          parts.push(`<text x="${n1(x0 + cw / 2)}" y="${n1(y + ch - em * 0.2)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" fill="${lc}">${esc(cell.label)}</text>`);
-        if (cell.sub) parts.push(`<circle cx="${n1(x0 + cw - em * 0.18)}" cy="${n1(y + em * 0.18)}" r="${n1(em * 0.05)}" fill="${cell.sub === "derived" ? "#b0662a" : "#3d7a8a"}"/>`);
+      for (let r = p * perPanel; r < Math.min(nrow, (p + 1) * perPanel); r++) {
+        if (grid && sec.rowHeads) {
+          parts.push(`<text x="${n1(ox - rowHeadW / 2)}" y="${n1(y + ch * 0.42)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" ${LF}>${esc(sec.rowHeads[r] ?? "")}</text>`);
+        }
+        for (let c = 0; c < ncol; c++) {
+          const k = r * ncol + c;
+          if (k >= sec.cells.length) break;
+          const cell = sec.cells[k];
+          const col = rtl ? ncol - 1 - c : c;
+          const x0 = ox + col * cw;
+          parts.push(`<rect x="${n1(x0 + 1)}" y="${n1(y + 1)}" width="${n1(cw - 2)}" height="${n1(ch - 2)}" rx="${n1(em * 0.08)}" fill="none" ${RS} stroke-width="1"/>`);
+          parts.push(cell.art(x0 + cw / 2, y + ch * 0.4, em, color, [cw * 0.9, ch * 0.66]));
+          if (cell.label)
+            parts.push(`<text x="${n1(x0 + cw / 2)}" y="${n1(y + ch - em * 0.2)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" ${LF}>${esc(cell.label)}</text>`);
+          if (cell.sub) parts.push(`<circle cx="${n1(x0 + cw - em * 0.18)}" cy="${n1(y + em * 0.18)}" r="${n1(em * 0.05)}" fill="${cell.sub === "derived" ? accent[0] : accent[1]}"/>`);
+        }
+        y += ch;
       }
-      y += ch;
+      yEnd = Math.max(yEnd, y);
+      maxW = Math.max(maxW, ox + ncol * cw);
     }
-    maxW = Math.max(maxW, ox + ncol * cw);
-    y += em * 0.35;
+    y = yEnd + em * 0.35;
   }
   const W = Math.ceil(maxW + 2);
   const H = Math.ceil(y + 2);
@@ -415,6 +497,8 @@ export interface EvolutionOptions {
   color?: string;
   labelColor?: string;
   ruleColor?: string;
+  /** Colour of sound values that changed from the previous script. */
+  accentColor?: string;
   /** Maximum number of lineage rows. Default 40. */
   maxRows?: number;
   /** Column headings; default `${id} (${bornYear})`. */
@@ -434,9 +518,10 @@ const LETTERISH = (g: Glyph): boolean => g.role === "consonant" || g.role === "v
  */
 export function evolutionTableSVG(scripts: Script[], opts: EvolutionOptions = {}): string {
   const em = opts.size ?? 34;
-  const color = opts.color ?? "#1f160c";
-  const lc = opts.labelColor ?? "#6b5a45";
-  const rc = opts.ruleColor ?? "#d8ccb4";
+  const color = opts.color ?? "currentColor";
+  const LF = fillAttr(opts.labelColor, 0.62);
+  const RS = strokeAttr(opts.ruleColor, 0.22);
+  const accent = opts.accentColor ?? ACCENT;
   const maxRows = opts.maxRows ?? 40;
   const roots: string[] = [];
   const rootKey = new Map<string, number>();
@@ -473,18 +558,18 @@ export function evolutionTableSVG(scripts: Script[], opts: EvolutionOptions = {}
       scripts.forEach((s, si) => {
         const yy = y + si * ch;
         const h = opts.headings?.[si] ?? `${s.id} · ${s.bornYear}`;
-        parts.push(`<text x="${n1(labelW - em * 0.2)}" y="${n1(yy + ch * 0.45)}" text-anchor="end" font-family="${FONT}" font-size="${n1(em * 0.3)}" fill="${lc}">${esc(h)}</text>`);
-        parts.push(`<text x="${n1(labelW - em * 0.2)}" y="${n1(yy + ch * 0.45 + em * 0.34)}" text-anchor="end" font-family="${FONT}" font-size="${n1(em * 0.24)}" font-style="italic" fill="${lc}">${esc(s.style.tool)}</text>`);
+        parts.push(`<text x="${n1(labelW - em * 0.2)}" y="${n1(yy + ch * 0.45)}" text-anchor="end" font-family="${FONT}" font-size="${n1(em * 0.3)}" ${LF}>${esc(h)}</text>`);
+        parts.push(`<text x="${n1(labelW - em * 0.2)}" y="${n1(yy + ch * 0.45 + em * 0.34)}" text-anchor="end" font-family="${FONT}" font-size="${n1(em * 0.24)}" font-style="italic" ${LF}>${esc(s.style.tool)}</text>`);
         block.forEach((root, ci) => {
           const x0 = labelW + ci * cw;
-          parts.push(`<rect x="${n1(x0 + 1)}" y="${n1(yy + 1)}" width="${n1(cw - 2)}" height="${n1(ch - 2)}" fill="none" stroke="${rc}" stroke-width="1"/>`);
+          parts.push(`<rect x="${n1(x0 + 1)}" y="${n1(yy + 1)}" width="${n1(cw - 2)}" height="${n1(ch - 2)}" fill="none" ${RS} stroke-width="1"/>`);
           const g = s.glyphs.find((x) => x.root === root && LETTERISH(x));
           if (!g) return;
           parts.push(glyphArt(s, g, x0 + cw / 2, yy + ch * 0.42, em, color, [cw * 0.9, ch * 0.7]));
           const prev = si > 0 ? scripts.slice(0, si).reverse().map((p) => p.glyphs.find((x) => x.root === root && LETTERISH(x))).find((x) => !!x) : undefined;
           const changed = !!prev && prev.sound !== g.sound;
           parts.push(
-            `<text x="${n1(x0 + cw / 2)}" y="${n1(yy + ch - em * 0.18)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" fill="${changed ? "#a4512a" : lc}"${changed ? ' font-weight="bold"' : ""}>${esc(g.sound)}</text>`,
+            `<text x="${n1(x0 + cw / 2)}" y="${n1(yy + ch - em * 0.18)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" ${changed ? `fill="${accent}"` : LF}${changed ? ' font-weight="bold"' : ""}>${esc(g.sound)}</text>`,
           );
         });
       });
@@ -501,8 +586,8 @@ export function evolutionTableSVG(scripts: Script[], opts: EvolutionOptions = {}
   }
   scripts.forEach((s, i) => {
     const h = opts.headings?.[i] ?? `${s.id} · ${s.bornYear}`;
-    parts.push(`<text x="${n1(i * cw + cw / 2)}" y="${n1(headH * 0.45)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.28)}" fill="${lc}">${esc(h)}</text>`);
-    parts.push(`<text x="${n1(i * cw + cw / 2)}" y="${n1(headH * 0.85)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.22)}" font-style="italic" fill="${lc}">${esc(s.style.tool)}</text>`);
+    parts.push(`<text x="${n1(i * cw + cw / 2)}" y="${n1(headH * 0.45)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.28)}" ${LF}>${esc(h)}</text>`);
+    parts.push(`<text x="${n1(i * cw + cw / 2)}" y="${n1(headH * 0.85)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.22)}" font-style="italic" ${LF}>${esc(s.style.tool)}</text>`);
   });
   chosen.forEach((root, r) => {
     const y = headH + r * ch;
@@ -510,7 +595,7 @@ export function evolutionTableSVG(scripts: Script[], opts: EvolutionOptions = {}
     scripts.forEach((s, i) => {
       const g = s.glyphs.find((x) => x.root === root && LETTERISH(x));
       const x0 = i * cw;
-      parts.push(`<rect x="${n1(x0 + 1)}" y="${n1(y + 1)}" width="${n1(cw - 2)}" height="${n1(ch - 2)}" fill="none" stroke="${rc}" stroke-width="1"/>`);
+      parts.push(`<rect x="${n1(x0 + 1)}" y="${n1(y + 1)}" width="${n1(cw - 2)}" height="${n1(ch - 2)}" fill="none" ${RS} stroke-width="1"/>`);
       if (!g) {
         prevSound = null;
         return;
@@ -518,7 +603,7 @@ export function evolutionTableSVG(scripts: Script[], opts: EvolutionOptions = {}
       parts.push(glyphArt(s, g, x0 + cw / 2, y + ch * 0.42, em, color, [cw * 0.9, ch * 0.7]));
       const changed = prevSound !== null && prevSound !== g.sound;
       parts.push(
-        `<text x="${n1(x0 + cw / 2)}" y="${n1(y + ch - em * 0.18)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" fill="${changed ? "#a4512a" : lc}"${changed ? ' font-weight="bold"' : ""}>${esc(g.sound)}</text>`,
+        `<text x="${n1(x0 + cw / 2)}" y="${n1(y + ch - em * 0.18)}" text-anchor="middle" font-family="${FONT}" font-size="${n1(em * 0.3)}" ${changed ? `fill="${accent}"` : LF}${changed ? ' font-weight="bold"' : ""}>${esc(g.sound)}</text>`,
       );
       prevSound = g.sound;
     });
@@ -542,6 +627,8 @@ export interface TreeOptions {
   color?: string;
   labelColor?: string;
   lineColor?: string;
+  /** Node box fill (default none). */
+  nodeFill?: string;
   /** Node captions; default `${id} (${bornYear})`. */
   labels?: Record<string, string>;
   /** Glyphs shown per node. Default 6. */
@@ -549,12 +636,47 @@ export interface TreeOptions {
   background?: string;
 }
 
+/**
+ * Lineages to show in every node of a tree: the letters most of the family
+ * still shares (so a reader can follow one letter from node to node), in the
+ * founding script's order.
+ */
+function sharedLineages(scripts: Script[], n: number): string[] {
+  const count = new Map<string, number>();
+  const rank = new Map<string, number>();
+  // How telling a letter is: drawn strokes count, bare dot clusters little.
+  const interest = new Map<string, number>();
+  scripts.forEach((s, si) => {
+    const ord = new Map(s.order.map((id, i) => [id, i]));
+    for (const g of s.glyphs) {
+      if (!LETTERISH(g)) continue;
+      count.set(g.root, (count.get(g.root) ?? 0) + 1);
+      const r = si * 1000 + (ord.get(g.id) ?? 999);
+      if (!rank.has(g.root) || r < rank.get(g.root)!) rank.set(g.root, r);
+      if (!interest.has(g.root)) {
+        const lines = g.strokes.filter((st) => st.dot === undefined);
+        interest.set(g.root, Math.min(4, lines.reduce((a, st) => a + st.pts.length - 1 + (st.closed ? 1 : 0), 0)));
+      }
+    }
+  });
+  const max = Math.max(0, ...count.values());
+  return [...count.keys()]
+    .sort((a, b) => {
+      const ca = count.get(a)! >= max * 0.8 ? 1 : 0;
+      const cb = count.get(b)! >= max * 0.8 ? 1 : 0;
+      return cb - ca || interest.get(b)! - interest.get(a)! || count.get(b)! - count.get(a)! || rank.get(a)! - rank.get(b)!;
+    })
+    .slice(0, n)
+    .sort((a, b) => rank.get(a)! - rank.get(b)!);
+}
+
 /** A family tree of scripts (by `parent`), each node showing a few glyphs in its hand. */
 export function familyTreeSVG(scripts: Script[], opts: TreeOptions = {}): string {
   const em = opts.size ?? 26;
-  const color = opts.color ?? "#1f160c";
-  const lc = opts.labelColor ?? "#6b5a45";
-  const ln = opts.lineColor ?? "#b9a989";
+  const color = opts.color ?? "currentColor";
+  const LF = fillAttr(opts.labelColor, 0.62);
+  const LS = strokeAttr(opts.lineColor, 0.35);
+  const nodeFill = opts.nodeFill ?? "none";
   const nSample = opts.sample ?? 6;
   const ids = new Set(scripts.map((s) => s.id));
   const kids = new Map<string, Script[]>();
@@ -569,6 +691,7 @@ export function familyTreeSVG(scripts: Script[], opts: TreeOptions = {}): string
   const nodeH = em * 2.6;
   const gapX = em * 0.8;
   const gapY = em * 1.6;
+  const shared = sharedLineages(scripts, nSample);
   const pos = new Map<string, [number, number]>();
   let leafX = 0;
   const place = (s: Script, depth: number): number => {
@@ -595,18 +718,26 @@ export function familyTreeSVG(scripts: Script[], opts: TreeOptions = {}): string
       const x2 = q[0] + nodeW / 2;
       const y2 = q[1];
       const my = (y1 + y2) / 2;
-      parts.push(`<path d="M${n1(x1)} ${n1(y1)}C${n1(x1)} ${n1(my)} ${n1(x2)} ${n1(my)} ${n1(x2)} ${n1(y2)}" fill="none" stroke="${ln}" stroke-width="1.5"/>`);
+      parts.push(`<path d="M${n1(x1)} ${n1(y1)}C${n1(x1)} ${n1(my)} ${n1(x2)} ${n1(my)} ${n1(x2)} ${n1(y2)}" fill="none" ${LS} stroke-width="1.5"/>`);
     }
   }
   for (const s of scripts) {
     const [x, y] = pos.get(s.id)!;
-    parts.push(`<rect x="${n1(x)}" y="${n1(y)}" width="${n1(nodeW)}" height="${n1(nodeH)}" rx="${n1(em * 0.18)}" fill="#fbf6ea" stroke="${ln}"/>`);
+    parts.push(`<rect x="${n1(x)}" y="${n1(y)}" width="${n1(nodeW)}" height="${n1(nodeH)}" rx="${n1(em * 0.18)}" fill="${nodeFill}" ${LS}/>`);
     const label = opts.labels?.[s.id] ?? `${s.id} · ${s.bornYear}`;
-    parts.push(`<text x="${n1(x + em * 0.35)}" y="${n1(y + em * 0.5)}" font-family="${FONT}" font-size="${n1(em * 0.34)}" fill="${lc}">${esc(label)}</text>`);
-    parts.push(`<text x="${n1(x + nodeW - em * 0.35)}" y="${n1(y + em * 0.5)}" text-anchor="end" font-family="${FONT}" font-size="${n1(em * 0.28)}" font-style="italic" fill="${lc}">${esc(`${s.kind}, ${s.style.tool}`)}</text>`);
-    const sample = s.order.map((id) => glyphOf(s, id)).filter((g): g is Glyph => !!g && LETTERISH(g)).slice(0, nSample);
-    sample.forEach((g, i) => {
-      parts.push(glyphArt(s, g, x + em * 0.5 + i * em * 1.05 + em * 0.5, y + nodeH * 0.62, em * 0.95, color, [em, nodeH * 0.62]));
+    parts.push(`<text x="${n1(x + em * 0.35)}" y="${n1(y + em * 0.5)}" font-family="${FONT}" font-size="${n1(em * 0.34)}" ${LF}>${esc(label)}</text>`);
+    parts.push(`<text x="${n1(x + nodeW - em * 0.35)}" y="${n1(y + em * 0.5)}" text-anchor="end" font-family="${FONT}" font-size="${n1(em * 0.28)}" font-style="italic" ${LF}>${esc(`${s.kind}, ${s.style.tool}`)}</text>`);
+    // One slot per shared lineage, so a letter can be followed from node to
+    // node; a lost letter leaves a faint dash, spare slots take the node's own.
+    const own = s.order.map((id) => glyphOf(s, id)).filter((g): g is Glyph => !!g && LETTERISH(g));
+    const slots: (Glyph | null)[] = shared.map((r) => own.find((x) => x.root === r) ?? null);
+    const spare = own.filter((g) => !slots.includes(g));
+    while (slots.length < nSample && spare.length) slots.push(spare.shift()!);
+    slots.forEach((g, i) => {
+      const cx = x + em * 0.5 + i * em * 1.05 + em * 0.5;
+      const cy = y + nodeH * 0.62;
+      if (g) parts.push(glyphArt(s, g, cx, cy, em * 0.95, color, [em, nodeH * 0.62]));
+      else parts.push(`<line x1="${n1(cx - em * 0.15)}" y1="${n1(cy)}" x2="${n1(cx + em * 0.15)}" y2="${n1(cy)}" ${LS}/>`);
     });
   }
   let W = 0;

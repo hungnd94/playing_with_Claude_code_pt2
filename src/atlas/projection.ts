@@ -77,16 +77,10 @@ export class Projection {
   inverse(sx: number, sy: number, out: Float64Array | number[]): boolean {
     const X = (sx - this.cx) / this.scale;
     const Y = (this.cy - sy) / this.scale;
-    const rho = Math.hypot(X, Y);
-    if (rho >= 2) return false;
-    if (rho < 1e-12) {
-      out[0] = this.c[0];
-      out[1] = this.c[1];
-      out[2] = this.c[2];
-      return true;
-    }
-    const th = 2 * Math.asin(rho / 2);
-    const s = Math.sin(th) / rho, cs = Math.cos(th);
+    const r2 = X * X + Y * Y;
+    if (r2 >= 4) return false;
+    // Lambert azimuthal: θ = 2 asin(ρ/2) ⇒ sin θ / ρ = √(1 − ρ²/4), cos θ = 1 − ρ²/2 (no trigonometry).
+    const s = Math.sqrt(1 - r2 / 4), cs = 1 - r2 / 2;
     const e = this.e, n = this.n, c = this.c;
     out[0] = c[0] * cs + (e[0] * X + n[0] * Y) * s;
     out[1] = c[1] * cs + (e[1] * X + n[1] * Y) * s;

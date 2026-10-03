@@ -8,7 +8,7 @@
  * all fall out of the same few lines of code.
  */
 import type { Field, Line, Ordinary, OrdinaryKind } from "./types";
-import { patternLine, isParallel, isUpperOnly } from "./lines";
+import { patternLine, isParallel, isUpperOnly, lineSpec } from "./lines";
 import { inPoly, polyD, type Pt } from "./path";
 import { insetPoly, type Frame } from "./shapes";
 
@@ -388,41 +388,101 @@ function lineX(p1: Pt, d1: Pt, p2: Pt, d2: Pt): Pt | null {
   return [p1[0] + d1[0] * t, p1[1] + d1[1] * t];
 }
 
+/** Intersection of two polylines nearest a vertex (the outermost crossing within `reach`), as indices + point. */
+function junction(a: Pt[], b: Pt[], v: Pt, reach: number): { ia: number; ib: number; p: Pt } | null {
+  const near = (p: Pt, q: Pt) => Math.min(Math.hypot(p[0] - v[0], p[1] - v[1]), Math.hypot(q[0] - v[0], q[1] - v[1])) < reach;
+  let best: { ia: number; ib: number; p: Pt } | null = null;
+  let bestScore = -Infinity;
+  for (let i = 0; i < a.length - 1; i++) {
+    const p0 = a[i], p1 = a[i + 1];
+    if (!near(p0, p1)) continue;
+    const r: Pt = [p1[0] - p0[0], p1[1] - p0[1]];
+    for (let j = 0; j < b.length - 1; j++) {
+      const q0 = b[j], q1 = b[j + 1];
+      if (!near(q0, q1)) continue;
+      const sv: Pt = [q1[0] - q0[0], q1[1] - q0[1]];
+      const den = r[0] * sv[1] - r[1] * sv[0];
+      if (Math.abs(den) < 1e-12) continue;
+      const qp: Pt = [q0[0] - p0[0], q0[1] - p0[1]];
+      const t = (qp[0] * sv[1] - qp[1] * sv[0]) / den;
+      const u = (qp[0] * r[1] - qp[1] * r[0]) / den;
+      if (t < 0 || t > 1 || u < 0 || u > 1) continue;
+      const score = i + t + j + u;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { ia: i, ib: j, p: [p0[0] + r[0] * t, p0[1] + r[1] * t] };
+      }
+    }
+  }
+  return best;
+}
+
 /**
  * An ordinary made of arms radiating from a centre (chevron, cross, saltire,
- * pall): one polygon with mitred inner corners and patterned edges.
+ * pall): one polygon with patterned edges. Patterns are phased from the
+ * centre so the arms are symmetric; "parallel" lines (wavy, nebuly…) keep
+ * both edges of an arm parallel while the dexter and sinister arms mirror
+ * each other; adjacent edges are joined where they actually cross.
+ * `upperOnly`: lines that only treat the upper edge (embattled, raguly,
+ * dovetailed) do so here (chevrons); otherwise they treat every edge.
  */
 export function rayOrdinary(C: Pt, rays: Pt[], hw: number, line: Line | undefined, fr: Frame, upperOnly = false, scale = 1, lens?: number[]): Pt[] {
   const R = rays.map((d, i) => ({ d: nrm(d[0], d[1]), L: lens?.[i] ?? fr.w * 3 }));
   R.sort((a, b) => Math.atan2(a.d[1], a.d[0]) - Math.atan2(b.d[1], b.d[0]));
   const n = R.length;
-  const side = (r: { d: Pt }, s: 1 | -1): { p: Pt; d: Pt } => {
-    const nn: Pt = [-r.d[1], r.d[0]];
-    return { p: [C[0] + nn[0] * hw * s, C[1] + nn[1] * hw * s], d: r.d };
-  };
+  const spec = line && line !== "straight" ? lineSpec(line) : null;
+  const up = isUpperOnly(line);
+  const par = isParallel(line) && !up;
+  // nn: the normal toward the next ray (clockwise on screen).
+  const nnOf = (d: Pt): Pt => [-d[1], d[0]];
   const verts: Pt[] = [];
   for (let i = 0; i < n; i++) {
-    const a = side(R[i], 1), b = side(R[(i + 1) % n], -1);
-    verts.push(lineX(a.p, a.d, b.p, b.d) ?? [C[0] + (a.p[0] + b.p[0]) / 2 - C[0], C[1] + (a.p[1] + b.p[1]) / 2 - C[1]]);
+    const a = R[i], b = R[(i + 1) % n];
+    const na = nnOf(a.d), nb = nnOf(b.d);
+    const pa: Pt = [C[0] + na[0] * hw, C[1] + na[1] * hw];
+    const pb: Pt = [C[0] - nb[0] * hw, C[1] - nb[1] * hw];
+    verts.push(lineX(pa, a.d, pb, b.d) ?? [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2]);
   }
-  const out: Pt[] = [];
-  const par = isParallel(line);
+  const tAlong = (p: Pt, d: Pt) => (p[0] - C[0]) * d[0] + (p[1] - C[1]) * d[1];
+  const amp = spec ? spec.amp * fr.u * scale : 0, per = spec ? spec.period * fr.u * scale : 0;
+  const back = hw * 2 + (amp + per) * 2;
+  const reach = hw * 1.5 + (amp + per) * 2;
+  const edge = (d: Pt, L: number, side: 1 | -1, t0: number): Pt[] => {
+    const nn = nnOf(d);
+    const o: Pt = [C[0] + nn[0] * hw * side, C[1] + nn[1] * hw * side];
+    const base: Pt[] = [[o[0] + d[0] * t0, o[1] + d[1] * t0], [o[0] + d[0] * L, o[1] + d[1] * L]];
+    if (!spec) return base;
+    // outward normal of this edge (away from the arm)
+    const out: Pt = [nn[0] * side, nn[1] * side];
+    if (up && upperOnly && !(out[1] < -1e-6)) return base;
+    const shift = par && (out[1] > 1e-6 || (Math.abs(out[1]) <= 1e-6 && out[0] > 0));
+    // patternLine displaces along (dy, -dx) of travel = -nn for outward travel.
+    return patternLine(base, line, { u: fr.u, side: side === 1 ? -1 : 1, anchor: C, scale, halfShift: shift });
+  };
+  const A: Pt[][] = [], B: Pt[][] = [];
   for (let i = 0; i < n; i++) {
     const r = R[i];
-    const vin = verts[(i + n - 1) % n];
-    const vout = verts[i];
-    const ccw = side(r, -1), cw = side(r, 1);
-    const farA: Pt = [ccw.p[0] + r.d[0] * r.L, ccw.p[1] + r.d[1] * r.L];
-    const farB: Pt = [cw.p[0] + r.d[0] * r.L, cw.p[1] + r.d[1] * r.L];
-    // Which of the two edges faces up (for embattled and friends)?
-    const ccwUp = -r.d[1] * -1 < 0 ? false : true;
-    const nnY = r.d[0]; // y-component of the cw normal
-    const cwIsUpper = nnY < 0;
-    void ccwUp;
-    const e1 = upperOnly && cwIsUpper ? [vin, farA] : patternLine([vin, farA], line, { u: fr.u, side: 1, anchor: vin, scale });
-    const e2 = upperOnly && !cwIsUpper ? [farB, vout] : patternLine([farB, vout], line, { u: fr.u, side: 1, anchor: vout, scale, halfShift: par });
-    out.push(...e1, ...e2);
+    const tA = Math.min(0, tAlong(verts[(i + n - 1) % n], r.d)) - back;
+    const tB = Math.min(0, tAlong(verts[i], r.d)) - back;
+    A.push(edge(r.d, r.L, -1, tA));
+    B.push(edge(r.d, r.L, 1, tB));
   }
+  // Join B[i] to A[i+1] where they cross near the inner vertex.
+  const As = A.map((x) => x.slice()), Bs = B.map((x) => x.slice());
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const x = junction(B[i], A[j], verts[i], reach);
+    if (x) {
+      Bs[i] = [x.p, ...B[i].slice(x.ia + 1)];
+      As[j] = [x.p, ...A[j].slice(x.ib + 1)];
+    } else {
+      const v = verts[i];
+      Bs[i] = [v, ...B[i].filter((p) => tAlong(p, R[i].d) > tAlong(v, R[i].d))];
+      As[j] = [v, ...A[j].filter((p) => tAlong(p, R[j].d) > tAlong(v, R[j].d))];
+    }
+  }
+  const out: Pt[] = [];
+  for (let i = 0; i < n; i++) out.push(...As[i], ...Bs[i].slice().reverse());
   return out;
 }
 

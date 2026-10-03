@@ -362,7 +362,8 @@ function mainPieces(a: SimpleArms, nm: Namer): Piece[] {
   if (a.charges) {
     const p = chargeText(a.charges, nm, false);
     if (a.secondary) {
-      const sx = chargeText(a.secondary, nm, false);
+      // Secondaries take their places from the principal charge: no arrangement words.
+      const sx = chargeText(a.secondary, nm, true);
       const orle = a.secondary.arrangement === "orle" || a.secondary.count >= 6;
       const sNoun = orle ? `an orle of ${sx.noun.replace(/ in orle$/, "")}` : sx.noun;
       const link = orle ? "within" : "between";
@@ -495,14 +496,14 @@ function blazonMarshalled(m: MarshalledArms, opts: BlazonOptions, depth: number)
   }
   if (m.escutcheon) {
     const e = m.escutcheon;
-    if (e.kind === "simple") {
-      const field = blazonField(e.field, new Namer({}));
-      const rest = blazonSimple({ ...e }, opts);
-      const tail = rest.slice(rest.indexOf(field) + field.length).replace(/^,\s*/, "").trim();
-      s += `; over all an escutcheon ${field}${tail ? ` charged with ${tail}` : ""}`;
-    } else {
-      s += `; over all an escutcheon of pretence, ${sub(e)}`;
-    }
+    const full = sub(e);
+    const field = e.kind === "simple" ? blazonField(e.field, new Namer({})) : "";
+    const rest = field && full.startsWith(field) ? full.slice(field.length).replace(/^,\s*/, "") : "";
+    if (e.kind === "simple" && !rest) s += `; over all an escutcheon ${field}`;
+    else if (e.kind === "simple" && e.field.partition === "plain" && !rest.includes(",") && !/^on /.test(rest)) {
+      // "over all on an escutcheon Or three mullets Gules"
+      s += `; over all on an escutcheon ${field} ${rest}`;
+    } else s += `; over all an escutcheon of pretence bearing ${full}`;
   }
   if (m.difference?.length) {
     const nm = new Namer(opts);

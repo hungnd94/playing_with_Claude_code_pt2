@@ -43,6 +43,7 @@ import { genMark, VOWEL_OPS, addDiacritic } from "./marks";
 import { fitStrokes, type Shape } from "./families";
 import { tidy } from "./factory";
 import { transformStrokes, translate, line } from "./geom";
+import { ensureDistinct } from "./distinct";
 
 export interface DeriveOptions {
   id?: string;
@@ -62,6 +63,11 @@ export interface AdaptOptions {
   bornYear?: number;
   /** Keep letters the new language does not need (as archaic letters). Default false. */
   keepUnused?: boolean;
+  /**
+   * Force a change of kind (abjad → alphabet / abugida, alphabet → abugida,
+   * syllabary → abugida). By default the borrowing language's sounds decide.
+   */
+  kind?: ScriptKind;
 }
 
 const LETTERISH = (g: Glyph): boolean => g.role === "consonant" || g.role === "vowel" || g.role === "syllable" || g.role === "final";
@@ -465,14 +471,21 @@ function adaptSyllabary(b: Builder, inv: Inventory): void {
         if (g.origin === "inherited") g.origin = "repurposed";
       }
     }
-  // New rows: derived from the nearest kept row by a diacritic (kana-style).
-  const diac = s.morph.diacritics[rng.int(0, Math.min(2, s.morph.diacritics.length - 1))];
+  // New rows: derived from the nearest kept row by a diacritic (kana-style);
+  // a second row made from the same base takes the next diacritic.
+  const diacs = s.morph.diacritics;
+  const d0 = rng.int(0, Math.min(2, diacs.length - 1));
+  const timesUsed = new Map<string, number>();
   for (const c of newRows) {
     const near = Object.keys(cmap).filter((x) => x !== "").sort((x, y) => phonDistance(c, x) - phonDistance(c, y))[0];
+    const n = timesUsed.get(near ?? "") ?? 0;
+    timesUsed.set(near ?? "", n + 1);
+    const diac = diacs[(d0 + n) % diacs.length];
+    const where = n < diacs.length ? "right" : "above";
     for (const v of Object.keys(vmap)) {
       const baseId = near !== undefined ? syl[`${near}|${v}`] : undefined;
       const g = baseId !== undefined ? glyph(s, baseId) : undefined;
-      const shape: Shape = g ? addDiacritic(shapeOf(g), diac, "right") : b.factory.fresh(8);
+      const shape: Shape = g ? addDiacritic(shapeOf(g), diac, where) : b.factory.fresh(8);
       syl[`${c}|${v}`] = addGlyph(b, shape, "syllable", c + v, { origin: g ? "derived" : "invented", note: g ? `from ${g.sound}` : undefined });
     }
     cmap[c] = c;
@@ -601,6 +614,68 @@ function toAbugida(b: Builder): void {
   o.virama = addGlyph(b, { strokes: [line(-0.1, 0.06, 0.1, 0.2)], w: 0 }, "mark", "◌̸", { mark: "below", note: "vowel killer" });
 }
 
+/**
+ * A syllabary becomes an abugida: the signs of the commonest vowel's column
+ * are read as bare consonants carrying that vowel, the vowel-only signs
+ * become vowel letters, and new signs are made for the other vowels (the
+ * other columns fall out of use). Done when a language with clusters and
+ * many syllable types takes over a syllabary that cannot write them.
+ */
+function syllabaryToAbugida(b: Builder): void {
+  const s = b.script;
+  const o = s.ortho;
+  const keys = Object.keys(o.syllables);
+  const cols = uniq(keys.map((k) => k.split("|")[1]));
+  const inh = chooseInherent(cols);
+  const letters: Record<string, number> = {};
+  const keep = new Set<number>();
+  for (const k of keys) {
+    const [c, v] = k.split("|");
+    const id = o.syllables[k];
+    if (keep.has(id)) {
+      if ((c && v === inh) || !c) letters[c || v] = id;
+      continue;
+    }
+    if (c && v === inh) {
+      letters[c] = id;
+      keep.add(id);
+      const g = glyph(s, id);
+      if (g) {
+        g.role = "consonant";
+        g.note = `once /${g.sound}/`;
+        g.sound = c;
+        if (g.origin === "inherited" || g.origin === "mutated") g.origin = "repurposed";
+      }
+    } else if (!c) {
+      letters[v] = id;
+      keep.add(id);
+      const g = glyph(s, id);
+      if (g) g.role = "vowel";
+    }
+  }
+  for (const id of new Set(Object.values(o.syllables))) if (!keep.has(id)) removeGlyph(s, id);
+  for (const id of Object.values(o.finals)) removeGlyph(s, id);
+  o.syllables = {};
+  o.finals = {};
+  o.letters = letters;
+  o.inherent = inh;
+  o.vowelMode = "sign";
+  o.vowelSigns = { [inh]: -1 };
+  o.conjuncts = b.rng.chance(0.3) ? "stack" : "virama";
+  o.virama = -1;
+  s.kind = "abugida";
+  s.history.push(`the signs for syllables in ${inh} came to stand for bare consonants, and other vowels were written with new signs, making it an abugida`);
+}
+
+/** How strongly a language's sounds push a script towards another kind (0..1 chances). */
+function kindPressure(kind: ScriptKind, inv: Inventory): { to: ScriptKind; p: number } | null {
+  const quals = uniq(inv.vowels.map((v) => stripAll(v))).length;
+  const cons = uniq(inv.consonants).length;
+  if (kind === "abjad" && quals >= 5) return { to: "alphabet", p: Math.min(0.85, 0.25 + 0.1 * (quals - 5)) };
+  if (kind === "syllabary" && (cons + 1) * quals > 110) return { to: "abugida", p: Math.min(0.8, ((cons + 1) * quals - 110) / 80 + 0.3) };
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Glyph mutation pass
 // ---------------------------------------------------------------------------
@@ -691,11 +766,16 @@ function chooseHabits(rng: Rng, s: Script, fromTool: Tool, drift: number): Habit
 
 /** Per-letter mutation weights (rarer, idiosyncratic changes). */
 function letterWeights(s: Script): [MutationOp, number][] {
-  const w = mutationWeights(s.style.tool, s.style.tool).filter(([op]) => op !== "cursivize" && op !== "loopify" && op !== "deHorizontal" && op !== "angularize");
+  // Script-wide habits carry the tool's influence; these are the changes a
+  // single letter undergoes on its own (every letter gets a little jitter anyway).
+  const boost: Partial<Record<MutationOp, number>> = { rotate: 2.4, reflect: 1.6, simplify: 1.3, addStroke: 1.2 };
+  const w = mutationWeights(s.style.tool, s.style.tool)
+    .filter(([op]) => op !== "cursivize" && op !== "loopify" && op !== "deHorizontal" && op !== "angularize" && op !== "jitter")
+    .map(([op, x]) => [op, x * (boost[op] ?? 1)] as [MutationOp, number]);
   let out = w;
-  if (s.style.joins) out = out.filter(([op]) => ["jitter", "simplify", "lean", "stretch", "addStroke"].includes(op));
+  if (s.style.joins) out = out.filter(([op]) => ["simplify", "lean", "stretch", "addStroke"].includes(op));
   if (s.style.headline) out = out.filter(([op]) => op !== "rotate" && op !== "elongate");
-  if (s.morph.family === "tally" || s.morph.family === "featural") out = out.filter(([op]) => op === "jitter" || op === "stretch");
+  if (s.morph.family === "tally" || s.morph.family === "featural") out = out.filter(([op]) => op === "stretch");
   return out;
 }
 
@@ -828,7 +908,7 @@ export function deriveScript(parent: Script, rng: Rng, opts: DeriveOptions = {})
   child.style = driftStyle(r.fork("style"), parent.style, tool, drift);
   const b = builderFor(child, r.fork("build"));
   const notes: string[] = [];
-  if (tool !== fromTool) notes.push(`written with ${toolPhrase(tool)} instead of ${toolPhrase(fromTool)}`);
+  if (tool !== fromTool) notes.push(`it came to be written with ${toolPhrase(tool)} rather than ${toolPhrase(fromTool)}`);
 
   // Direction.
   let dir: Direction = opts.direction ?? parent.direction;
@@ -841,7 +921,7 @@ export function deriveScript(parent: Script, rng: Rng, opts: DeriveOptions = {})
     const horizontalFlip = (parent.direction === "ltr" && dir === "rtl") || (parent.direction === "rtl" && dir === "ltr");
     if (horizontalFlip) reflectAll(child, r.fork("reflect"));
     child.direction = dir;
-    notes.push(dir === "ttb" ? "turned to vertical columns" : `came to be written ${dir === "ltr" ? "left to right" : "right to left"}${horizontalFlip ? ", its letters turning to face the new direction" : ""}`);
+    notes.push(dir === "ttb" ? "it turned to vertical columns" : `it came to be written from ${dir === "ltr" ? "left to right" : "right to left"}${horizontalFlip ? ", its letters turning to face the new direction" : ""}`);
   }
 
   // Shapes.
@@ -849,18 +929,24 @@ export function deriveScript(parent: Script, rng: Rng, opts: DeriveOptions = {})
   if (changed) notes.push(`${changed} letter forms changed`);
 
   // Kind.
+  // The daughter language's sounds press for a change (vowels an abjad cannot
+  // show, more syllables than a syllabary can hold); habit alone rarely does.
+  const inv = opts.inventory ?? parent.inventory;
   let kind: ScriptKind | undefined = opts.kind;
-  if (!kind && parent.kind === "abjad" && r.chance(0.18 + 0.2 * drift)) kind = r.chance(0.65) ? "alphabet" : "abugida";
+  const press = kindPressure(parent.kind, inv);
+  if (!kind && press && r.chance(press.p * (0.6 + 0.6 * drift))) kind = press.to;
+  if (!kind && parent.kind === "abjad" && r.chance(0.1 + 0.15 * drift)) kind = r.chance(0.5) ? "alphabet" : "abugida";
   if (!kind && parent.kind === "alphabet" && parent.morph.family !== "tally" && r.chance(0.04 * drift)) kind = "abugida";
   if (kind && kind !== parent.kind) {
     if (parent.kind === "abjad" && kind === "alphabet") abjadToAlphabet(b);
     else if ((parent.kind === "abjad" || parent.kind === "alphabet") && kind === "abugida") toAbugida(b);
+    else if (parent.kind === "syllabary" && kind === "abugida") syllabaryToAbugida(b);
     else kind = parent.kind;
   }
 
   // Language.
-  const inv = opts.inventory ?? parent.inventory;
   adaptInPlace(b, inv, false, parent.kind === "abjad" && child.kind === "alphabet" ? Infinity : 3.4);
+  ensureDistinct(b);
   computeOrder(child, r.fork("order"));
   child.history.unshift(
     `derived from ${parent.id}${child.kind !== parent.kind ? ` and became ${article(child.kind)} ${child.kind}` : ""}`,
@@ -875,16 +961,32 @@ export function adaptScript(script: Script, inventory: Inventory, rng: Rng, opts
   const child = cloneScript(script, opts.id ?? childId(script, r), opts.bornYear ?? script.bornYear);
   const b = builderFor(child, r.fork("build"));
   const before = new Set(Object.keys(script.ortho.letters));
-  adaptInPlace(b, inventory, !!opts.keepUnused);
+  // Borrowers whose language the script cannot fit reshape the system (an
+  // abjad taken up by a people with many vowels turns spare letters into
+  // vowel letters).
+  let kind = opts.kind;
+  const press = kindPressure(script.kind, inventory);
+  if (!kind && press && r.chance(press.p)) kind = press.to;
+  let vowelFromConsonant = 3.4;
+  if (kind && kind !== script.kind) {
+    if (script.kind === "abjad" && kind === "alphabet") {
+      abjadToAlphabet(b);
+      vowelFromConsonant = Infinity;
+    } else if ((script.kind === "abjad" || script.kind === "alphabet") && kind === "abugida") toAbugida(b);
+    else if (script.kind === "syllabary" && kind === "abugida") syllabaryToAbugida(b);
+  }
+  adaptInPlace(b, inventory, !!opts.keepUnused, vowelFromConsonant);
+  ensureDistinct(b);
   computeOrder(child, r.fork("order"));
   const added = child.glyphs.filter((g) => g.origin === "derived" || g.origin === "invented").length;
   const repurposed = child.glyphs.filter((g) => g.origin === "repurposed").length;
   const dropped = [...before].filter((p) => child.ortho.letters[p] === undefined && !child.sounds.includes(p)).length;
+  const noun = child.kind === "syllabary" ? "signs" : "letters";
   child.history.push(
     `borrowed from ${script.id}` +
-      (repurposed ? `; ${repurposed} letters took new values` : "") +
-      (added ? `; ${added} new letters were made` : "") +
-      (dropped ? `; ${dropped} letters fell out of use` : ""),
+      (repurposed ? `; ${repurposed} ${noun} took new values` : "") +
+      (added ? `; ${added} new ${noun} were made` : "") +
+      (dropped ? `; ${dropped} ${noun} fell out of use` : ""),
   );
   return child;
 }

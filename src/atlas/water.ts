@@ -51,16 +51,24 @@ export function buildWater(f: FieldGrid, opts: { rippleCount: number; rippleGap:
   const distPx = new Float32Array(N);
   for (let k = 0; k < N; k++) distPx[k] = dist[k] * step;
 
+  // The outer ripples are smooth: contour them on a half-resolution grid.
+  const ds = 2;
+  const hx = Math.ceil(gx / ds), hy = Math.ceil(gy / ds);
+  const half = new Float32Array(hx * hy);
+  for (let j = 0; j < hy; j++) for (let i = 0; i < hx; i++) half[j * hx + i] = distPx[Math.min(gy - 1, j * ds) * gx + Math.min(gx - 1, i * ds)];
   const ripples: { t: number; lines: Polyline[] }[] = [];
   for (let r = 0; r < opts.rippleCount; r++) {
     const levelPx = opts.rippleGap * (r + 1) * (1 + r * 0.18);
-    const blurNodes = Math.max(1, Math.round((levelPx * 0.22) / step));
-    const bl = boxBlur(distPx, gx, gy, blurNodes, 2);
+    const fine = r < 2;
+    const st = fine ? step : step * ds;
+    const W = fine ? gx : hx, H = fine ? gy : hy;
+    const blurNodes = Math.max(1, Math.round((levelPx * 0.22) / st));
+    const bl = boxBlur(fine ? distPx : half, W, H, blurNodes, 2);
     // Water nodes beyond the level are "high": contour at level; land stays 0.
-    const lines = marchingSquares(bl, gx, gy, levelPx, 1e6);
-    const scr = toScreen(lines, f.x0, f.y0, step)
+    const lines = marchingSquares(bl, W, H, levelPx, 1e6);
+    const scr = toScreen(lines, f.x0, f.y0, st)
       .filter((l) => polylineLength(l.pts, l.closed) > Math.max(opts.minLoopPx * 1.5, levelPx * 2.5))
-      .map((l) => chaikin(decimate(l, step * 0.5), 2));
+      .map((l) => chaikin(decimate(l, st * 0.5), 2));
     ripples.push({ t: opts.rippleCount > 1 ? r / (opts.rippleCount - 1) : 0, lines: scr });
   }
   return { coastLoops, loopIsLake, ripples, distPx };

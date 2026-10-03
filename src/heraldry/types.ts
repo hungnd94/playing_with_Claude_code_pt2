@@ -150,6 +150,8 @@ export interface Difference {
   tincture: Tint;
   /** Points of a label (3 or 5). */
   points?: number;
+  /** Where a brisure lies (default: worked out from the coat — middle chief, fess point or dexter chief). */
+  at?: "chief" | "fess" | "dexterChief" | "sinisterChief";
 }
 
 /** A single (unmarshalled) coat. */

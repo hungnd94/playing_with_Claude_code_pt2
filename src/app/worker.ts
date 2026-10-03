@@ -27,12 +27,9 @@ function generate(job: number, seed: string, over: Partial<WorldParams>, engine?
   let where = "physical";
   try {
     const t0 = performance.now();
-    let lastPost = 0;
     const world = generatePhysical(params, new Rng(seed), (stage, fraction) => {
-      post({ type: "stage", job, phase: "physical", stage, fraction });
-      lastPost = performance.now();
+      post({ type: "stage", job, phase: "physical", stage, fraction, ms: performance.now() - t0 });
     });
-    void lastPost;
     // Copy (not transfer): the worker keeps using the world for history.
     post({ type: "physical", job, world, ms: performance.now() - t0 });
     where = "history";
@@ -44,7 +41,7 @@ function generate(job: number, seed: string, over: Partial<WorldParams>, engine?
       onProgress: (stage, fraction) => {
         const now = performance.now();
         if (stage !== lastStage || now - lastT > 80) {
-          post({ type: "stage", job, phase: "history", stage, fraction });
+          post({ type: "stage", job, phase: "history", stage, fraction, ms: now - t0 });
           lastStage = stage;
           lastT = now;
         }

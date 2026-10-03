@@ -229,8 +229,23 @@ const GRAM_SOURCES: Partial<Record<AffixKind, string[]>> = {
 };
 
 /** Clip a word to its first syllable (keeping a coda if it is a legal word-final consonant). */
+/**
+ * Clip a word to its first syllable for use as a combining form (like -by, -ton, -stan).
+ * A following consonant that can end a word is kept as a coda when it closes the syllable,
+ * and also (taking the next onset) in languages that favour consonant-final words, so a
+ * Norse-like toponymy gets heavy elements (Hus-, Vik-) rather than light ones (Hu-, Vi-).
+ */
 export function clipWord(ph: Phonology, w: Word): Word {
-  return truncate(ph, w, true);
+  const nuc = nuclei(w);
+  if (nuc.length <= 1) return w.slice();
+  const v = nuc[0];
+  const out = w.slice(0, v + 1);
+  const next = w[v + 1];
+  if (next && !isVowel(next) && tables(ph).finals.has(next)) {
+    const closes = !!w[v + 2] && !isVowel(w[v + 2]);
+    if (closes || ph.pFinalCoda >= 0.5) out.push(next);
+  }
+  return out;
 }
 
 function truncate(ph: Phonology, w: Word, suffix: boolean): Word {

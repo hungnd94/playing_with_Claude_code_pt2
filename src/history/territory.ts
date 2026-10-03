@@ -101,7 +101,6 @@ export function recomputeCatchments(sim: Sim): void {
 /** Refresh per-cell owner/culture/religion layers from settlement state; border and contact bookkeeping. */
 export function refreshLayers(sim: Sim): void {
   const g = sim.g;
-  const { adjStart, adj } = sim.w.mesh;
   const S = sim.S;
   for (const P of sim.P) {
     P.cells = 0;
@@ -125,6 +124,13 @@ export function refreshLayers(sim: Sim): void {
       P.area += g.areaKm2[c];
     }
   }
+  for (const P of sim.P) if (P.alive && P.area > P.rec.peak.areaKm2) P.rec.peak = { areaKm2: Math.round(P.area), year: sim.year };
+}
+
+/** Border lengths between realms, realm adjacency and contacts between peoples (every 10 years). */
+export function refreshAdjacency(sim: Sim): void {
+  const g = sim.g;
+  const { adjStart, adj } = sim.w.mesh;
   // Borders between polities and contacts between cultures.
   sim.borders.clear();
   for (const C of sim.C) C.contacts.clear();
@@ -153,7 +159,55 @@ export function refreshLayers(sim: Sim): void {
     (sim.polNbrs.get(b) ?? sim.polNbrs.set(b, []).get(b)!).push(a);
   }
   for (const v of sim.polNbrs.values()) v.sort((x, y) => x - y);
-  for (const P of sim.P) if (P.alive && P.area > P.rec.peak.areaKm2) P.rec.peak = { areaKm2: Math.round(P.area), year: sim.year };
+  seaNeighbours(sim);
+}
+
+/**
+ * Realms within sailing reach of each other's coasts (for war, trade and
+ * marriage across water). Coastal towns are bucketed on a coarse 3-D grid so
+ * only nearby pairs are compared.
+ */
+function seaNeighbours(sim: Sim): void {
+  sim.seaNbrs.clear();
+  const S = sim.S;
+  const B = 0.22; // bucket size in unit-vector space (~900 km)
+  const buckets = new Map<number, number[]>();
+  const keyOf = (x: number, y: number, z: number) => ((Math.floor(x / B) + 16) * 64 + (Math.floor(y / B) + 16)) * 64 + (Math.floor(z / B) + 16);
+  const coastal: number[] = [];
+  for (const sid of sim.alive()) {
+    const s = S[sid];
+    if (s.owner < 0 || !sim.g.coastal[s.cell] || (s.urban < 600 && !s.port)) continue;
+    coastal.push(sid);
+    const p = s.rec.pos;
+    const k = keyOf(p[0], p[1], p[2]);
+    (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(sid);
+  }
+  const pairs = new Set<number>();
+  for (const sid of coastal) {
+    const s = S[sid];
+    const C = sim.C[s.culture];
+    if (C.tech < 1.2 && C.values.seafaring < 0.5) continue;
+    const reachKm = Math.min(1800, (300 + 700 * C.values.seafaring) * (1 + 0.3 * C.tech));
+    const p = s.rec.pos;
+    const bx = Math.floor(p[0] / B), by = Math.floor(p[1] / B), bz = Math.floor(p[2] / B);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const list = buckets.get(((bx + dx + 16) * 64 + (by + dy + 16)) * 64 + (bz + dz + 16));
+      if (!list) continue;
+      for (const t of list) {
+        const o = S[t].owner;
+        if (o === s.owner || o < 0) continue;
+        const k = pairKey(s.owner, o);
+        if (pairs.has(k) || sim.borders.has(k)) continue;
+        if (sim.distKm(s.cell, S[t].cell) <= reachKm) pairs.add(k);
+      }
+    }
+  }
+  for (const k of pairs) {
+    const a = Math.floor(k / 65536), b = k % 65536;
+    (sim.seaNbrs.get(a) ?? sim.seaNbrs.set(a, []).get(a)!).push(b);
+    (sim.seaNbrs.get(b) ?? sim.seaNbrs.set(b, []).get(b)!).push(a);
+  }
+  for (const v of sim.seaNbrs.values()) v.sort((x, y) => x - y);
 }
 
 let capKey: Float64Array | null = null;

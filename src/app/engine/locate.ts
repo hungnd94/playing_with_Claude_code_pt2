@@ -61,7 +61,7 @@ export function locate(world: PhysicalWorld, h: History | null, engine: OverlayE
   switch (ref.kind) {
     case "settlement": {
       const p = settlementXYZ(h, world, ref.id);
-      return p ? pointTarget(world, p, 3.4) : null;
+      return p ? pointTarget(world, p, 2.7) : null;
     }
     case "polity": {
       const P = h.polities[ref.id];

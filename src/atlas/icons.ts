@@ -180,6 +180,22 @@ export function drawPlace(ctx: Ctx2D, m: PlaceMark, env: IconEnv): void {
       break;
     }
     case "capital": {
+      if (m.minor) {
+        // A seat: ringed dot with the realm's pennant.
+        ctx.beginPath();
+        ctx.arc(x, m.y, 3.3 * k, 0, Math.PI * 2);
+        ctx.fillStyle = pal.paper;
+        ctx.fill();
+        ctx.lineWidth = 1.1 * k;
+        ctx.strokeStyle = pal.ink;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(x, m.y, 1.6 * k, 0, Math.PI * 2);
+        ctx.fillStyle = pal.ink;
+        ctx.fill();
+        pennant(ctx, x, m.y - 3.3 * k, 6 * k, m.color, env);
+        break;
+      }
       const s = m.great ? 1.15 : 1;
       const y = m.y + 2.6 * k * s;
       const w = 15 * k * s;

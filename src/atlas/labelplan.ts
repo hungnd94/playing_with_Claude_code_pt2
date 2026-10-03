@@ -52,6 +52,8 @@ export interface LabelInput {
   occ: Occupancy;
   /** Owner per cell at the year (for feature names in the holder's tongue). */
   ownerCell: Int32Array | null;
+  /** The plate is about a war: show all its battles (swords even without a label). */
+  focusWar?: boolean;
 }
 
 export interface LabelResult {
@@ -105,6 +107,10 @@ export function planLabels(inp: LabelInput): LabelResult {
   const distWater = (x: number, y: number) => water.distPx[nodeAt(f, x, y)];
   const ownerAtPx = (x: number, y: number) => (ownerNode ? ownerNode[nodeAt(f, x, y)] : -1);
   const inRect = (x: number, y: number, m: number) => x > rect.x + m && x < rect.x + rect.w - m && y > rect.y + m && y < rect.y + rect.h - m;
+  // Scale class: km per pixel at the centre (≈ 8 for a continent, 2 for a region, < 1 close up).
+  const kmpp = proj.kmPerPx;
+  const area = rect.w * rect.h;
+  const zoom = Math.max(0.5, Math.min(2.5, 4 / kmpp)); // > 1 when zoomed in
 
   const place = (id: string, kind: LabelKind, text: string, st: TextStyle, cands: Candidate[], ref?: PlacedLabel["ref"], p = pad): PlacedLabel | null => {
     if (!cands.length) return null;
@@ -126,21 +132,22 @@ export function planLabels(inp: LabelInput): LabelResult {
   // ------------------------------------------------------------------ settlements: icons first
   const shown: PlaceMark[] = [];
   const iconIndex: Box[] = [];
-  const iconBox = (m: PlaceMark): Box => ({ x0: m.x - m.r, y0: m.y - m.r * (m.tier === "capital" || m.tier === "city" ? 1.5 : 1.05), x1: m.x + m.r, y1: m.y + m.r * 0.75 });
+  const iconBox = (m: PlaceMark): Box => ({ x0: m.x - m.r, y0: m.y - m.r * (m.minor ? 2.6 : m.tier === "capital" || m.tier === "city" ? 1.5 : 1.05), x1: m.x + m.r * (m.minor ? 1.6 : 1), y1: m.y + m.r * 0.75 });
   const iconHits = (b: Box, gap: number) => iconIndex.some((o) => b.x0 - gap < o.x1 && b.x1 + gap > o.x0 && b.y0 - gap < o.y1 && b.y1 + gap > o.y0);
   const major = inp.places.filter((m) => m.tier === "capital" || m.tier === "city" || m.tier === "town");
-  const maxMajor = Math.round((rect.w * rect.h) / (4200 * k * k));
+  const maxMajor = Math.round((area / (17000 * k * k)) * Math.min(1.6, zoom));
+  const townGap = Math.max(4 * k, (16 * k) / zoom);
   for (const m of major) {
     if (shown.length >= maxMajor && m.tier === "town") continue;
     const b = iconBox(m);
-    if (iconHits(b, 3 * k)) continue;
+    if (iconHits(b, m.tier === "town" ? townGap : 3 * k)) continue;
     iconIndex.push(b);
     placer.obstacle(b);
     shown.push(m);
   }
 
   const placeLabelFor = (m: PlaceMark): PlacedLabel | null => {
-    const size = (m.tier === "capital" ? (m.great ? 15.5 : 14) : m.tier === "city" ? (m.great ? 14 : 12.6) : m.tier === "town" ? 11.2 : 9.8) * k;
+    const size = (m.tier === "capital" ? (m.minor ? 12.2 : m.great ? 15.5 : 14) : m.tier === "city" ? (m.great ? 14 : 12.6) : m.tier === "town" ? 11.2 : 9.8) * k;
     const st = m.tier === "capital" ? S.capital(size) : m.tier === "city" ? S.city(size) : m.tier === "town" ? S.town(size) : m.tier === "ruin" ? S.ruin(size * 0.95) : S.village(size);
     const text = m.tier === "ruin" ? `ruins of ${m.name}` : m.name;
     const cands = pointCandidates(measure, m.x, m.y + (m.tier === "capital" || m.tier === "city" ? -m.r * 0.35 : 0), m.r + 0.5 * k, text, st);
@@ -154,7 +161,9 @@ export function planLabels(inp: LabelInput): LabelResult {
   // ------------------------------------------------------------------ realms
   if (pol) {
     const realms = pol.realms.slice().sort((a, b) => b.nodes - a.nodes || a.id - b.id);
+    const minArea = 2600 * k * k;
     for (const r of realms) {
+      if (r.mainNodes * f.step * f.step < minArea) continue;
       const nm = realmName(h, r.id, year);
       if (!nm) continue;
       placeRealm(r, nm.roman);
@@ -188,12 +197,20 @@ export function planLabels(inp: LabelInput): LabelResult {
       if (adv.total > A * 0.98 && attempt < 4) continue;
       st = S.realm(size, spacingEm, color);
       if (vassal) st.opacity = 0.78;
-      for (const dvf of [0, 0.18, -0.18, 0.36, -0.36]) {
-        const path = spinePath(ax, -0.15, 1.15, dvf * T, 40);
+      const paths: { path: Pt[]; dvf: number; straight: number }[] = [];
+      for (const dvf of [0, 0.18, -0.18, 0.36, -0.36]) paths.push({ path: spinePath(ax, -0.15, 1.15, dvf * T, 40), dvf, straight: 0 });
+      // Straight fallbacks through the centre, horizontal and gently tilted.
+      for (const tilt of [0, 0.25, -0.25]) {
+        for (const dy of [0, -0.22 * T, 0.22 * T]) {
+          const L0 = A * 0.6, ca = Math.cos(tilt), sa = Math.sin(tilt);
+          paths.push({ path: [[ax.cx - L0 * ca, ax.cy + dy - L0 * sa], [ax.cx + L0 * ca, ax.cy + dy + L0 * sa]], dvf: Math.abs(dy) / T, straight: 0.6 + Math.abs(tilt) });
+        }
+      }
+      for (const { path, dvf, straight } of paths) {
         const L = pathLength(path);
         for (const cf of [0.5, 0.42, 0.58, 0.34, 0.66]) {
           const lay = layoutOnPath(path, adv, sp, size, L * cf);
-          if (!lay || lay.maxTurn > 0.3) continue;
+          if (!lay || lay.maxTurn > 0.3 || lay.maxTilt > 0.8) continue;
           // Every letter inside the realm, on land.
           let out = 0, wet = 0;
           for (const g of lay.glyphs) {
@@ -204,7 +221,7 @@ export function planLabels(inp: LabelInput): LabelResult {
           }
           const frac = out / Math.max(1, n);
           if (frac > 0.2 || wet > 0) continue;
-          const cost = frac * 4 + Math.abs(dvf) * 1.5 + Math.abs(cf - 0.5) * 2 + lay.maxTurn + attempt * 0.25;
+          const cost = frac * 4 + Math.abs(dvf) * 1.5 + Math.abs(cf - 0.5) * 2 + lay.maxTurn + attempt * 0.25 + straight;
           cands.push({ layout: lay, cost });
         }
       }
@@ -407,7 +424,7 @@ export function planLabels(inp: LabelInput): LabelResult {
         const L = pathLength(path);
         for (const cf of [0.5, 0.4, 0.6]) {
           const lay = layoutOnPath(path, adv, sp, st.size, L * cf);
-          if (!lay || lay.maxTurn > 0.35) continue;
+          if (!lay || lay.maxTurn > 0.35 || lay.maxTilt > 0.85) continue;
           let wet = 0;
           for (const g of lay.glyphs) if (g.ch.trim() && isWater(g.x, g.y)) wet++;
           if (wet > 0) continue;
@@ -451,7 +468,7 @@ export function planLabels(inp: LabelInput): LabelResult {
         const PL = pathLength(path);
         for (const cf of [0.55, 0.42, 0.68, 0.3, 0.8, 0.2]) {
           const lay = layoutOnPath(path, adv, sp, st.size, PL * cf);
-          if (!lay || lay.maxTurn > 0.42) continue;
+          if (!lay || lay.maxTurn > 0.42 || lay.maxTilt > 1.25) continue;
           let wet = 0;
           for (const g of lay.glyphs) if (g.ch.trim() && isWater(g.x, g.y)) wet++;
           if (wet > 1) continue;
@@ -469,9 +486,12 @@ export function planLabels(inp: LabelInput): LabelResult {
 
   // ------------------------------------------------------------------ islands
   const islands = world.features.filter((ft) => ft.kind === "island" || ft.kind === "archipelago").sort((a, b) => b.size - a.size || a.id - b.id);
+  let nIslands = 0;
   for (const ft of islands) {
+    if (nIslands >= 6 + 6 * zoom) break;
     const { xs, ys } = featPts(ft);
     if (!xs.length) continue;
+    nIslands++;
     const nn = featureLabel(h, inp.ownerCell, ft, year);
     if (!nn) continue;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -492,14 +512,30 @@ export function planLabels(inp: LabelInput): LabelResult {
 
   // ------------------------------------------------------------------ other regions, minor rivers
   const others = regionFeats.filter((ft) => ft.kind !== "mountains").sort((a, b) => b.size - a.size || a.id - b.id);
-  for (const ft of others) placeRegion(ft, 6);
-  for (const ft of riverFeats) if (!majorRivers.includes(ft)) placeRiver(ft);
+  let nRegions = 0;
+  const maxRegions = Math.round(6 + 4 * zoom);
+  for (const ft of others) {
+    if (nRegions >= maxRegions) break;
+    const before = labels.length;
+    placeRegion(ft, Math.round(9 / zoom));
+    if (labels.length > before) nRegions++;
+  }
+  let nMinor = 0;
+  if (zoom > 0.8) for (const ft of riverFeats) {
+    if (majorRivers.includes(ft) || nMinor >= 4 + 6 * zoom) continue;
+    const before = labels.length;
+    placeRiver(ft);
+    if (labels.length > before) nMinor++;
+  }
 
   // ------------------------------------------------------------------ villages and ruins: icon only with a label
-  const maxAll = Math.round((rect.w * rect.h) / (2400 * k * k));
+  const maxMinor = kmpp > 3.4 ? 0 : Math.round((area / (40000 * k * k)) * zoom);
+  let nMinorPlaces = 0;
   for (const m of inp.places) {
     if (m.tier !== "village" && m.tier !== "ruin") continue;
-    if (shown.length >= maxAll) break;
+    const greatRuin = m.tier === "ruin" && m.pop >= 20000;
+    if (!greatRuin && nMinorPlaces >= maxMinor) continue;
+    nMinorPlaces++;
     const b = iconBox(m);
     if (iconHits(b, 4 * k) || placer.labels.hits(b, 1 * k) || placer.hard.hits(b, 0)) continue;
     const pl = placeLabelFor(m);
@@ -511,16 +547,27 @@ export function planLabels(inp: LabelInput): LabelResult {
 
   // ------------------------------------------------------------------ battles
   const battles: BattleMark[] = [];
-  for (const bm of inp.battles) {
-    if (battles.length >= 12) break;
+  const maxBattles = inp.focusWar ? 24 : Math.round(3 + 2 * zoom);
+  for (const bm0 of inp.battles) {
+    if (battles.length >= maxBattles) break;
     const r = 5 * k;
+    // The swords sit at the site, or just beside the town they are named after.
+    let bm: BattleMark | null = null;
+    for (let t = 0; t < 9 && !bm; t++) {
+      const a = (t - 1) * (Math.PI / 4) - Math.PI / 4;
+      const d = t === 0 ? 0 : 12 * k;
+      const x = bm0.x + Math.cos(a) * d, y = bm0.y + Math.sin(a) * d;
+      const b: Box = { x0: x - r, y0: y - r, x1: x + r, y1: y + r };
+      if (iconHits(b, 1.5 * k) || placer.labels.hits(b, 1 * k) || placer.hard.hits(b, 0) || !inRect(x, y, 8 * k)) continue;
+      bm = { ...bm0, x, y };
+    }
+    if (!bm) continue;
     const b: Box = { x0: bm.x - r, y0: bm.y - r, x1: bm.x + r, y1: bm.y + r };
-    if (iconHits(b, 2 * k) || placer.labels.hits(b, 1 * k) || placer.hard.hits(b, 0)) continue;
     const text = `${bm.name}, ${bm.year}`;
     const st = S.battle(9.6 * k);
     const cands = pointCandidates(measure, bm.x, bm.y, r + 1 * k, text, st);
     const pl = place(`battle:${bm.id}`, "battle", text, st, cands, { type: "battle", id: bm.id }, 1 * k);
-    if (!pl) continue;
+    if (!pl && !inp.focusWar) continue;
     iconIndex.push(b);
     placer.obstacle(b);
     battles.push(bm);

@@ -83,7 +83,7 @@ describe("generateArms", () => {
       const json = JSON.stringify(a);
       if (json.includes(`"charge":"${id}"`)) hits++;
     }
-    expect(hits / n).toBeGreaterThan(0.7);
+    expect(hits / n).toBeGreaterThan(0.85);
   });
 
   it("uses every charge somewhere", () => {
@@ -173,7 +173,7 @@ describe("cadency, marshalling and canting", () => {
     expect(blazon(imp)).toContain("impaling");
     const sur = marshalArms([cs[0]], { escutcheon: cs[1] });
     expect(sur.kind === "marshalled" && sur.method).toBe("single");
-    expect(blazon(sur)).toContain("over all an escutcheon");
+    expect(blazon(sur)).toMatch(/over all (on )?an escutcheon/);
   });
 
   it("finds canting charges in name glosses", () => {

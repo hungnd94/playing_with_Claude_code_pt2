@@ -4,14 +4,23 @@
  * built from the language's own words and affixes, with a literal gloss, a
  * morpheme breakdown and IPA. A registry keeps names unique per language and
  * holds the personal-name pools from which people are named.
+ *
+ * Readability: inside compound names, words of three or more syllables appear
+ * in a clipped combining form (deterministic per language, so the element
+ * recurs across a toponymy the way -bury and -gawa do), and each name is the
+ * best of several candidates scored for length against an ideal for its kind.
+ * Candidates are cheap drafts; only the winner gets its morpheme parts, IPA
+ * and title-cased gloss.
  */
 import type { Rng } from "../core/rng";
 import { CONCEPT_BY_ID, englishAgent, englishPlural, titleCase } from "./concepts";
-import { joinMorphs } from "./morphology";
+import { joinMorphs, type Joined } from "./morphology";
 import { ipaPhrase, romanizeName, romanizeWord, ugliness } from "./orthography";
+import { syllabify, tables } from "./phonology";
+import { isVowel } from "./phoneme";
 import type { AffixKind, Language, Name, NameKind, NamePart, NameRegistry, Word } from "./types";
 import { generateWord } from "./wordgen";
-import { asciiFold } from "./util";
+import { asciiFold, obscene } from "./util";
 import { borrowName } from "./etymology";
 
 // ---------------------------------------------------------------------------
@@ -51,7 +60,7 @@ export function isNameUsed(reg: NameRegistry, langId: string, roman: string): bo
 }
 
 // ---------------------------------------------------------------------------
-// Pieces → names
+// Pieces → drafts → names
 // ---------------------------------------------------------------------------
 
 interface Piece {
@@ -84,15 +93,52 @@ const en = (c: string) => CONCEPT_BY_ID[c]?.en ?? c;
 const isAdj = (c: string) => CONCEPT_BY_ID[c]?.pos === "adj";
 const isMass = (c: string) => !!CONCEPT_BY_ID[c]?.mass;
 const has = (c: string, tag: string) => !!CONCEPT_BY_ID[c]?.tags.includes(tag);
+/** Things there is one of: "Place of the Sun", not "Place of Suns". */
+const UNIQUE = new Set(["sun", "moon", "sky", "sea", "earth", "dawn", "night", "evening", "winter", "summer", "springtime", "autumn", "north", "south", "east", "west", "ocean", "storm", "thunder", "rain", "wind", "dragon", "god", "king"]);
 
+function syl(w: Word): number {
+  let n = 0;
+  for (const p of w) if (isVowel(p)) n++;
+  return n;
+}
+
+const COMBINING = new WeakMap<Language, Map<string, Word>>();
+
+/**
+ * The form a word takes inside a compound name: words of three or more
+ * syllables are clipped to their first two (any coda that cannot end a word is
+ * dropped), the way long elements erode in real toponymy.
+ */
+function combiningForm(lang: Language, c: string): Word {
+  const w = lang.lexicon[c].form;
+  if (syl(w) <= 2) return w;
+  let m = COMBINING.get(lang);
+  if (!m) COMBINING.set(lang, (m = new Map()));
+  let f = m.get(c);
+  if (f) return f;
+  const starts = syllabify(w, lang.phonology);
+  f = w.slice(0, starts[2] ?? w.length);
+  const finals = tables(lang.phonology).finals;
+  while (f.length > 2 && !isVowel(f[f.length - 1]) && !(finals.has(f[f.length - 1]) && isVowel(f[f.length - 2]))) f = f.slice(0, -1);
+  if (!f.some(isVowel)) f = w;
+  m.set(c, f);
+  return f;
+}
+
+/** A word as a piece (full form). */
 function root(lang: Language, c: string): Piece {
   return { form: lang.lexicon[c].form, gloss: en(c), concept: c, role: "root" };
 }
 
-/** A settlement head in its combining form (clipped favourite heads like -stan), else the full root. */
+/** A word as a compound element (combining form). */
+function croot(lang: Language, c: string): Piece {
+  return { form: combiningForm(lang, c), gloss: en(c), concept: c, role: "root" };
+}
+
+/** A settlement head in its combining form (clipped favourite heads like -stan), else the compound form. */
 function headRoot(lang: Language, c: string): Piece {
   const f = lang.naming.headForms?.[c];
-  return f && f.length ? { form: f, gloss: en(c), concept: c, role: "root" } : root(lang, c);
+  return f && f.length ? { form: f, gloss: en(c), concept: c, role: "root" } : croot(lang, c);
 }
 
 function affixPiece(lang: Language, kind: AffixKind): Piece | null {
@@ -167,113 +213,149 @@ function genitive(lang: Language, head: Piece[], possessor: Piece[]): Piece[][] 
   return lang.morphology.genOrder === "GN" ? [...poss, head] : [head, ...poss];
 }
 
-function wordFromPieces(lang: Language, pieces: Piece[], wi: number): { word: Word; parts: NamePart[] } {
-  const j = joinMorphs(
-    lang,
-    pieces.map((p) => ({ form: p.form, affix: p.role === "affix" || p.role === "link" })),
-  );
-  const parts: NamePart[] = [];
-  let cur: { tag: number; ph: string[] } | null = null;
-  const flush = () => {
-    if (!cur || cur.ph.length === 0) return;
-    const pc = cur.tag >= 0 ? pieces[cur.tag] : null;
-    parts.push({
-      phonemes: cur.ph,
-      roman: romanizeWord(lang.orthography, cur.ph),
-      gloss: pc ? pc.gloss : "",
-      concept: pc?.concept,
-      affix: pc?.affix,
-      role: pc ? pc.role : "link",
-      word: wi,
-    });
-  };
-  j.word.forEach((p, i) => {
-    const t = j.tags[i];
-    if (!cur || cur.tag !== t) {
-      flush();
-      cur = { tag: t, ph: [] };
-    }
-    cur.ph.push(p);
-  });
-  flush();
-  // drop empty concept parts (fully elided) silently
-  return { word: j.word, parts };
+/** A cheap candidate: phonemes and spelling only. */
+interface Draft {
+  kind: NameKind;
+  pieces: Piece[][];
+  joined: Joined[];
+  words: Word[];
+  phonemes: Word;
+  roman: string;
+  gloss: string;
+  syl: number;
 }
 
-export function makeName(lang: Language, kind: NameKind, words: Piece[][], gloss: string): Name {
-  const parts: NamePart[] = [];
-  const ws: Word[] = [];
-  words.forEach((pieces, wi) => {
-    const r = wordFromPieces(lang, pieces, wi);
-    ws.push(r.word);
-    parts.push(...r.parts);
-  });
+function draft(lang: Language, kind: NameKind, pieces: Piece[][], gloss: string): Draft {
+  const joined = pieces.map((ps) => joinMorphs(lang, ps.map((p) => ({ form: p.form, affix: p.role === "affix" || p.role === "link" }))));
+  const words = joined.map((j) => j.word);
   const phonemes: Word = [];
-  ws.forEach((w, i) => {
+  let s = 0;
+  words.forEach((w, i) => {
     if (i > 0) phonemes.push(" ");
     phonemes.push(...w);
+    s += syl(w);
   });
+  return { kind, pieces, joined, words, phonemes, roman: romanizeName(lang.orthography, phonemes), gloss, syl: s };
+}
+
+function finalize(lang: Language, d: Draft): Name {
+  const parts: NamePart[] = [];
+  d.joined.forEach((j, wi) => {
+    const pieces = d.pieces[wi];
+    let cur: { tag: number; ph: string[] } | null = null;
+    const flush = () => {
+      if (!cur || cur.ph.length === 0) return;
+      const pc = cur.tag >= 0 ? pieces[cur.tag] : null;
+      parts.push({
+        phonemes: cur.ph,
+        roman: romanizeWord(lang.orthography, cur.ph),
+        gloss: pc ? pc.gloss : "",
+        concept: pc?.concept,
+        affix: pc?.affix,
+        role: pc ? pc.role : "link",
+        word: wi,
+      });
+    };
+    j.word.forEach((p, i) => {
+      const t = j.tags[i];
+      if (!cur || cur.tag !== t) {
+        flush();
+        cur = { tag: t, ph: [] };
+      }
+      cur.ph.push(p);
+    });
+    flush();
+  });
+  for (const p of parts) if (p.concept === undefined) delete p.concept;
+  for (const p of parts) if (p.affix === undefined) delete p.affix;
   return {
     lang: lang.id,
-    kind,
-    phonemes,
-    words: ws,
-    roman: romanizeName(lang.orthography, phonemes),
-    ipa: ipaPhrase(ws, lang.phonology.stress, lang.phonology),
-    gloss: titleCase(gloss.trim()),
+    kind: d.kind,
+    phonemes: d.phonemes,
+    words: d.words,
+    roman: d.roman,
+    ipa: ipaPhrase(d.words, lang.phonology.stress, lang.phonology),
+    gloss: titleCase(d.gloss.trim()),
     parts,
     history: [],
     etym: "",
   };
 }
 
-function lengthPenalty(n: Name, maxLetters: number): number {
-  const letters = [...n.roman.replace(/[\s'ʻʿʾ-]/g, "")].length;
-  return Math.max(0, letters - maxLetters) * 0.6 + (letters < 3 ? 2 : 0);
+export function makeName(lang: Language, kind: NameKind, words: Piece[][], gloss: string): Name {
+  return finalize(lang, draft(lang, kind, words, gloss));
+}
+
+/** Ideal and maximum syllable counts per kind of name. */
+type Len = [ideal: number, max: number];
+const LEN_SETTLEMENT: Len = [3, 4];
+const LEN_FEATURE: Len = [3, 4];
+const LEN_SHORT: Len = [3, 4];
+const LEN_LONG: Len = [4, 5];
+
+function score(d: Draft, len: Len): number {
+  const letters = [...d.roman.replace(/[\s'ʻʿʾ-]/g, "")].length;
+  const words = d.words.length;
+  const ideal = len[0] + (words > 1 ? 1 : 0);
+  const max = len[1] + (words > 1 ? 1 : 0);
+  return (
+    ugliness(d.roman) +
+    Math.max(0, d.syl - ideal) * 0.5 +
+    Math.max(0, d.syl - max) * 3 +
+    (letters < 3 ? 2 : 0) +
+    Math.max(0, letters - 11) * 0.25 +
+    (words > 2 ? 1 : 0)
+  );
 }
 
 const DISTINGUISHERS = ["new", "old", "upper", "lower", "great", "small", "high", "far", "north", "south", "east", "west"];
 
-/** English words that would read as jokes or slurs inside a name. */
+/** English words that would read as jokes inside a name (obscenities are caught by `obscene`). */
 const BLACKLIST = new Set(
-  "ass anal anus arse bitch boob bum butt cock crap cum cunt damn dick dong dung fag fart fuck gay gook hell homo jap jew kike kill nazi negro nig nob piss poo poop porn pube puke rape semen sex shit slut spic tit tits turd twat wank whore wifi fish dog cat cow pig rat bad sad mad fat ugly dumb stupid idiot moron loser god jesus allah satan devil penis vagina bra panty".split(" "),
+  "bum damn dong dung gay hell jew kill nob wifi fish dog cat cow pig rat bad sad mad fat ugly dumb stupid idiot moron loser god jesus allah satan devil bra panty".split(" "),
 );
 
-function offensive(roman: string): boolean {
+export function offensive(roman: string): boolean {
+  if (obscene(roman)) return true;
   const a = asciiFold(roman).toLowerCase();
   for (const w of a.split(/[\s-]+/)) if (BLACKLIST.has(w)) return true;
-  return /fuck|shit|cunt|nigg|fagg|rape|nazi|porn/.test(a.replace(/[^a-z]/g, ""));
+  return false;
 }
 
-function choose(lang: Language, rng: Rng, opts: NameOptions, gen: () => Name | null, maxLetters = 12, tries = 10): Name {
+function choose(lang: Language, rng: Rng, opts: NameOptions, gen: () => Draft | null, len: Len, tries = 12): Name {
   const reg = registryFor(lang, opts);
   const unique = opts.unique !== false;
   const used = (reg.used[lang.id] ??= {});
-  let best: Name | null = null;
-  let bestScore = Infinity;
-  let last: Name | null = null;
+  let best: Draft | null = null;
+  let last: Draft | null = null;
+  const pool: [Draft, number][] = [];
   for (let t = 0; t < tries; t++) {
-    const n = gen();
-    if (!n) continue;
-    last = n;
-    if (unique && used[n.roman.toLowerCase()]) continue;
-    if (offensive(n.roman)) continue;
-    const score = ugliness(n.roman) + lengthPenalty(n, maxLetters);
-    if (score < 0.8) {
-      best = n;
+    const d = gen();
+    if (!d) continue;
+    last = d;
+    const key = d.roman.toLowerCase();
+    if (unique && used[key]) continue;
+    const sc = score(d, len);
+    // The first acceptable candidate wins, so the generator's mix of patterns (opaque names
+    // included) is preserved; the (costly) offensiveness check runs only for it.
+    if (sc < 0.6 && !offensive(d.roman)) {
+      best = d;
       break;
     }
-    if (score < bestScore) {
-      best = n;
-      bestScore = score;
-    }
+    // among the leftovers, transparent names are preferred (opaque ones are short by nature)
+    pool.push([d, sc + (d.gloss ? 0 : 0.6)]);
+  }
+  if (!best && pool.length) {
+    pool.sort((a, b) => a[1] - b[1]);
+    best = pool.find(([d]) => !offensive(d.roman))?.[0] ?? null;
   }
   if (!best && last) {
     // Everything collided: distinguish with "Upper", "New", … as real toponymy does.
-    for (const d of rng.shuffle(DISTINGUISHERS.slice())) {
+    for (const dn of rng.shuffle(DISTINGUISHERS.slice())) {
       const base = last;
       const words = base.words.map((w, wi) => [{ form: w, gloss: wi === 0 ? base.gloss : "", role: "name" as const }]);
-      const cand = makeName(lang, base.kind, adjPhrase(lang, [root(lang, d)], words.flat()), `${en(d)} ${base.gloss}`);
+      const adj = [root(lang, dn)];
+      const cand = draft(lang, base.kind, lang.morphology.adjOrder === "AN" ? [adj, ...words] : [...words, adj], `${en(dn)} ${base.gloss}`);
       if (!used[cand.roman.toLowerCase()]) {
         best = cand;
         break;
@@ -281,7 +363,7 @@ function choose(lang: Language, rng: Rng, opts: NameOptions, gen: () => Name | n
     }
     if (!best) best = last;
   }
-  const out = best!;
+  const out = finalize(lang, best!);
   if (unique) used[out.roman.toLowerCase()] = 1;
   return out;
 }
@@ -290,22 +372,42 @@ function weightedConcept(rng: Rng, pairs: [string, number][]): string {
   return rng.weighted(pairs);
 }
 
+/** A gentle preference for short words: weight 1/syllables^0.7 (combining forms already cap length). */
+function preferShort(lang: Language, rng: Rng, cands: string[]): string {
+  return cands[rng.weightedIndex(cands.map((c) => 1 / Math.pow(Math.max(1, syl(lang.lexicon[c]?.form ?? [])), 0.7)))];
+}
+
+/** Of a few candidates, prefer the one with the shortest word (names favour short elements). */
+function shortest(lang: Language, rng: Rng, cands: string[], k = 3): string {
+  let best = rng.pick(cands);
+  let bs = syl(lang.lexicon[best]?.form ?? []) + rng.next() * 0.9;
+  for (let i = 1; i < k; i++) {
+    const c = rng.pick(cands);
+    const s = syl(lang.lexicon[c]?.form ?? []) + rng.next() * 0.9;
+    if (s < bs) {
+      best = c;
+      bs = s;
+    }
+  }
+  return best;
+}
+
 const MOD_CATS: [string, number][] = [
   ["color", 1.1],
   ["qual", 1.0],
-  ["beast", 0.8],
-  ["tree", 1.2],
+  ["beast", 0.9],
+  ["tree", 1.3],
   ["plant", 0.5],
-  ["material", 0.7],
-  ["geo", 0.9],
-  ["sky", 0.5],
-  ["elem", 0.4],
-  ["dir", 0.5],
+  ["material", 0.6],
+  ["geo", 1.0],
+  ["dir", 0.6],
+  ["sky", 0.12],
+  ["elem", 0.2],
 ];
 
 const MOD_POOLS = new Map<string, string[]>();
 
-/** A random place-name modifier; of two candidates, the one with the shorter word usually wins. */
+/** A random place-name modifier, preferring short words. */
 function randomModifier(rng: Rng, exclude: Set<string>, nounOnly = false, lang?: Language): string {
   const cat = rng.weighted(MOD_CATS);
   const pk = `${cat}|${nounOnly}`;
@@ -318,12 +420,7 @@ function randomModifier(rng: Rng, exclude: Set<string>, nounOnly = false, lang?:
   }
   const cands = pool.filter((c) => !exclude.has(c));
   if (!cands.length) return "stone";
-  const a = rng.pick(cands);
-  if (!lang) return a;
-  const b = rng.pick(cands);
-  const la = lang.lexicon[a]?.form.length ?? 9;
-  const lb = lang.lexicon[b]?.form.length ?? 9;
-  return lb < la && rng.chance(0.75) ? b : a;
+  return lang ? shortest(lang, rng, cands) : rng.pick(cands);
 }
 
 function siteSplit(features: string[] | undefined): { heads: string[]; mods: string[] } {
@@ -332,12 +429,20 @@ function siteSplit(features: string[] | undefined): { heads: string[]; mods: str
 }
 
 function placeGloss(c: string): string {
-  return isAdj(c) ? `${en(c)} Place` : `Place of ${isMass(c) ? en(c) : englishPlural(c)}`;
+  if (isAdj(c)) return `${en(c)} Place`;
+  if (UNIQUE.has(c)) return `Place of the ${en(c)}`;
+  return `Place of ${isMass(c) ? en(c) : englishPlural(c)}`;
 }
 
 /** Adapt a name from another language for use inside this one. */
 function localize(lang: Language, n: Name): Name {
   return n.lang === lang.id ? n : borrowName(n, lang);
+}
+
+/** A word of no known meaning (an old or substrate name), mostly two syllables. */
+function opaqueForm(lang: Language, rng: Rng, weights: [number, number, number] = [0.25, 0.6, 0.15]): Word {
+  const n = rng.weightedIndex(weights) + 1;
+  return generateWord(lang.phonology, rng, n);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,46 +456,63 @@ export interface SettlementSite {
   founder?: Name;
   /** Mother city for "New X" names. */
   mother?: Name;
-  pattern?: "compound" | "suffix" | "adjNoun" | "bare" | "founder" | "new" | "opaque";
+  /** The river (or lake, sea) the town stands on, for "X-mouth", "X-ford", "Bridge on the X" names. */
+  river?: Name;
+  pattern?: "compound" | "suffix" | "adjNoun" | "bare" | "founder" | "new" | "opaque" | "river";
 }
+
+const TOWN_ADJS = ["white", "red", "black", "green", "old", "new", "high", "fair", "holy", "great", "grey", "golden", "north", "south", "east", "west", "upper", "lower", "far", "cold", "bright", "dark", "long", "broad", "low", "small"];
 
 export function nameSettlement(lang: Language, rng: Rng, site: SettlementSite = {}, opts: NameOptions = {}): Name {
   const nc = lang.naming;
   const { heads, mods } = siteSplit(site.features);
   const pickHead = () => (heads.length && rng.chance(0.6) ? rng.pick(heads) : weightedConcept(rng, nc.settlementHeads));
-  const gen = (): Name | null => {
-    const w: [string, number][] = Object.entries(nc.patterns).map(([k, v]) => [k, v]);
+  const S = "settlement" as const;
+  const gen = (): Draft | null => {
+    const w: [string, number][] = Object.entries(nc.patterns).map(([k, v]) => [k, k === "opaque" ? v * 0.6 : v]);
     if (site.founder) w.push(["founder", 3]);
     if (site.mother) w.push(["new", 12]);
+    if (site.river) w.push(["river", 4]);
     const pattern = site.pattern ?? rng.weighted(w);
     switch (pattern) {
+      case "river": {
+        // Oxford, Avonmouth, Exeter: the river's name with a head of the site
+        if (!site.river) return null;
+        const rv = localize(lang, site.river);
+        const rn = coreOf(rv).roman;
+        const rh = ["ford", "mouth", "bridge", "town", "fort", "harbor", "mound", "field", "hill", "home"].filter((h) => lang.lexicon[h]);
+        const pref = heads.filter((h) => rh.includes(h));
+        const h = pref.length && rng.chance(0.7) ? rng.pick(pref) : rng.pick(rh.slice(0, 6));
+        if (rng.chance(0.75)) return draft(lang, S, [cmp(lang, [namePiece(rv, rn)], [headRoot(lang, h)])], `${rn} ${titleCase(en(h))}`);
+        return draft(lang, S, genitive(lang, [root(lang, h)], [namePiece(rv, rn)]), `${titleCase(en(h))} on the ${rn}`);
+      }
       case "founder": {
         if (!site.founder) return null;
         const f = localize(lang, site.founder);
         const given = coreOf(f).roman;
         if (rng.chance(0.55)) {
           const h = pickHead();
-          return makeName(lang, "settlement", [cmp(lang, [namePiece(f, given)], [headRoot(lang, h)])], `${given}'s ${en(h)}`);
+          return draft(lang, S, [cmp(lang, [namePiece(f, given)], [headRoot(lang, h)])], `${given}'s ${en(h)}`);
         }
-        return makeName(lang, "settlement", [withAffix(lang, [namePiece(f, given)], "place")], `Place of ${given}`);
+        return draft(lang, S, [withAffix(lang, [namePiece(f, given)], "place")], `Place of ${given}`);
       }
       case "new": {
         if (!site.mother) return null;
         const m = localize(lang, site.mother);
         const mp = namePiece(m, m.roman);
-        if (rng.chance(0.7)) return makeName(lang, "settlement", adjPhrase(lang, [root(lang, "new")], [mp]), `New ${m.roman}`);
-        return makeName(lang, "settlement", [cmp(lang, [root(lang, "new")], [mp])], `New ${m.roman}`);
+        if (rng.chance(0.7)) return draft(lang, S, adjPhrase(lang, [root(lang, "new")], [mp]), `New ${m.roman}`);
+        return draft(lang, S, [cmp(lang, [croot(lang, "new")], [mp])], `New ${m.roman}`);
       }
       case "suffix": {
         const base = mods.length && rng.chance(0.6) ? rng.pick(mods) : randomModifier(rng, new Set(), true, lang);
-        return makeName(lang, "settlement", [withAffix(lang, [root(lang, base)], "place")], placeGloss(base));
+        return draft(lang, S, [withAffix(lang, [croot(lang, base)], "place")], placeGloss(base));
       }
       case "adjNoun": {
         const adjs = mods.filter(isAdj);
-        const adj = adjs.length && rng.chance(0.6) ? rng.pick(adjs) : rng.pick(["white", "red", "black", "green", "old", "new", "high", "fair", "holy", "great", "grey", "golden", "north", "south", "east", "west", "upper", "lower", "far", "cold", "bright", "dark"]);
+        const adj = adjs.length && rng.chance(0.6) ? rng.pick(adjs) : shortest(lang, rng, TOWN_ADJS);
         const h = pickHead();
-        if (rng.chance(nc.phrasal)) return makeName(lang, "settlement", adjPhrase(lang, [root(lang, adj)], [root(lang, h)]), `${en(adj)} ${en(h)}`);
-        return makeName(lang, "settlement", [cmp(lang, [root(lang, adj)], [headRoot(lang, h)])], `${en(adj)} ${en(h)}`);
+        if (rng.chance(nc.phrasal)) return draft(lang, S, adjPhrase(lang, [root(lang, adj)], [root(lang, h)]), `${en(adj)} ${en(h)}`);
+        return draft(lang, S, [cmp(lang, [croot(lang, adj)], [headRoot(lang, h)])], `${en(adj)} ${en(h)}`);
       }
       case "bare": {
         const h = heads.length ? rng.pick(heads) : pickHead();
@@ -398,27 +520,27 @@ export function nameSettlement(lang: Language, rng: Rng, site: SettlementSite = 
         const alreadyDim = o.kind === "derived" && o.affix === "dim";
         if (rng.chance(0.5) && !alreadyDim) {
           const dimP = affixPiece(lang, "dim");
-          if (dimP) return makeName(lang, "settlement", [withAffix(lang, [root(lang, h)], "dim")], `Little ${en(h)}`);
+          if (dimP) return draft(lang, S, [withAffix(lang, [croot(lang, h)], "dim")], `Little ${en(h)}`);
         }
+        if (syl(lang.lexicon[h].form) >= 2 && rng.chance(0.3)) return draft(lang, S, [[root(lang, h)]], en(h));
         const mod = randomModifier(rng, new Set([h]), false, lang);
-        return makeName(lang, "settlement", [cmp(lang, [root(lang, mod)], [headRoot(lang, h)])], `${en(mod)} ${en(h)}`);
+        return draft(lang, S, [cmp(lang, [croot(lang, mod)], [headRoot(lang, h)])], `${en(mod)} ${en(h)}`);
       }
       case "opaque": {
-        const form = generateWord(lang.phonology, rng, rng.int(2, 3));
-        const pc: Piece = { form, gloss: "", role: "root" };
-        if (rng.chance(0.35)) return makeName(lang, "settlement", [withAffix(lang, [pc], "place")], "");
-        return makeName(lang, "settlement", [[pc]], "");
+        const pc: Piece = { form: opaqueForm(lang, rng), gloss: "", role: "root" };
+        if (rng.chance(0.35)) return draft(lang, S, [withAffix(lang, [pc], "place")], "");
+        return draft(lang, S, [[pc]], "");
       }
       default: {
         const h = pickHead();
         const excl = new Set([h]);
         const ms = mods.filter((m) => m !== h);
         const mod = ms.length && rng.chance(0.75) ? rng.pick(ms) : randomModifier(rng, excl, false, lang);
-        return makeName(lang, "settlement", [cmp(lang, [root(lang, mod)], [headRoot(lang, h)])], `${en(mod)} ${en(h)}`);
+        return draft(lang, S, [cmp(lang, [croot(lang, mod)], [headRoot(lang, h)])], `${en(mod)} ${en(h)}`);
       }
     }
   };
-  return choose(lang, rng, opts, gen, 11);
+  return choose(lang, rng, opts, gen, LEN_SETTLEMENT);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +558,8 @@ export interface RealmOptions extends NameOptions {
 }
 
 export function nameRealm(lang: Language, rng: Rng, o: RealmOptions = {}): Name {
-  const gen = (): Name | null => {
+  const R = "realm" as const;
+  const gen = (): Draft | null => {
     const r = rng.next();
     if (o.people && r < 0.45) {
       const p = localize(lang, o.people);
@@ -444,27 +567,28 @@ export function nameRealm(lang: Language, rng: Rng, o: RealmOptions = {}): Name 
         // a phrase-name ("Children of the Moon"): "Land of the Children of the Moon"
         const ws = p.words.map((w) => ({ form: w, gloss: "", role: "name" as const }));
         ws[0].gloss = p.roman;
-        return makeName(lang, "realm", genitive(lang, [root(lang, rng.chance(0.6) ? "land" : "realm")], ws), `Land of the ${p.roman}`);
+        return draft(lang, R, genitive(lang, [root(lang, rng.chance(0.6) ? "land" : "realm")], ws), `Land of the ${p.roman}`);
       }
       const pp = namePiece(p, p.roman);
-      if (rng.chance(0.5) && lang.morphology.affixes.land?.form.length) return makeName(lang, "realm", [withAffix(lang, [pp], "land")], `Land of the ${p.roman}`);
-      return makeName(lang, "realm", [cmp(lang, [pp], [root(lang, rng.chance(0.6) ? "land" : "realm")])], `Land of the ${p.roman}`);
+      if (rng.chance(0.6) && lang.morphology.affixes.land?.form.length) return draft(lang, R, [withAffix(lang, [pp], "land")], `Land of the ${p.roman}`);
+      return draft(lang, R, [cmp(lang, [pp], [croot(lang, rng.chance(0.6) ? "land" : "realm")])], `Land of the ${p.roman}`);
     }
     if (o.capital && r < 0.7) {
       const c = localize(lang, o.capital);
-      if (c.words.length > 1) return makeName(lang, "realm", genitive(lang, [root(lang, "land")], phrasePieces(c)), `Land of ${c.roman}`);
-      return makeName(lang, "realm", [withAffix(lang, [namePiece(c, c.roman)], "land")], `Land of ${c.roman}`);
+      if (c.words.length > 1) return draft(lang, R, genitive(lang, [root(lang, "land")], phrasePieces(c)), `Land of ${c.roman}`);
+      return draft(lang, R, [withAffix(lang, [namePiece(c, c.roman)], "land")], `Land of ${c.roman}`);
     }
     if (o.founder && r < 0.8) {
       const f = localize(lang, o.founder);
       const given = coreOf(f).roman;
-      return makeName(lang, "realm", [withAffix(lang, [namePiece(f, given)], "land")], `Land of ${given}`);
+      return draft(lang, R, [withAffix(lang, [namePiece(f, given)], "land")], `Land of ${given}`);
     }
     const feat = o.feature && CONCEPT_BY_ID[o.feature] ? o.feature : randomModifier(rng, new Set(), false, lang);
-    if (rng.chance(0.5)) return makeName(lang, "realm", [withAffix(lang, [root(lang, feat)], "land")], isAdj(feat) ? `${en(feat)} Land` : `Land of ${isMass(feat) ? en(feat) : englishPlural(feat)}`);
-    return makeName(lang, "realm", [cmp(lang, [root(lang, feat)], [root(lang, "land")])], `${en(feat)} Land`);
+    if (rng.chance(0.5))
+      return draft(lang, R, [withAffix(lang, [croot(lang, feat)], "land")], isAdj(feat) ? `${en(feat)} Land` : UNIQUE.has(feat) ? `Land of the ${en(feat)}` : `Land of ${isMass(feat) ? en(feat) : englishPlural(feat)}`);
+    return draft(lang, R, [cmp(lang, [croot(lang, feat)], [croot(lang, "land")])], `${en(feat)} Land`);
   };
-  return choose(lang, rng, o, gen, 12);
+  return choose(lang, rng, o, gen, LEN_SHORT);
 }
 
 export interface PeopleOptions extends NameOptions {
@@ -475,32 +599,32 @@ export interface PeopleOptions extends NameOptions {
 }
 
 export function namePeople(lang: Language, rng: Rng, o: PeopleOptions = {}): Name {
-  const gen = (): Name | null => {
+  const P = "people" as const;
+  const gen = (): Draft | null => {
     if (o.place && rng.chance(0.8)) {
       const p = localize(lang, o.place);
       const pp = namePiece(p, p.roman);
-      if (lang.morphology.affixes.demonym?.form.length && rng.chance(0.7)) return makeName(lang, "people", [withAffix(lang, [pp], "demonym")], `People of ${p.roman}`);
-      return makeName(lang, "people", [cmp(lang, [pp], [root(lang, "people")])], `${p.roman} Folk`);
+      if (lang.morphology.affixes.demonym?.form.length && rng.chance(0.7)) return draft(lang, P, [withAffix(lang, [pp], "demonym")], `People of ${p.roman}`);
+      return draft(lang, P, [cmp(lang, [pp], [croot(lang, "people")])], `${p.roman} Folk`);
     }
     const r = rng.next();
-    if (o.feature && CONCEPT_BY_ID[o.feature] && r < 0.5) {
-      return makeName(lang, "people", [cmp(lang, [root(lang, o.feature)], [root(lang, "people")])], `${en(o.feature)} Folk`);
+    if (o.feature && CONCEPT_BY_ID[o.feature] && r < 0.35) {
+      return draft(lang, P, [cmp(lang, [croot(lang, o.feature)], [croot(lang, "people")])], `${en(o.feature)} Folk`);
     }
-    if (r < 0.3) {
-      const q = rng.pick(["true", "free", "first", "old", "good", "high", "holy"]);
-      return makeName(lang, "people", [cmp(lang, [root(lang, q)], [root(lang, "people")])], `the ${en(q)} People`);
+    if (r < 0.55) {
+      const q = shortest(lang, rng, ["true", "free", "first", "old", "good", "high", "holy", "strong", "bold", "white", "red"]);
+      return draft(lang, P, [cmp(lang, [croot(lang, q)], [croot(lang, "people")])], `the ${en(q)} People`);
     }
-    if (r < 0.5) {
-      const anc = rng.pick(["sun", "moon", "star", "wolf", "bear", "eagle", "river", "sea", "stone", "mountain", "horse", "raven", "fire"]);
+    if (r < 0.68) {
+      const anc = shortest(lang, rng, ["sun", "moon", "star", "wolf", "bear", "eagle", "river", "sea", "stone", "mountain", "horse", "raven", "fire"]);
       const children = withAffix(lang, [root(lang, "child")], "pl");
-      return makeName(lang, "people", genitive(lang, children, [root(lang, anc)]), `Children of the ${en(anc)}`);
+      return draft(lang, P, genitive(lang, children, [root(lang, anc)]), `Children of the ${en(anc)}`);
     }
     // an opaque ethnonym, perhaps with the collective suffix
-    const form = generateWord(lang.phonology, rng, 2);
-    const pc: Piece = { form, gloss: "", role: "root" };
-    return makeName(lang, "people", [rng.chance(0.4) ? withAffix(lang, [pc], "collective") : [pc]], "");
+    const pc: Piece = { form: opaqueForm(lang, rng, [0.3, 0.6, 0.1]), gloss: "", role: "root" };
+    return draft(lang, P, [rng.chance(0.4) ? withAffix(lang, [pc], "collective") : [pc]], "");
   };
-  return choose(lang, rng, o, gen, 11);
+  return choose(lang, rng, o, gen, LEN_SHORT);
 }
 
 /** Native demonym/adjective for a place ("of Kešdavar"). */
@@ -593,29 +717,29 @@ export function nameFeature(lang: Language, rng: Rng, kind: NameKind, d: Feature
   if (d.salt) given.push("salt");
   if (d.dir) given.push(d.dir);
   for (const c of d.concepts ?? []) if (CONCEPT_BY_ID[c]) given.push(c);
-  const gen = (): Name | null => {
-    let head = weightedConcept(rng, spec.heads);
-    if (!lang.lexicon[head]) head = spec.heads[0][0];
-    const headPieces = (): Piece[] => (spec.plural && rng.chance(0.75) ? withAffix(lang, [root(lang, head)], "pl") : [root(lang, head)]);
-    const headEn = (plural: boolean) => (plural ? titleCase(englishPlural(head)) : en(head));
+  // Heads weighted towards the shorter words of this language.
+  const heads = spec.heads.filter(([h]) => lang.lexicon[h]).map(([h, w]) => [h, w / Math.pow(Math.max(1, syl(lang.lexicon[h].form)), 1.3)] as [string, number]);
+  const pool = spec.mods.filter((m) => lang.lexicon[m]);
+  const gen = (): Draft | null => {
+    const head = heads.length ? weightedConcept(rng, heads) : spec.heads[0][0];
+    const plural = !!spec.plural && rng.chance(0.55);
+    const headPieces = (): Piece[] => (plural ? withAffix(lang, [croot(lang, head)], "pl") : [croot(lang, head)]);
+    // a range is "the Snow Mountains" in English whether or not the native name marks the plural
+    const headEn = spec.plural ? titleCase(englishPlural(head)) : en(head);
     if (rng.chance(spec.opaque ?? 0.1) && given.length === 0) {
       // ancient, opaque names (hydronyms especially)
-      const form = generateWord(lang.phonology, rng, kind === "river" ? rng.int(1, 2) : rng.int(2, 3));
-      const pc: Piece = { form, gloss: "", role: "root" };
-      if (rng.chance(0.35)) return makeName(lang, kind, [cmp(lang, [pc], headPieces())], "");
-      return makeName(lang, kind, [[pc]], "");
+      const pc: Piece = { form: opaqueForm(lang, rng, kind === "river" ? [0.45, 0.45, 0.1] : [0.25, 0.6, 0.15]), gloss: "", role: "root" };
+      if (rng.chance(0.35)) return draft(lang, kind, [cmp(lang, [pc], headPieces())], "");
+      return draft(lang, kind, [[pc]], "");
     }
-    if (kind === "river" && rng.chance(0.08) && given.length === 0) return makeName(lang, kind, [[root(lang, head)]], en(head));
-    const pool = spec.mods.filter((m) => lang.lexicon[m]);
-    const mod = given.length && rng.chance(0.8) ? rng.pick(given) : rng.pick(pool.length ? pool : ["great"]);
+    if (kind === "river" && rng.chance(0.08) && given.length === 0) return draft(lang, kind, [[root(lang, head)]], en(head));
+    const mod = given.length && rng.chance(0.8) ? rng.pick(given) : pool.length ? shortest(lang, rng, pool, 2) : "great";
     if (!lang.lexicon[mod]) return null;
-    const hp = headPieces();
-    const plural = !!spec.plural;
-    const gloss = `${en(mod)} ${headEn(plural)}`;
-    if (isAdj(mod) && rng.chance(lang.naming.phrasal * 0.8)) return makeName(lang, kind, adjPhrase(lang, [root(lang, mod)], hp), gloss);
-    return makeName(lang, kind, [cmp(lang, [root(lang, mod)], hp)], gloss);
+    const gloss = `${en(mod)} ${headEn}`;
+    if (isAdj(mod) && rng.chance(lang.naming.phrasal * 0.8)) return draft(lang, kind, adjPhrase(lang, [root(lang, mod)], plural ? withAffix(lang, [root(lang, head)], "pl") : [root(lang, head)]), gloss);
+    return draft(lang, kind, [cmp(lang, [croot(lang, mod)], headPieces())], gloss);
   };
-  return choose(lang, rng, opts, gen, 13);
+  return choose(lang, rng, opts, gen, LEN_FEATURE);
 }
 
 // ---------------------------------------------------------------------------
@@ -652,13 +776,13 @@ const ARTICLE_DOMAINS = new Set(["sun", "moon", "sea", "sky", "storm", "earth", 
 
 const DOMAIN_ADJ: Record<string, string[]> = {
   sun: ["bright", "golden", "high", "great", "white"],
-  moon: ["silent", "white", "pale" as string, "cold", "silver" as string].filter((x) => CONCEPT_BY_ID[x]),
+  moon: ["silent", "white", "cold"],
   sky: ["high", "bright", "blue", "great", "eternal"],
   storm: ["fierce", "black", "wild", "great"],
   thunder: ["fierce", "great", "red"],
   sea: ["deep.adj", "dark", "wild", "eternal", "great", "grey"],
   war: ["red", "fierce", "bold", "black", "strong"],
-  death: ["dark", "silent", "cold", "black", "pale" as string].filter((x) => CONCEPT_BY_ID[x]),
+  death: ["dark", "silent", "cold", "black"],
   fire: ["red", "bright", "fierce", "golden"],
   earth: ["old", "black", "rich", "deep.adj", "green"],
   night: ["dark", "black", "silent", "cold"],
@@ -683,36 +807,37 @@ export interface DeityOptions extends NameOptions {
 export function nameDeity(lang: Language, rng: Rng, o: DeityOptions = {}): Name {
   const domain = o.domain && lang.lexicon[o.domain] ? o.domain : rng.pick(["sun", "moon", "sky", "storm", "sea", "war", "death", "fire", "earth", "night", "dawn", "harvest"]);
   const fem = o.gender === "f";
-  const gen = (): Name | null => {
+  const D = "deity" as const;
+  const femSuffix = fem && lang.naming.femaleMarking === "suffix";
+  const gen = (): Draft | null => {
     const r = rng.next();
     const dEn = titleCase(en(domain));
     const ofDomain = ARTICLE_DOMAINS.has(domain) ? `the ${dEn}` : dEn;
-    if (r < 0.35) {
+    if (r < 0.3) {
       const title = fem ? rng.pick(["lady", "queen", "mother"]) : rng.pick(["lord", "king", "father"]);
       const t = lang.lexicon[title] ? title : fem ? "goddess" : "god";
       const g = `${titleCase(en(t))} of ${ofDomain}`;
-      if (rng.chance(0.5)) return makeName(lang, "deity", [cmp(lang, [root(lang, domain)], [root(lang, t)])], g);
-      return makeName(lang, "deity", genitive(lang, [root(lang, t)], [root(lang, domain)]), g);
+      if (rng.chance(0.6)) return draft(lang, D, [cmp(lang, [croot(lang, domain)], [croot(lang, t)])], g);
+      return draft(lang, D, genitive(lang, [root(lang, t)], [root(lang, domain)]), g);
     }
-    if (r < 0.55 && DOMAIN_VERB[domain] && lang.lexicon[DOMAIN_VERB[domain][0]]) {
+    if (r < 0.48 && DOMAIN_VERB[domain] && lang.lexicon[DOMAIN_VERB[domain][0]]) {
       const [v, ing] = DOMAIN_VERB[domain];
-      let pcs = withAffix(lang, [root(lang, v)], "agent");
-      if (fem && lang.naming.femaleMarking === "suffix") pcs = withAffix(lang, pcs, "fem");
-      return makeName(lang, "deity", [pcs], `the ${ing} One`);
+      let pcs = withAffix(lang, [croot(lang, v)], "agent");
+      if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+      return draft(lang, D, [pcs], `the ${ing} One`);
     }
-    if (r < 0.7) {
-      const adj = rng.pick(DOMAIN_ADJ[domain] ?? ["holy", "great", "old", "high", "eternal"]);
-      let pcs = cmp(lang, [root(lang, adj)], [root(lang, domain)]);
-      if (fem && lang.naming.femaleMarking === "suffix") pcs = withAffix(lang, pcs, "fem");
-      return makeName(lang, "deity", [pcs], `${en(adj)} ${en(domain)}`);
+    if (r < 0.64) {
+      const adj = shortest(lang, rng, DOMAIN_ADJ[domain] ?? ["holy", "great", "old", "high", "eternal"], 2);
+      let pcs = cmp(lang, [croot(lang, adj)], [croot(lang, domain)]);
+      if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+      return draft(lang, D, [pcs], `${en(adj)} ${en(domain)}`);
     }
-    // opaque theonym
-    const form = generateWord(lang.phonology, rng, rng.int(2, 3));
-    let pcs: Piece[] = [{ form, gloss: "", role: "root" }];
-    if (fem && lang.naming.femaleMarking === "suffix") pcs = withAffix(lang, pcs, "fem");
-    return makeName(lang, "deity", [pcs], "");
+    // opaque theonym (most of the great gods' names are)
+    let pcs: Piece[] = [{ form: opaqueForm(lang, rng, [0.2, 0.6, 0.2]), gloss: "", role: "root" }];
+    if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+    return draft(lang, D, [pcs], "");
   };
-  const n = choose(lang, rng, o, gen, 11);
+  const n = choose(lang, rng, o, gen, LEN_SHORT);
   n.meta = { ...(n.meta ?? {}), domain, gender: fem ? "f" : "m" };
   return n;
 }
@@ -725,20 +850,21 @@ export interface ReligionOptions extends NameOptions {
 }
 
 export function nameReligion(lang: Language, rng: Rng, o: ReligionOptions = {}): Name {
-  const gen = (): Name | null => {
-    const head = rng.pick(["way", "law", "faith", "truth", "word", "path"]);
+  const F = "religion" as const;
+  const gen = (): Draft | null => {
+    const head = shortest(lang, rng, ["way", "law", "faith", "truth", "word", "path"], 2);
     const target = o.deity && rng.chance(0.6) ? localize(lang, o.deity) : o.founder && rng.chance(0.5) ? localize(lang, o.founder) : null;
     if (target) {
       const given = target.kind === "person" || target.words.length <= 1 ? coreOf(target).roman : target.roman;
       if (rng.chance(0.3) && target.words.length <= 1 && lang.morphology.affixes.abstract?.form.length)
-        return makeName(lang, "religion", [withAffix(lang, [namePiece(target, given)], "abstract")], `Teaching of ${given}`);
-      return makeName(lang, "religion", genitive(lang, [root(lang, head)], phrasePieces(target)), `the ${en(head)} of ${given}`);
+        return draft(lang, F, [withAffix(lang, [namePiece(target, given)], "abstract")], `Teaching of ${given}`);
+      return draft(lang, F, genitive(lang, [root(lang, head)], phrasePieces(target)), `the ${en(head)} of ${given}`);
     }
-    const c = o.concept && lang.lexicon[o.concept] ? o.concept : rng.pick(["light", "sun", "fire", "truth", "star", "moon", "sky", "peace", "blood", "water", "stone", "dawn", "wisdom"]);
-    if (rng.chance(0.5)) return makeName(lang, "religion", genitive(lang, [root(lang, head)], [root(lang, c)]), `the ${en(head)} of ${isMass(c) || c === "truth" ? "" : "the "}${en(c)}`);
-    return makeName(lang, "religion", [cmp(lang, [root(lang, c)], [root(lang, head)])], `${en(c)} ${en(head)}`);
+    const c = o.concept && lang.lexicon[o.concept] ? o.concept : shortest(lang, rng, ["light", "sun", "fire", "truth", "star", "moon", "sky", "peace", "blood", "water", "stone", "dawn", "wisdom"]);
+    if (rng.chance(0.5)) return draft(lang, F, genitive(lang, [root(lang, head)], [root(lang, c)]), `the ${en(head)} of ${isMass(c) || c === "truth" ? "" : "the "}${en(c)}`);
+    return draft(lang, F, [cmp(lang, [croot(lang, c)], [croot(lang, head)])], `${en(c)} ${en(head)}`);
   };
-  return choose(lang, rng, o, gen, 14);
+  return choose(lang, rng, o, gen, LEN_LONG);
 }
 
 export interface DynastyOptions extends NameOptions {
@@ -747,16 +873,17 @@ export interface DynastyOptions extends NameOptions {
 }
 
 export function nameDynasty(lang: Language, rng: Rng, o: DynastyOptions = {}): Name {
-  const gen = (): Name | null => {
+  const Y = "dynasty" as const;
+  const gen = (): Draft | null => {
     const useFounder = o.founder && (!o.seat || rng.chance(0.65));
     const src = useFounder ? localize(lang, o.founder!) : o.seat ? localize(lang, o.seat) : null;
     const label = src ? coreOf(src).roman : "";
-    const sp: Piece = src ? namePiece(src, label) : { form: generateWord(lang.phonology, rng, 2), gloss: "", role: "root" };
+    const sp: Piece = src ? namePiece(src, label) : { form: opaqueForm(lang, rng), gloss: "", role: "root" };
     if (lang.naming.dynastyStyle === "suffix" && lang.morphology.affixes.dynasty?.form.length && useFounder !== false)
-      return makeName(lang, "dynasty", [withAffix(lang, [sp], "dynasty")], label ? `Kin of ${label}` : "");
-    return makeName(lang, "dynasty", genitive(lang, [root(lang, "house")], [sp]), label ? `House of ${label}` : "");
+      return draft(lang, Y, [withAffix(lang, [sp], "dynasty")], label ? `Kin of ${label}` : "");
+    return draft(lang, Y, genitive(lang, [root(lang, "house")], [sp]), label ? `House of ${label}` : "");
   };
-  return choose(lang, rng, o, gen, 14);
+  return choose(lang, rng, o, gen, LEN_LONG);
 }
 
 // ---------------------------------------------------------------------------
@@ -783,53 +910,91 @@ const NOT_A_NAME = new Set(["people", "home", "hand", "arm", "heart", "will", "c
 const EPITHET_ADJ = ["bold", "old", "young", "great", "fair", "wise", "strong", "fierce", "holy", "black", "red", "white", "swift", "proud", "good", "silent", "gentle", "golden", "dark", "lonely", "evil", "free"];
 const EPITHET_AGENT = ["conquer", "build", "hunt", "sail.v", "guard", "wander", "sing"];
 
-function givenName(lang: Language, rng: Rng, fem: boolean): Name {
+/** Append the culture's male ending (-us, -o) unless it would put two vowels together. */
+function withMaleEnding(lang: Language, pcs: Piece[]): Piece[] {
+  const e = lang.naming.maleEnding;
+  if (!e?.length) return pcs;
+  const last = pcs[pcs.length - 1].form;
+  if (isVowel(last[last.length - 1] ?? "") && isVowel(e[0])) return pcs;
+  return [...pcs, { form: e, gloss: "", role: "link" }];
+}
+
+function givenName(lang: Language, rng: Rng, fem: boolean): Draft {
   const nc = lang.naming;
   const femSuffix = fem && nc.femaleMarking === "suffix";
   const els = nc.firstElements.filter((e) => lang.lexicon[e]);
   const seconds = (fem && nc.femaleMarking === "elements" ? nc.femaleElements : nc.secondElements).filter((e) => lang.lexicon[e]);
-  const gen = (): Name => {
-    const style = nc.personStyle;
-    const r = rng.next();
-    if (style === "opaque" || r < 0.12) {
-      const form = generateWord(lang.phonology, rng, rng.int(nc.maleEnding && !fem ? 1 : 2, 2), { openFinal: femSuffix });
-      let pcs: Piece[] = [{ form, gloss: "", role: "root" }];
-      if (femSuffix) pcs = withAffix(lang, pcs, "fem");
-      else if (!fem && nc.maleEnding?.length && rng.chance(0.8)) pcs = [...pcs, { form: nc.maleEnding, gloss: "", role: "link" }];
-      return makeName(lang, "person", [pcs], "");
-    }
-    if (style === "dithematic" && seconds.length && els.length) {
-      let a = rng.pick(els);
-      let b = rng.pick(seconds);
-      if (a === b) a = rng.pick(els);
-      let pcs = cmp(lang, [root(lang, a)], [root(lang, b)]);
-      if (femSuffix) pcs = withAffix(lang, pcs, "fem");
-      return makeName(lang, "person", [pcs], `${titleCase(en(a))}-${titleCase(en(b))}`);
-    }
-    if (style === "descriptive") {
-      // "Swift Deer", "White Dove": a quality and a living or natural thing
-      const adj = rng.pick(fem ? ["bright", "white", "fair", "golden", "gentle", "sweet", "swift", "red", "silent"] : ["swift", "bright", "red", "white", "black", "strong", "wise", "bold", "high", "golden", "dark", "free", "fierce", "lonely"]);
-      const pool = (fem ? DESCRIPTIVE_F : DESCRIPTIVE_M).filter((x) => lang.lexicon[x]);
-      const noun = rng.pick(pool.length ? pool : ["wolf"]);
-      let pcs = cmp(lang, [root(lang, adj)], [root(lang, noun)]);
-      if (femSuffix) pcs = withAffix(lang, pcs, "fem");
-      return makeName(lang, "person", [pcs], `${en(adj)} ${en(noun)}`);
-    }
-    // monothematic: one element, perhaps a hypocoristic suffix
-    const pool0 = (fem && nc.femaleMarking === "elements" ? nc.femaleElements : els).filter((x) => lang.lexicon[x] && !NOT_A_NAME.has(x));
-    const pool = pool0.length ? pool0 : ["wolf"];
-    const a = rng.pick(pool);
-    let pcs: Piece[] = [root(lang, a)];
-    let gloss = en(a);
-    if (rng.chance(0.15)) {
-      pcs = withAffix(lang, pcs, "dim");
-      gloss = `Little ${gloss}`;
-    }
+  const P = "person" as const;
+  const style = nc.personStyle;
+  const r = rng.next();
+  if (style === "opaque" || r < 0.12) {
+    const form = generateWord(lang.phonology, rng, rng.int(nc.maleEnding && !fem ? 1 : 2, 2), { openFinal: femSuffix });
+    let pcs: Piece[] = [{ form, gloss: "", role: "root" }];
     if (femSuffix) pcs = withAffix(lang, pcs, "fem");
-    else if (!fem && nc.maleEnding?.length && rng.chance(0.8)) pcs = [...pcs, { form: nc.maleEnding, gloss: "", role: "link" }];
-    return makeName(lang, "person", [pcs], gloss);
-  };
-  return gen();
+    else if (!fem && rng.chance(0.8)) pcs = withMaleEnding(lang, pcs);
+    return draft(lang, P, [pcs], "");
+  }
+  if (style === "dithematic" && seconds.length && els.length) {
+    let a = preferShort(lang, rng, els);
+    const b = preferShort(lang, rng, seconds);
+    if (a === b) a = rng.pick(els);
+    let pcs = cmp(lang, [croot(lang, a)], [croot(lang, b)]);
+    if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+    return draft(lang, P, [pcs], `${titleCase(en(a))}-${titleCase(en(b))}`);
+  }
+  if (style === "descriptive") {
+    // "Swift Deer", "White Dove": a quality and a living or natural thing
+    // the culture's own favourite qualities, so each people's descriptive names have their own flavour
+    const base = fem ? ["bright", "white", "fair", "golden", "gentle", "sweet", "swift", "red", "silent"] : ["swift", "bright", "red", "white", "black", "strong", "wise", "bold", "high", "golden", "dark", "free", "fierce", "lonely"];
+    const own = els.filter((e) => isAdj(e) && e !== "beloved" && (!fem || base.includes(e) || has(e, "fem")));
+    const adjs = [...new Set([...own, ...base])].filter((x) => lang.lexicon[x]);
+    const adj = adjs[rng.weightedIndex(adjs.map((x) => (own.includes(x) ? 2 : 1) / Math.pow(Math.max(1, syl(lang.lexicon[x].form)), 0.3)))];
+    const pool = (fem ? DESCRIPTIVE_F : DESCRIPTIVE_M).filter((x) => lang.lexicon[x]);
+    const noun = pool.length ? preferShort(lang, rng, pool) : "wolf";
+    let pcs = cmp(lang, [croot(lang, adj)], [croot(lang, noun)]);
+    if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+    return draft(lang, P, [pcs], `${en(adj)} ${en(noun)}`);
+  }
+  // monothematic: one element, perhaps a hypocoristic suffix
+  const pool0 = (fem && nc.femaleMarking === "elements" ? nc.femaleElements : els).filter((x) => lang.lexicon[x] && !NOT_A_NAME.has(x));
+  const pool = pool0.length ? pool0 : ["wolf"];
+  const a = rng.pick(pool);
+  let pcs: Piece[] = [root(lang, a)];
+  let gloss = en(a);
+  if (rng.chance(0.15)) {
+    pcs = withAffix(lang, [croot(lang, a)], "dim");
+    gloss = `Little ${gloss}`;
+  }
+  if (femSuffix) pcs = withAffix(lang, pcs, "fem");
+  else if (!fem && rng.chance(0.8)) pcs = withMaleEnding(lang, pcs);
+  return draft(lang, P, [pcs], gloss);
+}
+
+/** Cumulative Zipf weights 1/(i+1)^0.85, shared by all name pools. */
+const ZIPF_CUM: number[] = [];
+function zipfPick(rng: Rng, n: number): number {
+  for (let i = ZIPF_CUM.length; i < n; i++) ZIPF_CUM.push((ZIPF_CUM[i - 1] ?? 0) + 1 / Math.pow(i + 1, 0.85));
+  const r = rng.next() * ZIPF_CUM[n - 1];
+  let lo = 0;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ZIPF_CUM[mid] > r) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** Spellings already in a language's name pools (cached per pool; pools stay plain JSON). */
+const POOL_TAKEN = new WeakMap<{ m: Name[]; f: Name[] }, { n: number; set: Set<string> }>();
+function poolTaken(pool: { m: Name[]; f: Name[] }): Set<string> {
+  let c = POOL_TAKEN.get(pool);
+  const n = pool.m.length + pool.f.length;
+  if (!c || c.n !== n) {
+    c = { n, set: new Set([...pool.m, ...pool.f].map((x) => x.roman.toLowerCase())) };
+    POOL_TAKEN.set(pool, c);
+  }
+  return c.set;
 }
 
 /** A personal name, drawn from (or added to) the language's name pool. */
@@ -841,25 +1006,35 @@ export function namePerson(lang: Language, rng: Rng, o: PersonOptions = {}): Nam
   let given: Name | null = null;
   if (!o.fresh && list.length >= 6 && rng.chance(lang.naming.reuse)) {
     // Zipfian popularity: early names in the pool are the common ones.
-    const weights = list.map((_, i) => 1 / Math.pow(i + 1, 0.85));
-    given = list[rng.weightedIndex(weights)];
+    given = list[zipfPick(rng, list.length)];
   }
   if (!given) {
-    const taken = new Set([...pool.m, ...pool.f].map((n) => n.roman.toLowerCase()));
-    let best: Name | null = null;
+    const taken = poolTaken(pool);
+    let best: Draft | null = null;
     let bestScore = Infinity;
+    // two-element names (Wulf-gar, Swift-Deer) are naturally longer than one-element ones
+    const len: Len = lang.naming.personStyle === "dithematic" || lang.naming.personStyle === "descriptive" ? [3, 4] : [2, 3];
     for (let t = 0; t < 8; t++) {
-      const n = givenName(lang, rng, fem);
-      if (taken.has(n.roman.toLowerCase())) continue;
-      const s = ugliness(n.roman) + lengthPenalty(n, 9);
-      if (s < bestScore) {
-        best = n;
-        bestScore = s;
+      const d = givenName(lang, rng, fem);
+      if (taken.has(d.roman.toLowerCase()) || offensive(d.roman)) continue;
+      const s = score(d, len);
+      if (s < 0.6) {
+        best = d;
+        break;
       }
-      if (s < 0.5) break;
+      const ranked = s + (d.gloss ? 0 : 0.6);
+      if (ranked < bestScore) {
+        best = d;
+        bestScore = ranked;
+      }
     }
-    given = best ?? givenName(lang, rng, fem);
+    given = finalize(lang, best ?? givenName(lang, rng, fem));
     list.push(given);
+    const cache = POOL_TAKEN.get(pool);
+    if (cache) {
+      cache.set.add(given.roman.toLowerCase());
+      cache.n++;
+    }
   }
   const g = given;
   const words: Piece[][] = [[{ form: g.words[0], gloss: g.gloss || g.roman, role: "name" }]];
@@ -888,9 +1063,9 @@ export function namePerson(lang: Language, rng: Rng, o: PersonOptions = {}): Nam
   if (o.epithet === true || typeof o.epithet === "string") {
     const e = typeof o.epithet === "string" && lang.lexicon[o.epithet] ? o.epithet : rng.chance(0.75) ? rng.pick(EPITHET_ADJ) : rng.pick(EPITHET_AGENT);
     const verb = CONCEPT_BY_ID[e]?.pos === "v";
-    const pcs = verb ? withAffix(lang, [root(lang, e)], "agent") : [root(lang, e)];
+    const pcs = verb ? withAffix(lang, [croot(lang, e)], "agent") : [root(lang, e)];
     const epWords = lang.morphology.articles ? withParticle(lang, pcs, "def") : [pcs];
-    if (lang.morphology.adjOrder === "AN" && !verb && rng.chance(0.5)) {
+    if (lang.morphology.adjOrder === "AN" && !verb && rng.chance(0.2)) {
       words.unshift(...epWords);
       givenIdx += epWords.length;
     } else words.push(...epWords);
@@ -917,7 +1092,7 @@ export function namePerson(lang: Language, rng: Rng, o: PersonOptions = {}): Nam
 export function epithetFor(lang: Language, rng: Rng, concept?: string): Name {
   const e = concept && lang.lexicon[concept] ? concept : rng.pick(EPITHET_ADJ);
   const verb = CONCEPT_BY_ID[e]?.pos === "v";
-  const pcs = verb ? withAffix(lang, [root(lang, e)], "agent") : [root(lang, e)];
+  const pcs = verb ? withAffix(lang, [croot(lang, e)], "agent") : [root(lang, e)];
   const epWords = lang.morphology.articles ? withParticle(lang, pcs, "def") : [pcs];
   return makeName(lang, "other", epWords, `the ${verb ? englishAgent(e) : en(e)}`);
 }
@@ -932,12 +1107,12 @@ export function nameTitle(lang: Language, role: string): Name {
     ruler: () => [[[root(lang, "king")]], "King"],
     emperor: () =>
       lang.morphology.affixes.aug?.form.length
-        ? [[withAffix(lang, [root(lang, "king")], "aug")], "Great King"]
-        : [[cmp(lang, [root(lang, "great")], [root(lang, "king")])], "Great King"],
+        ? [[withAffix(lang, [croot(lang, "king")], "aug")], "Great King"]
+        : [[cmp(lang, [croot(lang, "great")], [croot(lang, "king")])], "Great King"],
     chief: () => [[[root(lang, "chief")]], "Chief"],
     priest: () => [[[root(lang, "priest")]], "Priest"],
     noble: () => [[[root(lang, "lord")]], "Lord"],
-    general: () => [[cmp(lang, [root(lang, "war")], [root(lang, "lord")])], "War-Lord"],
+    general: () => [[cmp(lang, [croot(lang, "war")], [croot(lang, "lord")])], "War-Lord"],
   };
   const f = map[role];
   if (f) {
@@ -966,8 +1141,9 @@ export function hyphenated(name: Name): string {
   const words: string[] = [];
   for (const [, ps] of [...byWord.entries()].sort((a, b) => a[0] - b[0])) {
     let s = "";
+    // linking material goes with the preceding morpheme: Wulfa-gar, Szyju-kam
     ps.forEach((p, i) => {
-      if (i > 0 && p.role !== "link" && ps[i - 1].role !== "link") s += "-";
+      if (i > 0 && p.role !== "link") s += "-";
       s += p.roman;
     });
     words.push(s.charAt(0).toUpperCase() + s.slice(1));

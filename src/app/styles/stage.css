@@ -1,0 +1,630 @@
+/* The globe stage: always a night sky, in both themes. */
+.stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 50% 46%, rgba(40, 62, 110, 0.32), transparent 62%),
+    radial-gradient(ellipse at 20% 90%, rgba(70, 40, 90, 0.18), transparent 50%),
+    var(--sky);
+  container-type: size;
+  box-shadow: var(--stage-frame);
+  color: var(--on-sky);
+  isolation: isolate;
+}
+
+.stage-stars,
+.globe-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.stage-stars {
+  transition: opacity 1.2s var(--ease);
+}
+
+.globe-canvas {
+  opacity: 0;
+  transition: opacity 1.4s var(--ease);
+  touch-action: none;
+  cursor: grab;
+}
+
+.globe-canvas:active {
+  cursor: grabbing;
+}
+
+.stage .globe-labels {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 1.4s var(--ease);
+}
+
+.stage.is-ready .globe-canvas,
+.stage.is-ready .globe-labels {
+  opacity: 1;
+}
+
+.stage.is-ready .stage-stars {
+  opacity: 0;
+}
+
+.globe-canvas:focus-visible {
+  outline: 2px solid var(--sky-gilt);
+  outline-offset: -4px;
+}
+
+/* Placeholder planet: a dim, condensing sphere before textures arrive. */
+.proto-planet {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 80cqmin;
+  height: 80cqmin;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  transition: opacity 1.4s var(--ease), transform 1.4s var(--ease);
+}
+
+.proto-planet::before {
+  /* atmosphere halo */
+  content: "";
+  position: absolute;
+  inset: -6%;
+  border-radius: 50%;
+  background: radial-gradient(circle, transparent 60%, rgba(110, 160, 230, 0.16) 66%, rgba(110, 160, 230, 0.05) 72%, transparent 76%);
+}
+
+.proto-planet-body {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 34% 30%, rgba(160, 200, 240, 0.22), transparent 42%),
+    radial-gradient(circle at 70% 75%, rgba(0, 0, 0, 0.6), transparent 60%),
+    radial-gradient(circle at 50% 50%, #1a3554 0%, #10233c 55%, #08111f 100%);
+  box-shadow: inset -18px -24px 60px rgba(0, 0, 0, 0.55), inset 8px 10px 30px rgba(140, 180, 230, 0.12);
+}
+
+.proto-planet-body::after {
+  /* slowly drifting proto-continents */
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(ellipse 18% 12% at 30% 40%, rgba(120, 110, 80, 0.32), transparent 70%),
+    radial-gradient(ellipse 14% 20% at 62% 58%, rgba(120, 105, 70, 0.26), transparent 70%),
+    radial-gradient(ellipse 22% 9% at 48% 24%, rgba(140, 150, 120, 0.2), transparent 70%),
+    radial-gradient(ellipse 10% 14% at 76% 34%, rgba(110, 100, 70, 0.22), transparent 70%),
+    radial-gradient(ellipse 30% 6% at 40% 70%, rgba(230, 240, 255, 0.07), transparent 70%);
+  filter: blur(6px);
+  animation: proto-drift 26s linear infinite;
+  opacity: 0.9;
+}
+
+@keyframes proto-drift {
+  from {
+    transform: translateX(-8%);
+  }
+  to {
+    transform: translateX(8%);
+  }
+}
+
+.stage.is-ready .proto-planet {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(1.02);
+}
+
+.stage-note {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  transform: translateX(-50%);
+  max-width: min(440px, 86%);
+  padding: 12px 16px;
+  background: var(--sky-glass-2);
+  border: 1px solid var(--sky-rule);
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--on-sky-2);
+  text-align: center;
+}
+
+.stage-note strong {
+  color: var(--on-sky);
+  font-family: var(--f-display);
+  font-weight: 400;
+  font-size: 18px;
+}
+
+/* ---------------------------------------------------------------- layer rail */
+.layer-rail {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  background: var(--sky-glass);
+  border: 1px solid var(--sky-rule);
+  border-radius: 6px;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--sky-shadow);
+  transition: opacity var(--t-med);
+}
+
+.stage.is-genesis .layer-rail {
+  opacity: 0.35;
+}
+
+.stage.is-genesis .layer-rail:hover,
+.stage.is-genesis .layer-rail:focus-within {
+  opacity: 1;
+}
+
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rail-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 5px 6px;
+  border-radius: 3px;
+  font-family: var(--f-ui-sc);
+  font-size: 13.5px;
+  letter-spacing: 0.05em;
+  color: var(--on-sky-2);
+  text-align: left;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.rail-btn:hover:not(:disabled) {
+  color: var(--on-sky);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.rail-btn.is-on {
+  color: var(--sky-gilt);
+}
+
+.rail-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(236, 227, 205, 0.4);
+  flex: none;
+}
+
+.rail-btn.is-on .rail-swatch {
+  border-color: var(--sky-gilt);
+  box-shadow: 0 0 0 2px rgba(224, 189, 116, 0.25);
+}
+
+.rail-swatch[data-layer="terrain"] {
+  background: conic-gradient(#5e7f4e 0 30%, #a89068 0 55%, #2f5b80 0 100%);
+}
+.rail-swatch[data-layer="realms"] {
+  background: conic-gradient(#b35f45 0 33%, #4f7aa6 0 66%, #c9a14a 0 100%);
+}
+.rail-swatch[data-layer="peoples"] {
+  background: conic-gradient(#8a6aa8 0 40%, #6a9a6e 0 100%);
+}
+.rail-swatch[data-layer="tongues"] {
+  background: conic-gradient(#3f8f8c 0 50%, #a9744a 0 100%);
+}
+.rail-swatch[data-layer="faiths"] {
+  background: conic-gradient(#d9c27a 0 50%, #6b84b8 0 100%);
+}
+.rail-swatch[data-layer="population"] {
+  background: radial-gradient(circle, #8c2826 0, #e2a052 55%, #ecd696 100%);
+}
+
+.rail-sep {
+  height: 1px;
+  margin: 6px 6px;
+  background: var(--sky-rule);
+}
+
+.rail-check {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px 3px 6px;
+  font-family: var(--f-ui-sc);
+  font-size: 12.5px;
+  letter-spacing: 0.05em;
+  color: var(--on-sky-2);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.rail-check:hover {
+  color: var(--on-sky);
+}
+
+.rail-check input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.rail-tick {
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(236, 227, 205, 0.45);
+  border-radius: 2px;
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+
+.rail-check input:checked + .rail-tick {
+  border-color: var(--sky-gilt);
+  background: linear-gradient(var(--sky-gilt), var(--sky-gilt)) center / 6px 6px no-repeat;
+}
+
+.rail-check input:focus-visible + .rail-tick {
+  outline: 2px solid var(--sky-gilt);
+  outline-offset: 2px;
+}
+
+.rail-check input:disabled + .rail-tick {
+  opacity: 0.4;
+}
+
+/* ---------------------------------------------------------------- legend */
+.legend {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 3;
+  min-width: 200px;
+  max-width: min(300px, 60%);
+  padding: 9px 12px 10px;
+  background: var(--sky-glass);
+  border: 1px solid var(--sky-rule);
+  border-radius: 6px;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--sky-shadow);
+  color: var(--on-sky-2);
+  font-size: 13px;
+}
+
+.stage.is-genesis .legend {
+  display: none;
+}
+
+.legend-head {
+  font-family: var(--f-ui-sc);
+  letter-spacing: 0.06em;
+  color: var(--sky-gilt);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.legend-year {
+  color: var(--on-sky-3);
+}
+
+.legend-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.legend-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+  text-align: left;
+  color: var(--on-sky-2);
+}
+
+.legend-row:hover {
+  color: var(--on-sky);
+}
+
+.legend-sw {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.legend-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend-share {
+  color: var(--on-sky-3);
+  font-size: 12px;
+}
+
+.legend-ramp {
+  height: 8px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #ecd696, #e2a052, #c45c34, #8c2826, #54121e);
+  margin: 6px 0 2px;
+}
+
+.legend-ramp-labels {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--f-ui-sc);
+  font-size: 11.5px;
+  color: var(--on-sky-3);
+}
+
+.legend-stat {
+  margin-top: 4px;
+}
+
+/* ---------------------------------------------------------------- tooltip */
+.globe-tip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 6;
+  max-width: 320px;
+  padding: 7px 10px 8px;
+  background: var(--sky-glass-2);
+  border: 1px solid var(--sky-rule);
+  border-radius: 4px;
+  pointer-events: none;
+  box-shadow: var(--sky-shadow);
+}
+
+.globe-tip-title {
+  font-family: var(--f-display);
+  font-size: 17px;
+  line-height: 1.15;
+  color: var(--on-sky);
+}
+
+.globe-tip-sub {
+  font-size: 12.5px;
+  color: var(--on-sky-3);
+  margin-top: 2px;
+}
+
+/* ---------------------------------------------------------------- genesis */
+.stage::after {
+  /* a dusk at the foot of the stage so genesis captions read over bright land */
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 42%;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, rgba(3, 5, 10, 0.55) 45%, rgba(3, 5, 10, 0.88));
+  opacity: 0;
+  transition: opacity 1s var(--ease);
+}
+
+.stage.is-genesis::after {
+  opacity: 1;
+}
+
+.genesis {
+  position: absolute;
+  left: 50%;
+  bottom: 7%;
+  z-index: 4;
+  width: min(560px, 92%);
+  transform: translateX(-50%);
+  text-align: center;
+  color: var(--on-sky);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 18px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+
+.genesis > * {
+  pointer-events: auto;
+}
+
+.genesis-world {
+  font-family: var(--f-display-sc);
+  font-size: 26px;
+  letter-spacing: 0.22em;
+  color: var(--sky-gilt);
+  padding-left: 0.22em;
+}
+
+.genesis-rule {
+  position: relative;
+  width: 220px;
+  height: 1px;
+  margin: 8px auto 10px;
+  background: rgba(224, 189, 116, 0.25);
+}
+
+.genesis-rule span {
+  position: absolute;
+  inset: 0;
+  background: var(--sky-gilt);
+  transform-origin: left center;
+  transition: transform 0.4s var(--ease);
+}
+
+.genesis-caption {
+  margin: 0;
+  font-family: var(--f-ui-sc);
+  font-size: 17px;
+  letter-spacing: 0.14em;
+  color: var(--on-sky);
+  animation: caption-in 0.9s var(--ease);
+}
+
+@keyframes caption-in {
+  from {
+    opacity: 0.4;
+    transform: translateY(3px);
+    letter-spacing: 0.2em;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.genesis-year {
+  font-family: var(--f-display);
+  font-size: 44px;
+  line-height: 1;
+  color: var(--on-sky);
+}
+
+.genesis-year-label {
+  font-family: var(--f-display-sc);
+  font-size: 18px;
+  letter-spacing: 0.18em;
+  color: var(--on-sky-2);
+  vertical-align: 0.5em;
+}
+
+.genesis-age {
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: 18px;
+  color: var(--sky-gilt);
+  min-height: 1.3em;
+  margin-top: 2px;
+}
+
+.genesis-ticker {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  min-height: 4.6em;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  font-family: var(--f-read);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.genesis-ticker li {
+  color: var(--on-sky-3);
+  transition: color 0.6s;
+}
+
+.genesis-ticker li.is-new {
+  color: var(--on-sky);
+  animation: tick-in 0.7s var(--ease);
+}
+
+.genesis-ticker .num {
+  font-family: var(--f-ui);
+  color: var(--sky-gilt);
+  margin-right: 4px;
+}
+
+@keyframes tick-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.genesis-skip {
+  margin-top: 12px;
+  padding: 6px 14px 7px;
+  border: 1px solid rgba(224, 189, 116, 0.5);
+  border-radius: 999px;
+  background: rgba(9, 13, 24, 0.55);
+  font-family: var(--f-ui-sc);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  color: var(--sky-gilt);
+  text-shadow: none;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.genesis-skip:hover:not(:disabled) {
+  background: rgba(224, 189, 116, 0.16);
+  color: var(--on-sky);
+}
+
+.genesis.is-error .genesis-caption {
+  color: #e6a184;
+}
+
+.genesis-error {
+  font-size: 13px;
+  color: var(--on-sky-2);
+}
+
+@media (max-width: 760px) {
+  .layer-rail {
+    display: none;
+  }
+
+  .legend {
+    left: 8px;
+    bottom: 8px;
+    min-width: 0;
+    max-width: 62%;
+    padding: 6px 9px;
+    font-size: 12px;
+  }
+
+  .legend-rows li:nth-child(n + 4) {
+    display: none;
+  }
+
+  .genesis {
+    bottom: 4%;
+  }
+
+  .genesis-world {
+    font-size: 19px;
+  }
+
+  .genesis-year {
+    font-size: 32px;
+  }
+
+  .genesis-ticker {
+    font-size: 13px;
+    min-height: 3em;
+  }
+
+  .genesis-ticker li:not(.is-new) {
+    display: none;
+  }
+}

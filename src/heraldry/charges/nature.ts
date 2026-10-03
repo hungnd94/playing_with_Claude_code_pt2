@@ -104,63 +104,48 @@ function moon(): ChargeArt {
   };
 }
 
+/** A tongue of fire along a centre line, tapering from w0 to a fine point. */
+function tongue(pts: [number, number][], w0: number): string {
+  const n = pts.length - 1;
+  return limb(pts.map(([x, y], i) => [x, y, Math.max(0.3, w0 * Math.pow(1 - i / n, 0.85))] as [number, number, number]), { start: "round", end: "flat" });
+}
+
 function flame(): ChargeArt {
-  const outer: SPt[] = [
-    [50, 97],
-    [66, 92],
-    [77, 80],
-    [80, 64],
-    [77, 50],
-    [80, 38],
-    [86, 26],
-    [84, 12, 1],
-    [77, 23],
-    [69, 31],
-    [64, 25],
-    [62, 15],
-    [56, 8],
-    [50, 1, 1],
-    [47, 12],
-    [41, 22],
-    [37, 32],
-    [33, 25],
-    [26, 18],
-    [17, 9, 1],
-    [17, 22],
-    [22, 36],
-    [21, 50],
-    [19, 64],
-    [23, 80],
-    [34, 92],
-  ];
-  const inner: SPt[] = [
-    [50, 92],
-    [61, 87],
-    [67, 76],
-    [66, 62],
-    [62, 50],
-    [64, 40, 1],
-    [56, 46],
-    [53, 32],
-    [50, 20, 1],
-    [46, 32],
-    [43, 46],
-    [36, 40, 1],
-    [37, 52],
-    [33, 64],
-    [34, 78],
-    [40, 88],
-  ];
+  // Five tongues of fire rising from a common root, the outer ones curling inward.
+  const body =
+    tongue([[50, 86], [46, 70], [53, 52], [47, 33], [51, 16], [57, 2]], 27) +
+    tongue([[42, 85], [32, 71], [34, 55], [25, 42], [23, 28], [28, 17]], 19) +
+    tongue([[58, 85], [68, 72], [66, 57], [75, 45], [77, 32], [72, 21]], 19) +
+    tongue([[37, 88], [24, 81], [18, 69], [20, 57], [16, 49]], 13) +
+    tongue([[63, 88], [76, 81], [82, 70], [80, 59], [84, 51]], 13) +
+    smooth([[28, 84], [38, 78], [50, 77], [62, 78], [72, 84], [70, 92], [60, 97], [50, 98], [40, 97], [30, 92]], true);
+  const inner = tongue([[50, 90], [47.5, 79], [51.5, 67], [48.5, 56], [50.5, 47]], 11);
   return {
     layers: [
-      { role: "body", d: smooth(outer, true) },
-      { role: "line", d: smooth(inner, true), w: 1.4 },
-      { role: "shine", d: smooth(inner, true) },
+      { role: "body", d: body },
+      { role: "line", d: "M50 86Q47 72 52 58M41 84Q34 76 33 66M59 84Q66 76 67 66", w: 1.1 },
+      { role: "shine", d: inner },
     ],
   };
 }
 
-function thunderbolt(): ChargeArt {
+/** A bold bolt of lightning, zigzagging down to a point, with a lesser fork. */
+function lightningBolt(): ChargeArt {
+  const bolt = smooth(
+    [[56, 1, 1], [83, 1, 1], [62, 37, 1], [78, 36, 1], [48, 72, 1], [58, 71, 1], [27, 99, 1], [36, 64, 1], [26, 65, 1], [39, 39, 1], [29, 40, 1]],
+    true,
+  );
+  return {
+    layers: [
+      { role: "body", d: bolt },
+      { role: "line", d: "M60 5L42 37M66 40L44 66", w: 1 },
+      { role: "shine", d: smooth([[60, 5, 1], [75, 5, 1], [52, 37, 1], [45, 37, 1]], true) },
+    ],
+  };
+}
+
+/** The classical winged thunderbolt (kept for large renderings; not used by the generator). */
+export function thunderbolt(): ChargeArt {
   // The heraldic thunderbolt: a flaming twisted bar, winged, with four forked bolts in saltire.
   let bolts = "";
   for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
@@ -336,17 +321,25 @@ function roots(x: number, y: number, spread: number, n: number, len: number, w: 
 }
 
 function tree(): ChargeArt {
-  const crownPts = crown(50, 36, 34, 30, 11, 5.5, -90 + 360 / 22);
-  const trunk = limb([[50, 54, 10], [50, 70, 11], [50, 82, 13]], { start: "flat", end: "flat" });
-  const branches =
-    limb([[50, 62, 5], [42, 52, 3.5], [36, 46, 2]], { end: "round" }) + limb([[50, 58, 5], [59, 48, 3.5], [64, 42, 2]], { end: "round" });
-  const leafLines =
-    "M30 30Q34 26 38 29M48 20Q52 16 56 19M62 30Q66 26 70 30M40 44Q44 40 48 43M56 44Q60 40 64 43M26 44Q29 41 32 43M68 44Q71 41 74 43M38 16Q41 13 44 15";
+  // A tree eradicated: a stout trunk, its roots torn up, and a crown built of
+  // clumps of foliage in three ranks, the nearer overlapping the farther.
+  const trunk = smooth([[44, 50], [45.5, 66], [43.5, 80], [40, 86, 1], [60, 86, 1], [56.5, 80], [54.5, 66], [56, 50]], true);
+  const branches = limb([[49, 62, 6], [41, 54, 4.4], [33, 49, 2.6]], { end: "round" }) + limb([[51, 60, 6], [60, 52, 4.4], [67, 48, 2.6]], { end: "round" });
+  const clumps = (list: [number, number, number][]) => list.map(([x, y, r]) => circleD(x, y, r)).join("");
+  const back = clumps([[50, 13, 12.5], [35, 19, 11], [65, 19, 11]]);
+  const mid = clumps([[23, 32, 11], [77, 32, 11], [41, 28, 12], [59, 28, 12]]);
+  const front = clumps([[30, 45, 11.5], [70, 45, 11.5], [50, 41, 12.5]]);
+  const tufts = (list: [number, number, number][]) => list.map(([x, y, r]) => `M${x - r * 0.55} ${y + r * 0.2}Q${x} ${y - r * 0.35} ${x + r * 0.55} ${y + r * 0.2}`).join("");
   return {
     layers: [
-      { role: "body", d: roots(50, 82, 26, 5, 14, 12) + trunk + branches },
-      { role: "body", d: smooth(crownPts, true) },
-      { role: "line", d: leafLines + "M47 82C48 76 47 70 48 64M53 82C52 76 53 70 52 64", w: 1.2 },
+      { role: "body", d: roots(50, 84, 27, 5, 13, 13) + trunk + branches },
+      { role: "line", d: "M47 84C48 76 47 68 48 58M53 84C52 76 53 68 52 58", w: 1.1 },
+      { role: "body", d: back },
+      { role: "line", d: tufts([[50, 13, 12.5], [35, 19, 11], [65, 19, 11]]), w: 1.1 },
+      { role: "body", d: mid },
+      { role: "line", d: tufts([[23, 32, 11], [77, 32, 11], [41, 28, 12], [59, 28, 12]]), w: 1.1 },
+      { role: "body", d: front },
+      { role: "line", d: tufts([[30, 45, 11.5], [70, 45, 11.5], [50, 41, 12.5]]), w: 1.1 },
     ],
   };
 }
@@ -539,7 +532,7 @@ export const NATURE: Partial<Record<ChargeId, ChargeDef>> = {
   sun: { name: "sun in splendour", plural: "suns in splendour", category: "celestial", symmetric: true, weight: 4, art: sun },
   moon: { name: "moon increscent", plural: "moons increscent", category: "celestial", weight: 2, art: moon },
   flame: { name: "flame", plural: "flames", category: "nature", symmetric: true, weight: 2, art: flame },
-  lightning: { name: "thunderbolt", plural: "thunderbolts", category: "nature", symmetric: true, weight: 1, art: thunderbolt },
+  lightning: { name: "bolt of lightning", plural: "bolts of lightning", category: "nature", long: true, weight: 1, art: lightningBolt },
   wave: { name: "wave of the sea", plural: "waves of the sea", category: "nature", weight: 1, art: wave },
   mountain: { name: "mountain", plural: "mountains", category: "nature", weight: 2, art: mountain },
   tree: { name: "tree eradicated", plural: "trees eradicated", category: "plant", symmetric: true, weight: 3, art: tree },

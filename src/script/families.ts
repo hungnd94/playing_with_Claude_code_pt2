@@ -7,7 +7,7 @@
  */
 import type { Rng } from "../core/rng";
 import type { Family, Stroke } from "./types";
-import { circle, dot, line, poly, smooth, type P } from "./geom";
+import { circle, dot, line, poly, sampleRaw, smooth, type P } from "./geom";
 
 export interface Shape {
   strokes: Stroke[];
@@ -1081,13 +1081,53 @@ export function cursiveSkeleton(kind: CursiveSkel, rng: Rng, c: GenCtx): Shape {
 /** Dot patterns that distinguish letters sharing a cursive skeleton. */
 export const DOT_PATTERNS = ["", "a1", "b1", "a2", "b2", "a3", "b3", "i1"] as const;
 
+/** Vertical extent of a shape's ink between x0 and x1 (null when none). */
+function inkSpan(strokes: Stroke[], x0: number, x1: number): [number, number] | null {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const st of strokes) {
+    const xy = st.dot !== undefined ? [st.pts[0][0], st.pts[0][1]] : sampleRaw(st, 0.04).xy;
+    for (let i = 0; i < xy.length; i += 2) {
+      if (xy[i] < x0 || xy[i] > x1) continue;
+      if (xy[i + 1] < lo) lo = xy[i + 1];
+      if (xy[i + 1] > hi) hi = xy[i + 1];
+    }
+  }
+  return lo <= hi ? [lo, hi] : null;
+}
+
 export function addDots(shape: Shape, pattern: string, T: number): Shape {
   if (!pattern) return shape;
   const W = shape.w;
   const where = pattern[0];
   const n = +pattern[1];
-  const y = where === "a" ? Math.min(T - 0.24, 0.32) : where === "b" ? 1.26 : 0.82;
-  const cx = W / 2;
+  let y = where === "a" ? Math.min(T - 0.24, 0.32) : where === "b" ? 1.26 : 0.82;
+  let cx = W / 2;
+  // Dots must sit clear of the letter's own strokes (below a descending
+  // bowl, above an ascender, or beside it when that would go too far).
+  const half = n === 1 ? 0.07 : 0.16;
+  const clear = (x: number): number => {
+    const span = inkSpan(shape.strokes, x - half, x + half);
+    if (!span) return y;
+    if (where === "a") return Math.min(y, span[0] - 0.15);
+    if (where === "b") return Math.max(y, span[1] + 0.15);
+    return y;
+  };
+  if (where !== "i") {
+    const xs = [cx, W * 0.28, W * 0.72, where === "a" ? W + 0.12 : -0.1];
+    let best = cx;
+    let by = clear(cx);
+    for (const x of xs) {
+      const yy = clear(x);
+      const cost = Math.abs(yy - y) + Math.abs(x - cx) * 0.4;
+      if (cost < Math.abs(by - y) + Math.abs(best - cx) * 0.4) {
+        best = x;
+        by = yy;
+      }
+    }
+    cx = best;
+    y = Math.max(-0.5, Math.min(1.5, by));
+  }
   // Paired dots sit a little apart and slightly stepped, as a calligrapher sets them.
   const d = 0.17;
   const r = 0.052;

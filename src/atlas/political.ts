@@ -10,11 +10,11 @@ import type { PhysicalWorld } from "../world/types";
 import { chaikin, decimate, marchingSquares, polylineLength, type Pt } from "./contour";
 import type { FieldGrid } from "./field";
 import { ownerAt, overlordAt, polityAlive } from "./hist";
-import { pigment } from "./style";
+import { PIGMENTS, mix } from "./style";
 
 export interface RealmGeom {
   id: number;
-  /** Wash colour (pigment), RGB. */
+  /** Wash colour (a watercolour pigment; vassals: their suzerain's, lighter), RGB. */
   color: [number, number, number];
   /** Direct overlord at the year (-1 = independent). */
   overlord: number;
@@ -29,6 +29,8 @@ export interface RealmGeom {
   ys: number[];
   /** Node count of the largest connected part. */
   mainNodes: number;
+  /** Wash strength multiplier: 1 normally; < 1 for realms outside a plate's subject. */
+  emphasis: number;
 }
 
 export interface BorderLine {
@@ -170,10 +172,12 @@ export function buildPolitical(world: PhysicalWorld, h: History, year: number, f
     const p = h.polities[id];
     const ov = overlordAt(p, year);
     realms.push({
-      id, color: pigment(p.color as [number, number, number]), overlord: ov >= 0 && isAlive(ov) ? ov : -1, suzerain: suzerainOf(id),
-      loops, nodes: cnt, xs, ys, mainNodes: bc.size,
+      id, color: [0, 0, 0], overlord: ov >= 0 && isAlive(ov) ? ov : -1, suzerain: suzerainOf(id),
+      loops, nodes: cnt, xs, ys, mainNodes: bc.size, emphasis: 1,
     });
   }
+
+  assignPigments(h, realms, ownerNode, gx, gy, counts);
 
   // Borders: walk each realm's loops; keep stretches where the other side is land of another owner.
   const borders: BorderLine[] = [];
@@ -227,4 +231,67 @@ export function buildPolitical(world: PhysicalWorld, h: History, year: number, f
     }
   }
   return { realms, borders, ownerNode, ownerCell: owner };
+}
+
+/** Squared distance between colours in a rough perceptual space. */
+function colourDist(a: readonly number[], b: readonly number[]): number {
+  const rm = (a[0] + b[0]) / 2;
+  const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
+  return (2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db;
+}
+
+/**
+ * Colour realms like a hand-tinted plate: each suzerainty (a realm with its
+ * vassals) takes the pigment nearest its own colour that no neighbouring
+ * suzerainty on the plate uses; vassals wear a lighter wash of it.
+ */
+function assignPigments(h: History, realms: RealmGeom[], ownerNode: Int32Array, gx: number, gy: number, counts: Map<number, number>): void {
+  const byId = new Map(realms.map((r) => [r.id, r]));
+  const blockOf = (o: number) => byId.get(o)?.suzerain ?? o;
+  // Adjacency between blocks (from node neighbours).
+  const adj = new Map<number, Set<number>>();
+  const link = (a: number, b: number) => {
+    let s = adj.get(a);
+    if (!s) adj.set(a, (s = new Set()));
+    s.add(b);
+  };
+  for (let j = 0; j < gy; j++)
+    for (let i = 0; i < gx; i++) {
+      const q = j * gx + i;
+      const a = ownerNode[q];
+      if (a < 0) continue;
+      const right = i < gx - 1 ? ownerNode[q + 1] : -1, down = j < gy - 1 ? ownerNode[q + gx] : -1;
+      for (const b of [right, down]) {
+        if (b < 0 || b === a) continue;
+        const A = blockOf(a), B = blockOf(b);
+        if (A !== B) { link(A, B); link(B, A); }
+      }
+    }
+  // Block sizes (all member nodes).
+  const size = new Map<number, number>();
+  for (const [o, n] of counts) size.set(blockOf(o), (size.get(blockOf(o)) ?? 0) + n);
+  const blocks = [...size.keys()].sort((a, b) => (size.get(b)! - size.get(a)!) || a - b);
+  const chosen = new Map<number, number>();
+  for (const b of blocks) {
+    const own = (h.polities[b]?.color ?? [128, 128, 128]) as number[];
+    const order = PIGMENTS.map((p, i) => ({ i, d: colourDist(p, own) })).sort((x, y) => x.d - y.d || x.i - y.i);
+    const used = new Set<number>();
+    for (const nb of adj.get(b) ?? []) if (chosen.has(nb)) used.add(chosen.get(nb)!);
+    const pick = order.find((o) => !used.has(o.i)) ?? order[0];
+    chosen.set(b, pick.i);
+  }
+  for (const r of realms) {
+    const pi = chosen.get(r.suzerain) ?? chosen.get(r.id) ?? 0;
+    const base = PIGMENTS[pi];
+    r.color = r.suzerain !== r.id ? mix(base, [250, 244, 228], 0.38) : [base[0], base[1], base[2]];
+  }
+}
+
+/**
+ * Mute every realm outside the plate's subject (a realm and its vassals, or
+ * the belligerents of a war), so the subject reads first.
+ */
+export function emphasise(pol: PoliticalGeom, focus: Set<number>, muted = 0.42): void {
+  if (!focus.size) return;
+  for (const r of pol.realms) r.emphasis = focus.has(r.id) || focus.has(r.suzerain) ? 1 : muted;
 }

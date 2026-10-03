@@ -41,12 +41,12 @@ section("rolls", "Rolls of arms", "Twelve coats from each heraldic tradition, ge
   styles.push(["invented: “Velmarri”", randomStyle(rng.fork("inv1"), "velmarri")], ["invented: “Ashkar”", randomStyle(rng.fork("inv2"), "ashkar")]);
   for (const [name, style] of styles) {
     const shape = typeof style === "string" ? STYLES[style].shape : style.shape;
-    s += `<h3>${esc(name)}</h3><div class="grid g6">`;
+    s += `<div class="group" id="roll-${name.replace(/[^a-z]/gi, "")}"><h3>${esc(name)}</h3><div class="grid g6">`;
     for (let i = 0; i < 12; i++) {
       const a = generateArms(rng.fork(`roll-${name}-${i}`), { style });
       s += card(renderArmsSVG(a, { size: 150, shape }), blazon(a) + (a.exception ? ` [${a.exception}]` : ""));
     }
-    s += `</div>`;
+    s += `</div></div>`;
   }
   return s;
 });

@@ -23,7 +23,17 @@ export interface Raster {
    * used to skip most full comparisons.
    */
   blocks: Float32Array;
+  /**
+   * Dot signature: counts of dots above the body, inside it and below it
+   * (each capped at 3), packed. Dot patterns are what tells many letters
+   * apart (ب ت ث), but blurred bitmaps barely register two dots versus
+   * three, so letters whose signatures differ count as less similar.
+   */
+  dots: number;
 }
+
+/** Similarity factor for rasters whose dot signatures differ. */
+const DOT_FACTOR = 0.94;
 
 const BW = RW / 4;
 const BH = RH / 4;
@@ -37,7 +47,7 @@ const SY = RH / (Y1 - Y0);
 
 /** Copy a raster (e.g. one made into a scratch buffer) so it can be kept. */
 export function keepRaster(r: Raster): Raster {
-  return { v: r.v.slice(), norm: r.norm, blocks: r.blocks.slice() };
+  return { v: r.v.slice(), norm: r.norm, blocks: r.blocks.slice(), dots: r.dots };
 }
 
 /**
@@ -49,10 +59,17 @@ export function rasterize(strokes: Stroke[], boxW: number, into?: Raster): Raste
   const acc = ACC;
   acc.fill(0);
   const sx = 1 / Math.max(0.3, boxW);
+  let da = 0;
+  let di = 0;
+  let db = 0;
   for (const st of strokes) {
     if (st.dot !== undefined) {
       // Dots count heavily: they distinguish letters in dotted scripts.
       splatPad(acc, st.pts[0][0] * sx, st.pts[0][1], 1.6);
+      const y = st.pts[0][1];
+      if (y < 0.12) da++;
+      else if (y > 0.92) db++;
+      else di++;
       continue;
     }
     const xy = sampleRaw(st, 0.06).xy;
@@ -104,8 +121,12 @@ export function rasterize(strokes: Stroke[], boxW: number, into?: Raster): Raste
       blocks[(y >> 2) * BW + (x >> 2)] += v * v;
     }
   for (let k = 0; k < blocks.length; k++) blocks[k] = Math.sqrt(blocks[k]);
-  if (into) return into;
-  return { v: g, norm: 1, blocks };
+  const dots = Math.min(3, da) + 4 * Math.min(3, di) + 16 * Math.min(3, db);
+  if (into) {
+    into.dots = dots;
+    return into;
+  }
+  return { v: g, norm: 1, blocks, dots };
 }
 
 const PW = RW + 4;
@@ -131,7 +152,7 @@ function splatPad(g: Float64Array, x: number, y: number, m: number): void {
 
 /** A reusable scratch raster. */
 export function scratchRaster(): Raster {
-  return { v: new Float32Array(RW * RH), norm: 1, blocks: new Float32Array(BW * BH) };
+  return { v: new Float32Array(RW * RH), norm: 1, blocks: new Float32Array(BW * BH), dots: 0 };
 }
 
 /** Cosine similarity of two rasters (1 = identical ink distribution). */
@@ -140,7 +161,12 @@ export function similarity(a: Raster, b: Raster): number {
   const av = a.v;
   const bv = b.v;
   for (let i = 0; i < av.length; i++) s += av[i] * bv[i];
-  return s;
+  return a.dots === b.dots ? s : s * DOT_FACTOR;
+}
+
+/** A cheap upper bound of similarity(a, b). */
+export function similarityBound(a: Raster, b: Raster): number {
+  return bound(a, b);
 }
 
 function bound(a: Raster, b: Raster): number {
@@ -148,7 +174,7 @@ function bound(a: Raster, b: Raster): number {
   const bb = b.blocks;
   let s = 0;
   for (let k = 0; k < ab.length; k++) s += ab[k] * bb[k];
-  return s;
+  return a.dots === b.dots ? s : s * DOT_FACTOR;
 }
 
 /**

@@ -37,10 +37,11 @@ for (let i = 0; i < n; i++) {
 for (const c of crops) {
   const [idx, rect] = c.split(":");
   const [x, y, w, h] = rect.split(",").map(Number);
-  const box = await page.locator(`#plate${idx}`).boundingBox();
+  // Page coordinates of the canvas (independent of scrolling).
+  const box = (await page.evaluate(`(() => { const r = document.getElementById("plate${idx}")?.getBoundingClientRect(); return r ? { x: r.x + scrollX, y: r.y + scrollY } : null; })()`)) as { x: number; y: number } | null;
   if (!box) continue;
   const path = `out/atlas/crop-${idx}-${x}-${y}.png`;
-  await page.screenshot({ path, clip: { x: box.x + x, y: box.y + y, width: w, height: h } });
+  await page.screenshot({ path, fullPage: true, clip: { x: box.x + x, y: box.y + y, width: w, height: h } });
   console.log("wrote", path);
 }
 await browser.close();

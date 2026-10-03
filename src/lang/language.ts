@@ -15,8 +15,8 @@ import { parseWeighted } from "./styles";
 import { applyChanges, generateChanges } from "./soundchange";
 import { buildOrthography, driftOrthography, romanizeName, romanizeWord } from "./orthography";
 import type { Affix, AffixKind, Flavour, Language, Lexeme, LineageStep, Morphology, Phonology, Word, WordOrder } from "./types";
-import { asciiFold, capitalize, clone, key } from "./util";
-import { generateAffix, generateRoot } from "./wordgen";
+import { asciiFold, capitalize, clone, key, obscene } from "./util";
+import { generateAffix, generateRoot, generateWord } from "./wordgen";
 
 export interface ProtoOptions {
   /** Homeland hint biasing the sound system. */
@@ -66,6 +66,16 @@ export function createProtoLanguage(rng: Rng, opts: ProtoOptions = {}): Language
     seed: rng.key,
   };
   for (const c of CONCEPTS) lexicon[c.id].since = id;
+  // No word may spell an English obscenity or slur in the language's own spelling.
+  const srng = rng.fork("sanitize");
+  const taken = new Set(Object.values(lexicon).map((l) => key(l.form)));
+  for (const c of CONCEPTS) {
+    for (let k = 0; k < 12 && obscene(romanizeWord(orthography, lexicon[c.id].form)); k++) {
+      const w = generateRoot(ph, srng, c.tier, taken);
+      taken.add(key(w));
+      lexicon[c.id] = { form: w, origin: { kind: "root" }, since: id };
+    }
+  }
   setEndonym(lang, rng.fork("endonym"), opts.name, avoid.map((l) => l.name));
   return lang;
 }
@@ -84,13 +94,21 @@ export function createProtoLanguages(rng: Rng, n: number, flavours: (Flavour | n
 function englishFrom(roman: string, rng: Rng): string {
   let s = asciiFold(roman).toLowerCase().replace(/[^a-z]/g, "");
   if (s.length === 0) s = "an";
-  // shorten long forms at a syllable-ish boundary
-  if (s.length > 8) {
-    let cut = 7;
-    while (cut > 3 && /[aeiouy]/.test(s[cut - 1]) === /[aeiouy]/.test(s[cut])) cut--;
-    s = s.slice(0, Math.max(4, cut));
+  // An English language name is built on the first syllable or two of the native word
+  // (Deutsch → Dutch, Suomi → Finnish): long forms are cut at a syllable boundary and a
+  // stem never ends in a consonant cluster English readers would stumble over.
+  if (s.length > 6) {
+    const groups = s.match(/[^aeiouy]*[aeiouy]+/g) ?? [s];
+    let stem = groups[0];
+    let gi = 1;
+    while (stem.length < 4 && gi < groups.length) stem += groups[gi++];
+    const rest = s.slice(stem.length);
+    const cl = /^[^aeiouy]+/.exec(rest)?.[0] ?? "";
+    if (cl && (stem.length <= 5 || rng.chance(0.5))) stem += /^(sh|ch|th|kh|ng|zh|ts)/.test(cl) ? cl.slice(0, 2) : cl[0];
+    s = stem;
   }
-  s = s.replace(/(.)\1+$/, "$1");
+  // no doubled letters at either end, no doubled a/i/u anywhere (Aahaa → Aha)
+  s = s.replace(/(.)\1+$/, "$1").replace(/^(.)\1+/, "$1").replace(/([aiu])\1+/g, "$1");
   const vowelFinal = /[aeiouy]$/.test(s);
   let suffix: string;
   if (s.length < 4) {
@@ -107,23 +125,33 @@ function englishFrom(roman: string, rng: Rng): string {
 
 function setEndonym(lang: Language, rng: Rng, name?: string, avoid: string[] = []): void {
   const people = lang.lexicon.people.form;
-  const variant = rng.weighted<string>([
-    ["adj", 3],
-    ["speech", 1],
-    ["true", 1],
-    ["bare", 1.5],
-  ]);
   let form: Word = people;
   let gloss = "the people";
-  if (variant === "adj" && lang.morphology.affixes.adj) {
-    form = affixWord(lang, people, lang.morphology.affixes.adj).word;
-    gloss = "of the people";
-  } else if (variant === "speech") {
-    form = compound(lang, people, lang.lexicon.word.form).word;
-    gloss = "people's speech";
-  } else if (variant === "true") {
-    form = compound(lang, lang.lexicon.true.form, people).word;
-    gloss = "the true people";
+  for (let k = 0; k < 4; k++) {
+    const variant = rng.weighted<string>([
+      ["adj", 3],
+      ["speech", 1],
+      ["true", 1],
+      ["bare", 1.5],
+    ]);
+    form = people;
+    gloss = "the people";
+    if (variant === "adj" && lang.morphology.affixes.adj) {
+      form = affixWord(lang, people, lang.morphology.affixes.adj).word;
+      gloss = "of the people";
+    } else if (variant === "speech") {
+      form = compound(lang, people, lang.lexicon.word.form).word;
+      gloss = "people's speech";
+    } else if (variant === "true") {
+      form = compound(lang, lang.lexicon.true.form, people).word;
+      gloss = "the true people";
+    }
+    // a self-name is a short, much-used word
+    if (nuclei(form).length <= 3) break;
+  }
+  if (nuclei(form).length > 3) {
+    form = people;
+    gloss = "the people";
   }
   lang.endonymPhonemes = form;
   lang.endonym = romanizeName(lang.orthography, form);
@@ -137,9 +165,85 @@ function setEndonym(lang: Language, rng: Rng, name?: string, avoid: string[] = [
   }
   const taken = new Set(avoid.map((x) => x.toLowerCase()));
   let cand = englishFrom(src, rng);
-  for (let i = 0; i < 12 && taken.has(cand.toLowerCase()); i++) cand = englishFrom(i < 6 ? src : full, rng);
+  for (let i = 0; i < 12 && (taken.has(cand.toLowerCase()) || obscene(cand)); i++) cand = englishFrom(i < 6 ? src : full, rng);
   if (taken.has(cand.toLowerCase())) cand = englishFrom(full + "ar", rng);
   lang.name = cand;
+}
+
+/** Edit distance (small strings). */
+function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[n];
+}
+
+/** Two English language names a reader would confuse (Mitar/Mitian, Kesh/Keshi). */
+function tooSimilar(a: string, b: string): boolean {
+  const x = asciiFold(a).toLowerCase();
+  const y = asciiFold(b).toLowerCase();
+  if (x === y) return true;
+  if (x.slice(0, 3) === y.slice(0, 3) && Math.min(x.length, y.length) >= 4) return true;
+  return editDistance(x, y) <= Math.max(1, Math.floor(Math.min(x.length, y.length) / 3));
+}
+
+/** What a daughter people is called after: a landscape or a direction. */
+const DAUGHTER_SOURCES = ["north", "south", "east", "west", "river", "sea", "mountain", "forest", "coast", "island", "plain", "valley", "lake", "hill", "high", "far", "marsh", "field", "stone", "horse", "wolf", "sun"];
+
+/**
+ * A daughter's self-name and English name. Real families name their branches
+ * after the inherited self-designation (Deutsch, Dutch), a landscape or
+ * direction (Norway, the Ostrogoths), or a new tribal name of no clear meaning
+ * (the Franks); a branch is never called something a reader would confuse
+ * with its parent or a sibling.
+ */
+function setDaughterEndonym(lang: Language, parent: Language, changes: LineageStep["changes"], stressBefore: Language["phonology"]["stress"], rng: Rng, name: string | undefined, avoid: string[]): void {
+  const taken = avoid.filter(Boolean);
+  const people = lang.lexicon.people.form;
+  for (let attempt = 0; attempt < 14; attempt++) {
+    const r = rng.next();
+    let form: Word;
+    let gloss: string;
+    let src: Word;
+    if (r < 0.35 && attempt < 7) {
+      // the old self-name, worn down by this branch's sound changes
+      form = applyChanges(changes, parent.endonymPhonemes, stressBefore).word;
+      gloss = parent.endonymGloss;
+      src = form;
+    } else if (r < 0.7) {
+      const x = rng.pick(DAUGHTER_SOURCES.filter((c) => lang.lexicon[c]));
+      const xf = lang.lexicon[x].form;
+      const adj = CONCEPT_BY_ID[x].pos === "adj" && !["north", "south", "east", "west"].includes(x);
+      if (!adj && rng.chance(0.5) && lang.morphology.affixes.demonym?.form.length) {
+        form = affixWord(lang, xf, lang.morphology.affixes.demonym).word;
+        gloss = `those of the ${CONCEPT_BY_ID[x].en}`;
+      } else {
+        form = compound(lang, xf, people).word;
+        gloss = adj ? `the ${CONCEPT_BY_ID[x].en} people` : `${CONCEPT_BY_ID[x].en} people`;
+      }
+      src = xf;
+    } else {
+      form = generateWord(lang.phonology, rng, rng.int(1, 2) + (rng.chance(0.3) ? 1 : 0));
+      gloss = "";
+      src = form;
+    }
+    if (!form.some((p) => isVowel(p)) || nuclei(form).length > 4) continue;
+    const roman = romanizeWord(lang.orthography, src);
+    const english = name ?? englishFrom(asciiFold(roman).replace(/[^A-Za-z]/g, "").length >= 3 ? roman : romanizeWord(lang.orthography, form), rng);
+    if (!name && (english.length > 11 || obscene(english) || obscene(roman) || taken.some((t) => tooSimilar(t, english)))) continue;
+    lang.endonymPhonemes = form;
+    lang.endonym = romanizeName(lang.orthography, form);
+    lang.endonymGloss = gloss;
+    lang.name = english;
+    return;
+  }
+  // fall back to the people-word naming of proto-languages
+  setEndonym(lang, rng, name, taken);
 }
 
 /** "Proto-Keshi". */
@@ -242,14 +346,40 @@ function evolveAffix(parent: Language, aff: Affix, changes: LineageStep["changes
   return { ...aff, form };
 }
 
+/**
+ * Attested-type semantic shifts, new meaning ← older meanings (Latin testa 'pot' →
+ * French tête 'head'; Slavic leto 'summer' → 'year'; Old English tūn 'enclosure' → town;
+ * hound → dog). A word that changes meaning takes over a neighbouring sense; nothing
+ * shifts from 'light' to 'water'.
+ */
+const SHIFTS: Record<string, string[]> = {
+  stone: ["rock"], rock: ["stone"], hill: ["mountain", "mound"], mountain: ["hill", "rock"], mound: ["hill"], forest: ["wood", "tree"],
+  wood: ["tree", "forest"], tree: ["wood", "oak"], field: ["plain", "land"], plain: ["field"], land: ["earth", "field"], earth: ["land", "clay"],
+  sea: ["lake", "water"], lake: ["sea", "water"], river: ["water", "stream"], stream: ["river", "water"], bay: ["harbor", "mouth"],
+  harbor: ["bay", "shore"], coast: ["shore", "side"], shore: ["coast", "side"], road: ["path", "way"], path: ["road", "way"], way: ["road", "path"],
+  town: ["fort", "farm", "wall", "home"], city: ["fort", "town"], village: ["house", "farm"], home: ["house"], house: ["home", "hall"],
+  hall: ["house"], palace: ["hall", "house"], fort: ["wall", "tower"], temple: ["house", "hall"], tower: ["fort"], farm: ["field", "house"],
+  king: ["lord", "chief"], lord: ["king", "father"], chief: ["head", "elder"], queen: ["lady", "wife"], lady: ["queen", "wife"],
+  god: ["sky", "spirit"], spirit: ["breath", "soul"], soul: ["breath", "spirit", "heart"], breath: ["soul", "wind"], wind: ["breath", "storm"],
+  sun: ["day"], day: ["sun", "light"], light: ["day", "fire"], fire: ["flame", "light"], flame: ["fire"], dawn: ["light", "east"],
+  night: ["dark", "evening"], evening: ["night", "west"], year: ["summer", "winter"], winter: ["snow", "frost"], summer: ["sun"],
+  dog: ["wolf", "fox"], wolf: ["dog"], cow: ["ox"], ox: ["bull", "cow"], bull: ["ox"], deer: ["elk", "stag"], elk: ["deer"], stag: ["deer"],
+  bird: ["eagle", "raven"], raven: ["bird"], horse: ["stag"], fish: ["whale"], whale: ["fish"], serpent: ["dragon"], dragon: ["serpent"],
+  child: ["son", "daughter"], son: ["child"], daughter: ["child"], man: ["person", "husband"], person: ["man"], woman: ["wife", "lady"],
+  wife: ["woman"], husband: ["man", "lord"], people: ["host", "kin"], host: ["people"], kin: ["clan", "people"], clan: ["kin", "house"],
+  hand: ["arm"], arm: ["hand"], head: ["cup", "chief"], face: ["eye", "head"], mouth: ["face", "gate"], heart: ["soul"], tongue: ["word"],
+  great: ["strong", "high"], high: ["great"], strong: ["great"], old: ["great"], black: ["dark"], dark: ["black", "night"], white: ["bright"],
+  bright: ["white"], golden: ["yellow"], yellow: ["golden"], brown: ["red", "dark"], grey: ["white"], green: ["young"], wise: ["old"],
+  war: ["battle"], battle: ["war"], word: ["name"], name: ["word"], song: ["word"], ship: ["boat"], boat: ["ship"],
+  bronze: ["copper"], copper: ["bronze"], gold: ["yellow"], silver: ["white"], beer: ["wine"], wine: ["beer"], meat: ["bread"],
+  sword: ["spear"], spear: ["arrow"], axe: ["hammer"], hammer: ["axe", "stone"], helm: ["head"], crown: ["ring"], ring: ["crown"],
+  know: ["see"], see: ["know"], hear: ["know"], hold: ["take", "keep"], keep: ["hold", "guard"], guard: ["keep"], take: ["hold"],
+  burn: ["shine"], shine: ["burn"], flow: ["run"], run: ["flow"], die: ["fall"], fall: ["die"], speak: ["sing"], come: ["go"], go: ["come"],
+};
+
 function relatedConcept(id: string, rng: Rng): string | null {
-  const c = CONCEPT_BY_ID[id];
-  const cats = ["geo", "beast", "bird", "plant", "tree", "sky", "elem", "body", "abstract", "role", "kin", "material", "object", "color", "qual", "time", "build"];
-  const cat = c.tags.find((t) => cats.includes(t));
-  if (!cat) return null;
-  const pool = CONCEPTS.filter((x) => x.id !== id && x.pos === c.pos && x.tags.includes(cat));
-  if (!pool.length) return null;
-  return rng.pick(pool).id;
+  const pool = (SHIFTS[id] ?? []).filter((x) => CONCEPT_BY_ID[x] && CONCEPT_BY_ID[x].pos === CONCEPT_BY_ID[id].pos);
+  return pool.length ? rng.pick(pool) : null;
 }
 
 /**
@@ -292,14 +422,21 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
     .map((a) => a!.form)
     .filter((f) => f.length > 0);
   const roots = CONCEPTS.filter((c) => parent.lexicon[c.id].origin.kind === "root" || parent.lexicon[c.id].origin.kind === "inherited").map((c) => lexicon[c.id].form);
-  const interim = phonologyFromCorpus([...CONCEPTS.map((c) => lexicon[c.id].form), ...affixForms], roots, parent.phonology, stress);
-  const fixPhonology = (ph: Phonology) => {
+  // The daughter's phonotactics are inferred from its finished lexicon (step 5). Until then,
+  // new words are put together with the parent's junction rules and new grammatical words
+  // are coined in the parent's shape and run through this split's sound laws — so no
+  // interim phonology is needed, only the current inventory.
+  const invC = new Set<string>();
+  const invV = new Set<string>();
+  for (const c of CONCEPTS) for (const p of lexicon[c.id].form) (isVowel(p) ? invV : invC).add(p);
+  for (const f of affixForms) for (const p of f) (isVowel(p) ? invV : invC).add(p);
+  const fixPhonology = (ph: Pick<Phonology, "vowels" | "consonants">) => {
     // epenthetic vowel and glide must exist
     const ep = applyChanges(changes, [parent.morphology.epenthetic], stressBefore).word;
     mo.epenthetic = ep.length === 1 && isVowel(ep[0]) && ph.vowels.includes(ep[0]) ? ep[0] : ph.vowels.includes(parent.morphology.epenthetic) ? parent.morphology.epenthetic : ph.vowels.filter((v) => !vf(v)!.long)[0] ?? ph.vowels[0];
     if (!ph.consonants.includes(mo.glide)) mo.glide = ["j", "w", "h", "ʔ", "n", "r", "v"].find((c) => ph.consonants.includes(c)) ?? ph.consonants[0];
   };
-  fixPhonology(interim);
+  fixPhonology({ vowels: [...invV], consonants: [...invC] });
 
   // 3. Grammatical drift.
   const mrng = rng.fork("morphology");
@@ -316,7 +453,9 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
     mo.caseMarking = false;
     mo.adpositions = mo.wordOrder === "SOV" || mo.wordOrder === "OVS" ? "post" : "pre";
     for (const ck of ["gen", "dat", "loc", "all", "abl", "ins"] as AffixKind[]) {
-      const form = generateAffix(interim, mrng, [["CV", 2], ["VC", 1], ["CVC", 1]], used);
+      const coined = generateAffix(parent.phonology, mrng, [["CV", 2], ["VC", 1], ["CVC", 1]], used);
+      const evolved = applyChanges(changes, coined, stressBefore).word;
+      const form = evolved.some((p) => isVowel(p)) ? evolved : coined;
       used.add(key(form));
       mo.affixes[ck] = { form, pos: mo.adpositions === "pre" ? "before" : "after" };
     }
@@ -341,18 +480,30 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
   const stable = new Set(["people", "I", "you", "he", "we", "you.pl", "they", "and", "not", "all", "this", "that", "one", "two", "three", "four", "five", "word"]);
   const candidates = CONCEPTS.filter((c) => !stable.has(c.id));
   const nRep = Math.round(candidates.length * frac);
-  const interimLang = { phonology: interim, morphology: mo };
+  const interimLang = { phonology: parent.phonology, morphology: mo };
   const avoid = new Set(Object.values(lexicon).map((l) => key(l.form)));
-  for (const c of lrng.sample(candidates, nRep)) {
+  // Core vocabulary resists replacement (the Swadesh-list effect): tier 1 words are
+  // replaced a quarter as often as ordinary ones, rare words more often.
+  const TIER_W = [0, 0.25, 1, 1.6];
+  const pool = candidates.slice();
+  const weights = pool.map((c) => TIER_W[c.tier]);
+  const chosen: typeof candidates = [];
+  while (chosen.length < nRep && pool.length) {
+    const k = lrng.weightedIndex(weights);
+    chosen.push(pool[k]);
+    pool.splice(k, 1);
+    weights.splice(k, 1);
+  }
+  for (const c of chosen) {
     const r = lrng.next();
     if (r < 0.4) {
       const root = generateRoot(parent.phonology, lrng, c.tier, avoid);
       const form = applyChanges(changes, root, stressBefore).word;
       lexicon[c.id] = { form, origin: { kind: "coined" }, since: id };
       avoid.add(key(form));
-    } else if (r < 0.7) {
-      const rel = relatedConcept(c.id, lrng);
-      if (rel) lexicon[c.id] = { form: lexicon[rel].form.slice(), origin: { kind: "shift", from: rel }, since: id };
+    } else if (r < 0.7 && relatedConcept(c.id, lrng.fork("peek" + c.id))) {
+      const rel = relatedConcept(c.id, lrng)!;
+      lexicon[c.id] = { form: lexicon[rel].form.slice(), origin: { kind: "shift", from: rel }, since: id };
     } else if (c.recipes?.length) {
       const lx = realizeRecipe(interimLang, lrng.pick(c.recipes), (x) => lexicon[x]?.form);
       if (lx && nuclei(lx.form).length <= 5) lexicon[c.id] = { ...lx, since: id };
@@ -372,7 +523,15 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
   fixPhonology(ph);
   if (!ph.vowels.includes(mo.epenthetic)) ph.vowels.push(mo.epenthetic);
 
-  const orthography = driftOrthography(parent.orthography, ph, rng.fork("orthography"));
+  const orthography = driftOrthography(parent.orthography, ph, rng.fork("orthography"), { stage });
+  // Taboo replacement: a word that has come to spell an English obscenity is replaced by a coinage.
+  const srng = rng.fork("sanitize");
+  for (const c of CONCEPTS) {
+    for (let k = 0; k < 12 && obscene(romanizeWord(orthography, lexicon[c.id].form)); k++) {
+      const form = applyChanges(changes, generateRoot(parent.phonology, srng, c.tier, avoid), stressBefore).word;
+      if (form.some((p) => isVowel(p))) lexicon[c.id] = { form, origin: { kind: "coined" }, since: id };
+    }
+  }
   const naming = driftNamingCulture(parent.naming, rng.fork("naming"));
   // Clipped toponymic heads and name endings evolve with the language.
   if (naming.headForms) {
@@ -413,7 +572,7 @@ export function deriveLanguage(parent: Language, rng: Rng, year: number, opts: D
     lang.endonym = romanizeName(orthography, e);
     lang.endonymGloss = parent.endonymGloss;
     lang.name = opts.name ?? parent.name;
-  } else setEndonym(lang, rng.fork("endonym"), opts.name, [parent.name, ...(opts.avoidNames ?? [])]);
+  } else setDaughterEndonym(lang, parent, changes, stressBefore, rng.fork("endonym"), opts.name, [parent.name, ...(opts.avoidNames ?? [])]);
   lang.lineage = [
     ...parent.lineage,
     { from: parent.id, to: id, toName: lang.name, year, stressBefore, changes, orthography: clone(orthography) },

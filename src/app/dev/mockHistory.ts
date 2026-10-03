@@ -894,7 +894,7 @@ export function mockHistory(world: PhysicalWorld, opts: MockOptions = {}): H.His
       peak: { areaKm2: 0, year: y }, founded: y, ended: end,
       endReason: end >= 0 ? prng.pick(["conquered", "collapsed", "dissolved", "absorbed"] as const) : undefined,
       founder, predecessors: predecessor >= 0 ? [predecessor] : [], successors: [], capitals: [{ year: y, settlement: sx.s.id }],
-      culture: cx.c.id, religions: [], rulers: [], overlords: [{ year: y, overlord: -1 }],
+      culture: cx.c.id, cultures: [{ year: y, culture: cx.c.id }], religions: [], rulers: [], overlords: [{ year: y, overlord: -1 }],
       emblem: { kind: "arms", data: arms, blazon: blazon(arms) },
       motto: { lang: la.hid, text: sent.text, gloss: sent.gloss, translation: sent.translation, words: sent.words },
       color: hsl(prng.range(0, 360), prng.range(0.32, 0.5), prng.range(0.52, 0.66)),

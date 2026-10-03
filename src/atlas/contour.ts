@@ -15,95 +15,98 @@ export interface Polyline {
 /**
  * Marching squares. `values` is gx×gy, row-major. Nodes outside the grid count
  * as `outside` (default: below the level) so that every contour is closed.
- * Returns polylines in node coordinates.
+ * Returns polylines in node coordinates. Allocation-light: edge points and
+ * successor links live in typed arrays indexed by edge id.
  */
 export function marchingSquares(values: ArrayLike<number>, gx: number, gy: number, level: number, outside = -1e6): Polyline[] {
-  // Iterate over cells of the padded grid: (i, j) in [-1, gx-1] × [-1, gy-1].
-  const W = gx + 1; // padded cell columns
+  // Padded cells (i, j) ∈ [-1, gx-1] × [-1, gy-1]; edges keyed in a (gx+2)×(gy+2) node lattice.
+  const W = gx + 2;
+  const nEdges = 2 * W * (gy + 2);
+  const px = new Float64Array(nEdges), py = new Float64Array(nEdges);
+  const next = new Int32Array(nEdges).fill(-1);
+  const hasPred = new Uint8Array(nEdges);
   const val = (i: number, j: number): number => (i < 0 || j < 0 || i >= gx || j >= gy ? outside : values[j * gx + i]);
-  // Edge ids in padded index space: H edge from (i,j) to (i+1,j); V edge from (i,j) to (i,j+1). Shift by +1.
-  const hId = (i: number, j: number) => 2 * ((j + 1) * (W + 1) + (i + 1));
-  const vId = (i: number, j: number) => 2 * ((j + 1) * (W + 1) + (i + 1)) + 1;
-  const pointOf = new Map<number, Pt>();
-  const next = new Map<number, number>();
-  const interp = (a: number, b: number) => {
+  const t01 = (a: number, b: number): number => {
     const d = b - a;
     return d === 0 ? 0.5 : Math.min(1, Math.max(0, (level - a) / d));
   };
-  const edgePoint = (id: number, i: number, j: number, horizontal: boolean, a: number, b: number): number => {
-    if (!pointOf.has(id)) {
-      const t = interp(a, b);
-      pointOf.set(id, horizontal ? [i + t, j] : [i, j + t]);
-    }
+  // Horizontal edge (i,j)→(i+1,j) and vertical edge (i,j)→(i,j+1), indices shifted by +1.
+  const H = (i: number, j: number, a: number, b: number): number => {
+    const id = 2 * ((j + 1) * W + (i + 1));
+    px[id] = i + t01(a, b);
+    py[id] = j;
     return id;
   };
+  const V = (i: number, j: number, a: number, b: number): number => {
+    const id = 2 * ((j + 1) * W + (i + 1)) + 1;
+    px[id] = i;
+    py[id] = j + t01(a, b);
+    return id;
+  };
+  const seg = (p: number, q: number) => {
+    next[p] = q;
+    hasPred[q] = 1;
+  };
+  const starts: number[] = [];
   for (let j = -1; j < gy; j++) {
     for (let i = -1; i < gx; i++) {
       const a = val(i, j), b = val(i + 1, j), c = val(i + 1, j + 1), d = val(i, j + 1);
-      const A = a > level ? 1 : 0, B = b > level ? 1 : 0, C = c > level ? 1 : 0, D = d > level ? 1 : 0;
-      const idx = (A << 3) | (B << 2) | (C << 1) | D;
+      const idx = ((a > level ? 1 : 0) << 3) | ((b > level ? 1 : 0) << 2) | ((c > level ? 1 : 0) << 1) | (d > level ? 1 : 0);
       if (idx === 0 || idx === 15) continue;
-      // edges: top (a-b), right (b-c), bottom (d-c), left (a-d)
-      const top = () => edgePoint(hId(i, j), i, j, true, a, b);
-      const right = () => edgePoint(vId(i + 1, j), i + 1, j, false, b, c);
-      const bottom = () => edgePoint(hId(i, j + 1), i, j + 1, true, d, c);
-      const left = () => edgePoint(vId(i, j), i, j, false, a, d);
-      // Orientation: walking from p to q, high values on the LEFT (screen coords, y down → left = (dy, -dx)).
-      // Derived per case so high corners are on the left.
-      const seg = (p: number, q: number) => next.set(p, q);
+      // Edges: top (a-b), right (b-c), bottom (d-c), left (a-d). High values stay on the LEFT of the walk (y down).
+      let top = -1, right = -1, bottom = -1, left = -1;
       switch (idx) {
-        case 1: seg(bottom(), left()); break; // D high
-        case 2: seg(right(), bottom()); break; // C high
-        case 3: seg(right(), left()); break; // C,D high
-        case 4: seg(top(), right()); break; // B high
+        case 1: bottom = H(i, j + 1, d, c); left = V(i, j, a, d); seg(bottom, left); break;
+        case 2: right = V(i + 1, j, b, c); bottom = H(i, j + 1, d, c); seg(right, bottom); break;
+        case 3: right = V(i + 1, j, b, c); left = V(i, j, a, d); seg(right, left); break;
+        case 4: top = H(i, j, a, b); right = V(i + 1, j, b, c); seg(top, right); break;
         case 5: {
-          // B, D high (saddle)
-          const ctr = (a + b + c + d) / 4;
-          if (ctr > level) { seg(top(), left()); seg(bottom(), right()); }
-          else { seg(top(), right()); seg(bottom(), left()); }
+          top = H(i, j, a, b); left = V(i, j, a, d); bottom = H(i, j + 1, d, c); right = V(i + 1, j, b, c);
+          if ((a + b + c + d) / 4 > level) { seg(top, left); seg(bottom, right); }
+          else { seg(top, right); seg(bottom, left); }
           break;
         }
-        case 6: seg(top(), bottom()); break; // B,C high
-        case 7: seg(top(), left()); break; // B,C,D high
-        case 8: seg(left(), top()); break; // A high
-        case 9: seg(bottom(), top()); break; // A,D high
+        case 6: top = H(i, j, a, b); bottom = H(i, j + 1, d, c); seg(top, bottom); break;
+        case 7: top = H(i, j, a, b); left = V(i, j, a, d); seg(top, left); break;
+        case 8: left = V(i, j, a, d); top = H(i, j, a, b); seg(left, top); break;
+        case 9: bottom = H(i, j + 1, d, c); top = H(i, j, a, b); seg(bottom, top); break;
         case 10: {
-          // A, C high (saddle)
-          const ctr = (a + b + c + d) / 4;
-          if (ctr > level) { seg(left(), bottom()); seg(right(), top()); }
-          else { seg(left(), top()); seg(right(), bottom()); }
+          left = V(i, j, a, d); bottom = H(i, j + 1, d, c); right = V(i + 1, j, b, c); top = H(i, j, a, b);
+          if ((a + b + c + d) / 4 > level) { seg(left, bottom); seg(right, top); }
+          else { seg(left, top); seg(right, bottom); }
           break;
         }
-        case 11: seg(right(), top()); break; // A,C,D high
-        case 12: seg(left(), right()); break; // A,B high
-        case 13: seg(bottom(), right()); break; // A,B,D high
-        case 14: seg(left(), bottom()); break; // A,B,C high
+        case 11: right = V(i + 1, j, b, c); top = H(i, j, a, b); seg(right, top); break;
+        case 12: left = V(i, j, a, d); right = V(i + 1, j, b, c); seg(left, right); break;
+        case 13: bottom = H(i, j + 1, d, c); right = V(i + 1, j, b, c); seg(bottom, right); break;
+        case 14: left = V(i, j, a, d); bottom = H(i, j + 1, d, c); seg(left, bottom); break;
       }
+      if (top >= 0) starts.push(top);
+      if (right >= 0) starts.push(right);
+      if (bottom >= 0) starts.push(bottom);
+      if (left >= 0) starts.push(left);
     }
   }
-  // Chain.
+  // Chain: open chains first (edges with a successor and no predecessor), then closed loops.
   const out: Polyline[] = [];
-  const visited = new Set<number>();
-  // Open chains first: starts are edges that are nobody's successor.
-  const hasPred = new Set<number>();
-  for (const q of next.values()) hasPred.add(q);
+  const visited = new Uint8Array(nEdges);
   const walk = (start: number): Polyline => {
     const pts: Pt[] = [];
-    let cur: number | undefined = start;
+    let cur = start;
     let closed = false;
-    while (cur !== undefined) {
-      if (visited.has(cur)) {
+    while (cur >= 0) {
+      if (visited[cur]) {
         closed = cur === start;
         break;
       }
-      visited.add(cur);
-      pts.push(pointOf.get(cur)!);
-      cur = next.get(cur);
+      visited[cur] = 1;
+      pts.push([px[cur], py[cur]]);
+      cur = next[cur];
     }
     return { pts, closed };
   };
-  for (const k of next.keys()) if (!hasPred.has(k) && !visited.has(k)) out.push(walk(k));
-  for (const k of next.keys()) if (!visited.has(k)) out.push(walk(k));
+  for (const e of starts) if (next[e] >= 0 && !hasPred[e] && !visited[e]) out.push(walk(e));
+  for (const e of starts) if (next[e] >= 0 && !visited[e]) out.push(walk(e));
   return out;
 }
 

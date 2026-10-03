@@ -1,15 +1,21 @@
 /**
  * Procedural parchment: base tone with mottling and fibres (drawn first), and
- * an ageing overlay (darkened edges, vignette, stains, foxing, grain) drawn
- * last with `multiply` so it also ages the ink. Standard 2D context API only.
+ * an ageing layer (darkened ragged edges, vignette, tide-marked stains,
+ * foxing) multiplied over everything last so it also ages the ink.
+ *
+ * Both layers depend only on (world seed, plate size, device scale, palette),
+ * so they are rendered once into offscreen canvases and cached: re-rendering a
+ * plate at another year or another view costs two drawImage calls.
+ * Standard 2D context API only.
  */
 import { Noise3 } from "../core/noise";
 import { Rng } from "../core/rng";
 import { hexRgb, type Palette } from "./style";
 
 export type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+type Canvas = HTMLCanvasElement | OffscreenCanvas;
 
-export function makeCanvas(w: number, h: number): HTMLCanvasElement | OffscreenCanvas {
+export function makeCanvas(w: number, h: number): Canvas {
   w = Math.max(1, Math.round(w));
   h = Math.max(1, Math.round(h));
   if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(w, h);
@@ -19,18 +25,71 @@ export function makeCanvas(w: number, h: number): HTMLCanvasElement | OffscreenC
   return c;
 }
 
-function ctxOf(c: HTMLCanvasElement | OffscreenCanvas): Ctx2D {
+function ctxOf(c: Canvas): Ctx2D {
   return c.getContext("2d") as Ctx2D;
 }
 
+interface PaperLayers {
+  key: string;
+  base: Canvas;
+  age: Canvas;
+}
+const cache: PaperLayers[] = [];
+
+/** Device scale of a context's current transform (e.g. devicePixelRatio). */
+function deviceScale(ctx: Ctx2D): number {
+  try {
+    const m = ctx.getTransform();
+    return Math.max(0.25, Math.min(4, Math.hypot(m.a, m.b)));
+  } catch {
+    return 1;
+  }
+}
+
+function layers(ctx: Ctx2D, w: number, h: number, pal: Palette, seed: string): PaperLayers {
+  const sc = deviceScale(ctx);
+  const key = `${w}x${h}@${sc.toFixed(2)}|${pal.paper}|${pal.paperDark}|${seed}`;
+  const hit = cache.find((c) => c.key === key);
+  if (hit) return hit;
+  const rng = new Rng(`${seed}|parchment`);
+  const base = makeCanvas(w * sc, h * sc);
+  const bctx = ctxOf(base);
+  bctx.scale(sc, sc);
+  paintBase(bctx, w, h, pal, rng.fork("paper"));
+  const age = makeCanvas(w * sc, h * sc);
+  const actx = ctxOf(age);
+  actx.scale(sc, sc);
+  paintAgeing(actx, w, h, rng.fork("age"));
+  const entry = { key, base, age };
+  cache.unshift(entry);
+  if (cache.length > 3) cache.pop();
+  return entry;
+}
+
 /** Base parchment: fill, broad mottling, fibres. */
-export function drawPaperBase(ctx: Ctx2D, w: number, h: number, pal: Palette, rng: Rng): void {
+export function drawPaperBase(ctx: Ctx2D, w: number, h: number, pal: Palette, seed: string): void {
+  const L = layers(ctx, w, h, pal, seed);
+  ctx.save();
+  ctx.drawImage(L.base as CanvasImageSource, 0, 0, w, h);
+  ctx.restore();
+}
+
+/** Ageing overlay, multiplied over everything drawn so far. */
+export function drawPaperAgeing(ctx: Ctx2D, w: number, h: number, pal: Palette, seed: string): void {
+  const L = layers(ctx, w, h, pal, seed);
+  ctx.save();
+  ctx.globalCompositeOperation = "multiply";
+  ctx.drawImage(L.age as CanvasImageSource, 0, 0, w, h);
+  ctx.restore();
+}
+
+function paintBase(ctx: Ctx2D, w: number, h: number, pal: Palette, rng: Rng): void {
   ctx.save();
   ctx.fillStyle = pal.paper;
   ctx.fillRect(0, 0, w, h);
-  // Mottling at 1/4 resolution, upscaled smoothly.
-  const s = 4;
-  const mw = Math.ceil(w / s), mh = Math.ceil(h / s);
+  // Mottling at 1/5 resolution, upscaled smoothly.
+  const s = 5;
+  const mw = Math.ceil(w / s) + 1, mh = Math.ceil(h / s) + 1;
   const cv = makeCanvas(mw, mh);
   const c2 = ctxOf(cv);
   const img = c2.createImageData(mw, mh);
@@ -60,32 +119,41 @@ export function drawPaperBase(ctx: Ctx2D, w: number, h: number, pal: Palette, rn
   ctx.drawImage(cv as CanvasImageSource, 0, 0, mw * s, mh * s);
   ctx.globalAlpha = 1;
 
-  // Fibres: short, faint, gently curved strokes.
+  // Fibres: short, faint, gently curved strokes, batched by tone.
   const fr = rng.fork("fibres");
   const nF = Math.round((w * h) / 900);
   ctx.lineCap = "round";
+  const buckets: { dark: boolean; a: number; lw: number; segs: number[] }[] = [];
+  for (let b = 0; b < 8; b++) buckets.push({ dark: b < 5, a: b < 5 ? 0.04 + 0.014 * b : 0.1 + 0.05 * (b - 5), lw: 0.4 + 0.12 * (b % 4), segs: [] });
   for (let i = 0; i < nF; i++) {
     const x = fr.next() * w, y = fr.next() * h;
     const a = fr.next() * Math.PI;
     const L = 3 + fr.exponential(5);
     const bend = fr.range(-0.6, 0.6);
     const dx = Math.cos(a) * L, dy = Math.sin(a) * L;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.quadraticCurveTo(x + dx / 2 - dy * bend * 0.5, y + dy / 2 + dx * bend * 0.5, x + dx, y + dy);
     const darkF = fr.chance(0.6);
-    ctx.strokeStyle = darkF ? `rgba(120,95,60,${fr.range(0.04, 0.11).toFixed(3)})` : `rgba(255,252,240,${fr.range(0.1, 0.25).toFixed(3)})`;
-    ctx.lineWidth = fr.range(0.35, 0.9);
+    const b = darkF ? fr.int(0, 4) : fr.int(5, 7);
+    buckets[b].segs.push(x, y, x + dx / 2 - dy * bend * 0.5, y + dy / 2 + dx * bend * 0.5, x + dx, y + dy);
+  }
+  for (const b of buckets) {
+    ctx.beginPath();
+    const g = b.segs;
+    for (let i = 0; i < g.length; i += 6) {
+      ctx.moveTo(g[i], g[i + 1]);
+      ctx.quadraticCurveTo(g[i + 2], g[i + 3], g[i + 4], g[i + 5]);
+    }
+    ctx.strokeStyle = b.dark ? `rgba(120,95,60,${b.a.toFixed(3)})` : `rgba(255,252,240,${b.a.toFixed(3)})`;
+    ctx.lineWidth = b.lw;
     ctx.stroke();
   }
   ctx.restore();
 }
 
-/** Ageing overlay: multiply-blended edges, stains, foxing and grain. */
-export function drawPaperAgeing(ctx: Ctx2D, w: number, h: number, pal: Palette, rng: Rng, strength = 1): void {
+/** Ageing layer (white = no change; multiplied): edges, vignette, stains, foxing. */
+function paintAgeing(ctx: Ctx2D, w: number, h: number, rng: Rng, strength = 1): void {
   ctx.save();
-  const s = 3;
-  const mw = Math.ceil(w / s), mh = Math.ceil(h / s);
+  const s = 4;
+  const mw = Math.ceil(w / s) + 1, mh = Math.ceil(h / s) + 1;
   const cv = makeCanvas(mw, mh);
   const c2 = ctxOf(cv);
   const img = c2.createImageData(mw, mh);
@@ -104,9 +172,12 @@ export function drawPaperAgeing(ctx: Ctx2D, w: number, h: number, pal: Palette, 
       const px = x * s, py = y * s;
       // edge darkening with a ragged inner limit
       const de = Math.min(px, py, w - px, h - py);
-      const rag = 0.6 + 0.4 * nz.fbm(px / 90, py / 90, 1.7, 3);
-      let e = Math.max(0, 1 - de / (edge * rag));
-      e = e * e * e * 0.55;
+      let e = 0;
+      if (de < edge * 1.05) {
+        const rag = 0.6 + 0.4 * nz.fbm(px / 90, py / 90, 1.7, 3);
+        e = Math.max(0, 1 - de / (edge * rag));
+        e = e * e * e * 0.55;
+      }
       // vignette
       const vx = (px / w - 0.5) * 2, vy = (py / h - 0.5) * 2;
       const vig = Math.max(0, Math.hypot(vx * 0.92, vy) - 0.55) * 0.35;
@@ -123,9 +194,7 @@ export function drawPaperAgeing(ctx: Ctx2D, w: number, h: number, pal: Palette, 
           st += sn.k * (inner + rim) * 0.22;
         }
       }
-      // grain
-      const g = nz.noise(px / 2.3, py / 2.3, 5.5) * 0.05;
-      const t = Math.min(1, (e + vig + st) * strength + Math.max(0, g));
+      const t = Math.min(1, (e + vig + st) * strength);
       const o = 4 * (y * mw + x);
       // multiply colour: lerp white → aged brown
       d[o] = 255 - t * (255 - 150);
@@ -135,7 +204,6 @@ export function drawPaperAgeing(ctx: Ctx2D, w: number, h: number, pal: Palette, 
     }
   }
   c2.putImageData(img, 0, 0);
-  ctx.globalCompositeOperation = "multiply";
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(cv as CanvasImageSource, 0, 0, mw * s, mh * s);
 

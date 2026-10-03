@@ -16,7 +16,7 @@ export type ToWorker =
   | { type: "bake"; job: number; world: PhysicalWorld; widths: number[] };
 
 export type FromWorker =
-  | { type: "stage"; job: number; phase: "physical" | "history"; stage: string; fraction: number }
+  | { type: "stage"; job: number; phase: "physical" | "history"; stage: string; fraction: number; ms: number }
   | { type: "physical"; job: number; world: PhysicalWorld; ms: number }
   | { type: "live"; job: number; snap: LiveSnapshot }
   | { type: "history"; job: number; history: History; ms: number; source: string }

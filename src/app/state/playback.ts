@@ -10,6 +10,7 @@ let last = 0;
 let acc = 0;
 let tickerFrom = 0;
 let lastTickerYear = -1e9;
+let pending: import("../../history/types").HEvent | null = null;
 const REPLAY_SPEED = 160; // years per second during genesis
 const DEFAULT_SPEED = 50;
 
@@ -45,19 +46,21 @@ function feedTicker(year: number): void {
   const h = s.history, nar = s.narrative;
   if (!h) return;
   const items: { year: number; text: string }[] = [];
-  // Events are sorted by year; walk forward from where we left off.
+  // Events are sorted by year; walk forward from where we left off, keeping
+  // the most important event seen since the last ticker line.
   const ev = h.events;
   let i = tickerFrom;
-  let best: (typeof ev)[number] | null = null;
   while (i < ev.length && ev[i].year <= year) {
     const e = ev[i];
-    if (e.importance >= 4 && (!best || e.importance > best.importance)) best = e;
+    if (e.importance >= 3 && (!pending || e.importance > pending.importance)) pending = e;
     i++;
   }
   tickerFrom = i;
   // At most one line per ~40 simulated years, so each can be read.
-  if (best && best.year - lastTickerYear >= 40) {
-    lastTickerYear = best.year;
+  const best = pending;
+  if (best && year - lastTickerYear >= 40) {
+    lastTickerYear = year;
+    pending = null;
     let text = "";
     try {
       text = nar ? richText(nar.headline(best.id)) : "";
@@ -108,6 +111,7 @@ export function startReplay(): void {
   }
   tickerFrom = 0;
   lastTickerYear = -1e9;
+  pending = null;
   app.set({ replay: true, genesis: true, year: 0, speed: REPLAY_SPEED, playing: true, ticker: [] });
 }
 

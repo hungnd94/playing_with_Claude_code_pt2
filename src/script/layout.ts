@@ -238,6 +238,13 @@ export interface LayoutOptions extends SpellOptions {
   jitter?: boolean;
   /** Seed salt for jitter (e.g. a place id) so repeated words vary slightly. */
   salt?: number;
+  /**
+   * Set a vertical (ttb) script on a horizontal line, e.g. for map labels:
+   * column scripts built on a spine (Mongolian- or Ogham-like) lie on their
+   * side as their horizontal ancestors were written; stacked-block scripts
+   * run left to right, as Korean does in horizontal text.
+   */
+  horizontal?: boolean;
 }
 
 function unitOutline(s: Script, u: Unit): Outline {
@@ -294,9 +301,10 @@ function layoutClusters(s: Script, clusters: (Cluster | "sep")[], opts: LayoutOp
   const units = clusters.map((c) => (c === "sep" ? separatorUnit(s) : buildUnit(s, c)));
   const items: PlacedItem[] = [];
   const dir = s.direction;
-  const rotated = dir === "ttb" && (st.joins || st.stemline);
-  const upright = dir === "ttb" && !rotated;
-  const rtl = dir === "rtl" || (rotated && st.joins);
+  const spine = dir === "ttb" && (st.joins || st.stemline);
+  const rotated = spine && !opts.horizontal;
+  const upright = dir === "ttb" && !spine && !opts.horizontal;
+  const rtl = dir === "rtl" || (spine && st.joins);
   const extra: Stroke[] = [];
   const salt = opts.salt ?? 0;
   const jitter = opts.jitter !== false;
@@ -389,7 +397,8 @@ function layoutClusters(s: Script, clusters: (Cluster | "sep")[], opts: LayoutOp
     x1 = 50;
     y1 = 100;
   }
-  let layout: WordLayout = { items, x0, y0, x1, y1, direction: dir, clusters: units.length };
+  const shown: Script["direction"] = dir === "ttb" && opts.horizontal ? (rtl ? "rtl" : "ltr") : dir;
+  let layout: WordLayout = { items, x0, y0, x1, y1, direction: shown, clusters: units.length };
   if (rotated) layout = rotateLayout(layout, st.joins);
   return layout;
 }
@@ -407,4 +416,61 @@ function rotateLayout(l: WordLayout, ccw: boolean): WordLayout {
   const xs = corners.map((p) => p[0]);
   const ys = corners.map((p) => p[1]);
   return { ...l, items, x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+}
+
+// ---------------------------------------------------------------------------
+// Flattening (one path in pixel space, e.g. for a canvas Path2D)
+// ---------------------------------------------------------------------------
+
+const f1 = (v: number): string => {
+  const r = Math.round(v * 10) / 10;
+  return Object.is(r, -0) ? "0" : String(r);
+};
+
+/**
+ * Apply an affine matrix to path data made of M / l / z commands (the form
+ * this module emits); returns absolute M / L / Z path data.
+ */
+export function transformPath(d: string, m: Mat): string {
+  const tok = d.match(/[MLlz]|-?\d*\.?\d+(?:e-?\d+)?/g) ?? [];
+  const out: string[] = [];
+  let cmd = "";
+  let x = 0;
+  let y = 0;
+  let i = 0;
+  const emit = (c: string, px: number, py: number): void => {
+    const q = apply(m, [px, py]);
+    out.push(`${c}${f1(q[0])} ${f1(q[1])}`);
+  };
+  while (i < tok.length) {
+    const t = tok[i];
+    if (t === "M" || t === "L" || t === "l") {
+      cmd = t;
+      i++;
+      continue;
+    }
+    if (t === "z") {
+      out.push("Z");
+      i++;
+      continue;
+    }
+    const a = +tok[i];
+    const b = +tok[i + 1];
+    i += 2;
+    if (cmd === "M") {
+      x = a;
+      y = b;
+      emit("M", x, y);
+      cmd = "L";
+    } else if (cmd === "L") {
+      x = a;
+      y = b;
+      emit("L", x, y);
+    } else {
+      x += a;
+      y += b;
+      emit("L", x, y);
+    }
+  }
+  return out.join("");
 }

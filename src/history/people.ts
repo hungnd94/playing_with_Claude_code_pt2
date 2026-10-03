@@ -108,7 +108,14 @@ export function newPerson(sim: Sim, o: NewPersonOpts): PerS {
   const pe: PerS = { id, rec, alive: true, spouse: -1, rules: [], dist: o.dist ?? 9, ...sk, tally: {}, accAge: -1, polity: o.polity ?? -1, births: 0 };
   sim.Pe.push(pe);
   sim.living.push(id);
+  if (rec.dynasty >= 0) indexMember(sim, rec.dynasty, id);
   return pe;
+}
+
+function indexMember(sim: Sim, dyn: number, pid: number): void {
+  let l = sim.dynMembers.get(dyn);
+  if (!l) sim.dynMembers.set(dyn, (l = []));
+  l.push(pid);
 }
 
 /** An adult of a given age band, e.g. a founder, general or prophet (born `age` years ago). */
@@ -135,6 +142,8 @@ export function closeRole(sim: Sim, pid: number, kind: RoleKind, polity: number,
 
 export function newDynasty(sim: Sim, founder: number, polity: number, parent = -1): number {
   const rng = sim.rng.people;
+  // A new house brings new vigour.
+  if (polity >= 0 && sim.P[polity].rec.founded < sim.year) sim.P[polity].cohesion = Math.min(1.1, sim.P[polity].cohesion + 0.15);
   const pe = sim.Pe[founder];
   const C = sim.C[pe.rec.culture];
   const P = polity >= 0 ? sim.P[polity] : undefined;
@@ -147,13 +156,14 @@ export function newDynasty(sim: Sim, founder: number, polity: number, parent = -
   const glossWords = [name.gloss, (pe.rec.name as unknown as LName).meta?.givenGloss ?? ""].filter(Boolean);
   const emblem = parent >= 0
     ? cadetEmblem(sim.h.dynasties[parent].emblem, rng.fork(`cadet${id}`), rng.int(2, 5))
-    : makeEmblem(rng.fork(`dyn${id}`), { style: C.style, kind: C.rec.heraldicStyle, gloss: glossWords });
+    : makeEmblem(rng.fork(`dyn${id}`), { style: C.style, kind: C.rec.heraldicStyle, gloss: glossWords, legend: name.roman });
   const rec: Dynasty = {
     id, name: name as unknown as WName, founder, seat, parent, culture: C.id, emblem, founded: sim.year, extinct: -1, polities: polity >= 0 ? [polity] : [],
   };
   if (rng.chance(0.55)) rec.motto = sim.names.motto(C.lang, rng);
   sim.h.dynasties.push(rec);
   pe.rec.dynasty = id;
+  indexMember(sim, id, founder);
   sim.emit("dynastyFounded", parent >= 0 ? 2 : P && P.sets.length >= 8 ? 3 : 2, seat >= 0 ? sim.S[seat].cell : -1, { dynasties: [id, parent], persons: [founder], polities: [polity] }, { dynasty: id, founder, polity, parent });
   return id;
 }
@@ -360,13 +370,25 @@ function primogeniture(sim: Sim, deceased: number, cognatic: boolean, skip: Set<
 
 /** Living members of a dynasty (scan of the living). */
 function dynastyLiving(sim: Sim, dyn: number): number[] {
-  const out: number[] = [];
-  if (dyn < 0) return out;
-  for (const id of sim.living) {
-    const pe = sim.Pe[id];
-    if (pe.alive && pe.rec.dynasty === dyn) out.push(id);
-  }
+  if (dyn < 0) return [];
+  const l = sim.dynMembers.get(dyn);
+  if (!l) return [];
+  const out = l.filter((id) => sim.Pe[id].alive && sim.Pe[id].rec.dynasty === dyn);
+  if (out.length < l.length * 0.6) sim.dynMembers.set(dyn, out.slice());
   return out;
+}
+
+/** May this person take P's throne? (Not while ruling a rival realm, except by true inheritance.) */
+function eligible(sim: Sim, P: PolS, pid: number, inheritance: boolean): boolean {
+  const pe = sim.Pe[pid];
+  if (!pe.alive) return false;
+  for (const r of pe.rules) {
+    if (r === P.id) continue;
+    if (!inheritance) return false;
+    const Q = sim.P[r];
+    if (Q.rebel || Q.wars.some((w) => sim.W[w].active && (sim.W[w].attSide.includes(P.id) || sim.W[w].defSide.includes(P.id)))) return false;
+  }
+  return true;
 }
 
 /** Score for elective/tanistry choices. */
@@ -386,20 +408,25 @@ export function lawfulHeir(sim: Sim, P: PolS, deceased: number, skip = new Set<n
   const C = sim.C[P.culture];
   const law: SuccessionLaw = P.law;
   if (law === "election" || law === "appointment") return -1;
-  if (law === "primogeniture") return primogeniture(sim, deceased, C.cognatic, skip);
   const dyn = sim.h.persons[deceased].dynasty;
   const members = dynastyLiving(sim, dyn).filter((x) => x !== deceased && !skip.has(x));
-  const adults = members.filter((x) => sim.h.persons[x].sex === "m" && adultAge(sim, x) >= 16);
+  // Those who rule elsewhere may inherit only by blood right (primogeniture), never a rival's crown.
+  for (const m of members) if (!eligible(sim, P, m, law === "primogeniture")) skip.add(m);
+  if (law === "primogeniture") {
+    const h = primogeniture(sim, deceased, C.cognatic, skip);
+    return h >= 0 && eligible(sim, P, h, true) ? h : -1;
+  }
+  const adults = members.filter((x) => !skip.has(x) && sim.h.persons[x].sex === "m" && adultAge(sim, x) >= 16);
   if (law === "seniority") {
     if (adults.length) return adults.slice().sort((a, b) => sim.h.persons[a].born - sim.h.persons[b].born || a - b)[0];
-    return primogeniture(sim, deceased, C.cognatic, skip);
-  }
-  // elective / tanistry: the ablest adult kinsman (deterministic score; the noise is folded into skills at birth).
-  if (adults.length) {
+  } else if (adults.length) {
+    // elective / tanistry: the ablest adult kinsman.
     const w = law === "tanistry" ? 0.8 : 0.45;
     return adults.slice().sort((a, b) => ability(sim, b, w) - ability(sim, a, w) || a - b)[0];
   }
-  return primogeniture(sim, deceased, C.cognatic, skip);
+  // No grown kinsman: a minor of the line under elective customs only if nothing else; the caller may raise a kinsman instead.
+  const h = primogeniture(sim, deceased, C.cognatic, skip);
+  return h >= 0 && eligible(sim, P, h, false) && adultAge(sim, h) >= 12 ? h : -1;
 }
 
 /** Recompute heirs (yearly, kingdoms and larger) and mark them for tracked births. */
@@ -449,17 +476,19 @@ export function succeed(sim: Sim, P: PolS, deceased: number): void {
     accede(sim, P, r.id, "appointment", deceased);
     return;
   }
-  // Tribal realms keep no detailed families: a kinsman follows.
-  if (!tracksFamilies(sim, P)) {
-    let heir = lawfulHeir(sim, P, deceased);
+  // Tribal realms keep no detailed families: a kinsman follows (also when a clan law finds no grown man of the line).
+  const lh = tracksFamilies(sim, P) ? lawfulHeir(sim, P, deceased) : -2;
+  if (lh === -2 || (lh < 0 && P.law !== "primogeniture" && deceased >= 0 && sim.h.persons[deceased].dynasty >= 0 && sim.rng.people.chance(0.75))) {
+    let heir = lh === -2 ? lawfulHeir(sim, P, deceased) : -1;
     if (heir < 0 && deceased >= 0) {
       const d = sim.h.persons[deceased];
-      const asSon = rng.chance(0.6);
+      // A grown son if the dead chief was old enough to have one, else a brother or cousin.
+      const asSon = d.born + 18 <= sim.year - 16 && rng.chance(0.65);
+      const born = asSon ? Math.max(d.born + 18, sim.year - rng.int(16, 40)) : Math.min(sim.year - 16, d.born + rng.int(-12, 12));
       const pe = newPerson(sim, {
-        sex: "m", born: asSon ? Math.max(d.born + 18, sim.year - rng.int(18, 40)) : d.born + rng.int(-12, 12), culture: P.culture, religion: P.religion,
+        sex: "m", born, culture: P.culture, religion: P.religion,
         father: asSon ? deceased : d.father, mother: asSon && d.spouses.length ? d.spouses[0] : asSon ? -1 : d.mother, dynasty: d.dynasty, polity: P.id, dist: 0,
       });
-      if (pe.rec.born > sim.year - 14) pe.rec.born = sim.year - 14 - rng.int(0, 10);
       heir = pe.id;
     }
     if (heir < 0) {
@@ -471,7 +500,7 @@ export function succeed(sim: Sim, P: PolS, deceased: number): void {
     accede(sim, P, heir, P.law, deceased);
     return;
   }
-  const heir = lawfulHeir(sim, P, deceased);
+  const heir = lh;
   if (heir >= 0) {
     // A rival claimant may contest elective/tanistry/seniority successions, or a child heir.
     const hp = sim.Pe[heir];
@@ -484,18 +513,35 @@ export function succeed(sim: Sim, P: PolS, deceased: number): void {
         return;
       }
     }
+    if (hp.rules.length && hp.rules[0] !== P.id && P.unionWith !== hp.rules[0] && rng.chance(0.55)) {
+      // The magnates would rather have a resident prince: the next of the line.
+      const alt = lawfulHeir(sim, P, deceased, new Set([heir]));
+      if (alt >= 0 && !sim.Pe[alt].rules.length) {
+        accede(sim, P, alt, P.law, deceased);
+        return;
+      }
+    }
     if (hp.rules.length && hp.rules[0] !== P.id) {
       // Personal union: the heir already rules elsewhere.
       const senior = sim.P[hp.rules[0]];
-      accede(sim, P, heir, "union", deceased);
+      const already = P.unionWith === senior.id;
+      accede(sim, P, heir, "union", deceased, already);
       P.unionWith = senior.id;
-      sim.emit("union", 4, cap, { polities: [senior.id, P.id], persons: [heir] }, { senior: senior.id, junior: P.id, ruler: heir, kind: "personal" });
+      if (!already) sim.emit("union", P.sets.length + senior.sets.length >= 30 ? 4 : 3, cap, { polities: [senior.id, P.id], persons: [heir] }, { senior: senior.id, junior: P.id, ruler: heir, kind: "personal" });
       return;
     }
     accede(sim, P, heir, P.law, deceased);
     return;
   }
-  // No heir: a succession crisis.
+  // No heir in the tracked line: often a distant kinsman of a cadet line is found.
+  if (deceased >= 0 && sim.h.persons[deceased].dynasty >= 0 && rng.chance(0.45)) {
+    const d = sim.h.persons[deceased];
+    const k = newPerson(sim, { sex: "m", born: sim.year - rng.int(20, 45), culture: P.culture, religion: P.religion, dynasty: d.dynasty, polity: P.id, dist: 0 });
+    accede(sim, P, k.id, P.law, deceased);
+    P.legitimacy = Math.min(P.legitimacy, 0.6);
+    return;
+  }
+  // A succession crisis.
   const claimants: number[] = [];
   const noble = outsider(sim, P, 25, 55, { ambitious: 2 });
   claimants.push(noble.id);
@@ -510,7 +556,7 @@ export function succeed(sim: Sim, P: PolS, deceased: number): void {
     }
   }
   if (foreign >= 0) claimants.push(foreign);
-  sim.emit("successionCrisis", P.sets.length >= 10 ? 4 : 3, cap, { polities: [P.id], persons: [deceased, ...claimants] }, { polity: P.id, deceased, claimants });
+  sim.emit("successionCrisis", P.sets.length >= 45 || (foreign >= 0 && P.sets.length >= 15) ? 4 : 3, cap, { polities: [P.id], persons: [deceased, ...claimants] }, { polity: P.id, deceased, claimants });
   P.crisis += 2;
   newDynasty(sim, noble.id, P.id);
   accede(sim, P, noble.id, "elective", deceased);
@@ -563,7 +609,11 @@ export function killPerson(sim: Sim, pid: number, cause: DeathCause, place = -1,
   rec.deathCause = cause;
   rec.deathPlace = place;
   const ruled = pe.rules.slice();
-  for (const r of rec.roles) if (r.to < 0) r.to = sim.year;
+  const heirOf: number[] = [];
+  for (const r of rec.roles) if (r.to < 0) {
+    if (r.kind === "heir") heirOf.push(r.polity);
+    r.to = sim.year;
+  }
   if (pe.spouse >= 0 && sim.Pe[pe.spouse].alive && sim.Pe[pe.spouse].spouse === pid) sim.Pe[pe.spouse].spouse = -1;
   if (ruled.length) rec.epithet = earnEpithet(sim, pe, cause);
   const age = sim.year - rec.born;
@@ -572,7 +622,8 @@ export function killPerson(sim: Sim, pid: number, cause: DeathCause, place = -1,
     const P = ruled.length ? sim.P[ruled[0]] : pe.polity >= 0 ? sim.P[pe.polity] : undefined;
     const big = P ? P.sets.length >= 12 || P.gov === "empire" : false;
     let imp = ruled.length ? (big ? 3 : 2) : 1;
-    if (cause === "battle" || cause === "assassinated" || cause === "executed") imp += 1;
+    // Violent deaths are told by their own events (battle, assassination, execution).
+    if (cause === "battle" || cause === "assassinated" || cause === "executed") imp = Math.min(imp, 2);
     if (rec.roles.some((r) => r.kind === "prophet")) imp = Math.max(imp, 3);
     const cell = place >= 0 ? sim.S[place].cell : P && P.capital >= 0 ? sim.S[P.capital].cell : -1;
     sim.emit("death", imp, cell, { persons: [pid, killer], polities: ruled.length ? ruled : [pe.polity], settlements: [place] }, {
@@ -584,7 +635,8 @@ export function killPerson(sim: Sim, pid: number, cause: DeathCause, place = -1,
     endReign(sim, P, pid);
     if (P.alive) succeed(sim, P, pid);
   }
-  for (const P of sim.P) if (P.alive && P.heir === pid) P.heir = -1;
+  for (const q of heirOf) if (q >= 0 && sim.P[q].heir === pid) sim.P[q].heir = -1;
+  if (pe.polity >= 0 && sim.P[pe.polity].heir === pid) sim.P[pe.polity].heir = -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -649,7 +701,8 @@ function hazard(age: number): number {
   if (age < 1) return 0.14;
   if (age < 5) return 0.03;
   if (age < 15) return 0.006;
-  return 0.004 + 0.00003 * Math.exp(0.095 * age);
+  // Gompertz–Makeham, pre-modern elites: about a third of twenty-year-olds see seventy.
+  return 0.008 + 0.0001 * Math.exp(0.09 * age);
 }
 
 const FERT = (age: number) => (age < 16 ? 0 : age < 20 ? 0.6 : age < 30 ? 1 : age < 35 ? 0.8 : age < 40 ? 0.5 : age < 45 ? 0.2 : 0);
@@ -661,6 +714,14 @@ export function tickPeople(sim: Sim): void {
   if (year % 5 === 0) sim.living = sim.living.filter((id) => sim.Pe[id].alive);
   const list = sim.living.slice();
   const cold = sim.volcanicWinter > 0 ? 0.002 : 0;
+  // The marriage market: unmarried royals of marriageable age.
+  const market: number[] = [];
+  for (const id of list) {
+    const q = sim.Pe[id];
+    if (!q.alive || q.spouse !== -1 || q.dist > 1 || q.polity < 0) continue;
+    const a = year - q.rec.born;
+    if (a >= 16 && a <= 40) market.push(id);
+  }
   for (const id of list) {
     const pe = sim.Pe[id];
     if (!pe.alive) continue;
@@ -679,13 +740,13 @@ export function tickPeople(sim: Sim): void {
     // Rulers: assassination, abdication.
     if (pe.rules.length) {
       const P = sim.P[pe.rules[0]];
-      let pa = 0.0015 + (rec.traits.includes("cruel") ? 0.004 : 0) + (rec.traits.includes("mad") ? 0.008 : 0) + 0.006 * (1 - P.legitimacy);
+      let pa = 0.0006 + (rec.traits.includes("cruel") ? 0.003 : 0) + (rec.traits.includes("mad") ? 0.006 : 0) + 0.004 * (1 - P.legitimacy);
       if (P.gov === "tribe" || P.gov === "chiefdom") pa *= 0.6;
       if (rng.chance(pa)) {
         assassinate(sim, P, id);
         continue;
       }
-      if (age >= 68 && P.heir >= 0 && sim.Pe[P.heir].alive && adultAge(sim, P.heir) >= 25 && rng.chance(0.012)) {
+      if (age >= 68 && P.heir >= 0 && sim.Pe[P.heir].alive && adultAge(sim, P.heir) >= 25 && rng.chance(0.004)) {
         abdicate(sim, P, id, rec.traits.includes("pious") ? "to end his days in prayer" : "old age");
         continue;
       }
@@ -694,14 +755,14 @@ export function tickPeople(sim: Sim): void {
     // Marriage.
     if (pe.spouse < 0 && pe.dist <= 1 && pe.polity >= 0) {
       const minAge = rec.sex === "f" ? 16 : 18;
-      if (age >= minAge && age <= 50 && rng.chance(age < 35 ? 0.22 : 0.06)) arrangeMarriage(sim, pe);
+      if (age >= minAge && age <= 50 && rng.chance(age < 35 ? 0.22 : 0.06)) arrangeMarriage(sim, pe, market);
     }
     // Births.
     if (rec.sex === "f" && pe.spouse >= 0 && pe.births < 10) {
       const sp = sim.Pe[pe.spouse];
       if (sp.alive && (pe.dist === 0 || sp.dist === 0)) {
         const f = FERT(age);
-        if (f > 0 && rng.chance(0.3 * f)) birth(sim, pe, sp);
+        if (f > 0 && rng.chance(0.24 * f)) birth(sim, pe, sp);
       }
     }
   }
@@ -742,7 +803,7 @@ function birth(sim: Sim, mother: PerS, father: PerS): void {
 }
 
 /** Find a spouse: a royal of a neighbouring realm (alliance) or a noble of the realm. */
-function arrangeMarriage(sim: Sim, pe: PerS): void {
+function arrangeMarriage(sim: Sim, pe: PerS, market: number[]): void {
   const rng = sim.rng.people;
   const P = sim.P[pe.polity];
   if (!P || !P.alive) return;
@@ -751,9 +812,9 @@ function arrangeMarriage(sim: Sim, pe: PerS): void {
   if (P.gov !== "tribe" && rng.chance(0.45)) {
     const nb = (sim.polNbrs.get(P.id) ?? []).concat(P.allies);
     let best = -1, bs = -Infinity;
-    for (const id of sim.living) {
+    for (const id of market) {
       const q = sim.Pe[id];
-      if (!q.alive || q.spouse >= 0 || q.rec.sex !== want || q.polity < 0 || q.polity === P.id || q.dist > 1) continue;
+      if (!q.alive || q.spouse !== -1 || q.rec.sex !== want || q.polity < 0 || q.polity === P.id || q.dist > 1) continue;
       const qa = sim.year - q.rec.born;
       if (qa < 16 || qa > 40) continue;
       if (!nb.includes(q.polity) && sim.P[q.polity].culture !== P.culture) continue;
@@ -817,7 +878,7 @@ function assassinate(sim: Sim, P: PolS, victim: number): void {
   const motive = culprit >= 0 ? "the throne" : rng.pick(v.rec.traits.includes("cruel") ? ["revenge for his cruelties", "a slighted noble house", "the throne"] : ["a slighted noble house", "a palace intrigue", "faith", "the throne", "revenge"]);
   if (culprit >= 0) sim.Pe[culprit].tally.kin = (sim.Pe[culprit].tally.kin ?? 0) + 1;
   const cell = P.capital >= 0 ? sim.S[P.capital].cell : -1;
-  sim.emit("assassination", P.sets.length >= 10 ? 4 : 3, cell, { persons: [victim, culprit], polities: [P.id] }, { victim, polity: P.id, culprit, motive }, [victim, culprit].filter((x) => x >= 0));
+  sim.emit("assassination", P.sets.length >= 45 || P.gov === "empire" ? 4 : 3, cell, { persons: [victim, culprit], polities: [P.id] }, { victim, polity: P.id, culprit, motive }, [victim, culprit].filter((x) => x >= 0));
   P.crisis += 1;
   killPerson(sim, victim, "assassinated", P.capital, culprit);
 }
@@ -853,7 +914,7 @@ export function usurp(sim: Sim, P: PolS, usurper: number, kill: boolean): void {
     }
   }
   if (P.ruler >= 0 && P.ruler !== usurper) endReign(sim, P, P.ruler);
-  accede(sim, P, usurper, "usurpation", old);
+  accede(sim, P, usurper, "usurpation", old, true);
 }
 
 // ---------------------------------------------------------------------------

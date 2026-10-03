@@ -190,13 +190,20 @@ export function harmonize(h: Harmony, v: string, cls: number, inventory: Set<str
 // Syllables and stress
 // ---------------------------------------------------------------------------
 
+/**
+ * Onsets any language could plausibly have when nothing better is known: s + consonant
+ * (st, sn, sl), or a non-glottal obstruent + liquid or glide (pr, kl, tw). Anything else
+ * (hm, kn, pt) must be a cluster the language itself is known to have.
+ */
 function genericOnsetOK(seq: string[]): boolean {
   if (seq.length <= 1) return true;
   if (seq.length === 2) {
     const [a, b] = seq;
     if (a === b) return false;
-    if ((a === "s" || a === "ʃ") && isStop(b)) return true;
-    return sonority(b) > sonority(a) + 1.5 && sonority(b) >= 5;
+    if ((a === "s" || a === "ʃ") && (isStop(b) || isNasal(b) || isLiquid(b) || isGlide(b))) return true;
+    const pl = cf(a)?.place;
+    if (!isObstruent(a) || pl === "glottal" || pl === "pharyngeal") return false;
+    return sonority(b) >= 6 && sonority(b) > sonority(a) + 1.5;
   }
   if (seq.length === 3) {
     return (seq[0] === "s" || seq[0] === "ʃ") && isStop(seq[1]) && sonority(seq[2]) >= 5;
@@ -279,6 +286,55 @@ export function stressedSyllable(w: Word, rule: StressRule, ph?: Phonology): num
   }
   void ph;
   return 0;
+}
+
+let SCRATCH = new Int32Array(64);
+
+/**
+ * Index (into the word) of the stressed vowel, or -1 for a word without vowels.
+ * Same rules as `stressedSyllable`, in one allocation-free pass (hot: every
+ * stress-conditioned sound change calls it for every word).
+ */
+export function stressedVowel(w: Word, rule: StressRule): number {
+  if (SCRATCH.length < w.length) SCRATCH = new Int32Array(w.length * 2);
+  const nuc = SCRATCH;
+  let n = 0;
+  for (let i = 0; i < w.length; i++) if (isVowel(w[i])) nuc[n++] = i;
+  if (n === 0) return -1;
+  if (n === 1) return nuc[0];
+  const heavy = (i: number): boolean => {
+    if (vf(w[nuc[i]])?.long) return true;
+    const end = i + 1 < n ? nuc[i + 1] : w.length;
+    const after = end - nuc[i] - 1;
+    return i + 1 < n ? after >= 2 : after >= 1;
+  };
+  let s: number;
+  switch (rule) {
+    case "initial":
+      s = 0;
+      break;
+    case "second":
+      s = 1;
+      break;
+    case "penult":
+      s = n - 2;
+      break;
+    case "antepenult":
+      s = Math.max(0, n - 3);
+      break;
+    case "final":
+      s = n - 1;
+      break;
+    case "latin":
+      s = n === 2 ? 0 : heavy(n - 2) ? n - 2 : n - 3;
+      break;
+    case "weight":
+      s = heavy(n - 1) && vf(w[nuc[n - 1]])?.long ? n - 1 : heavy(n - 2) ? n - 2 : Math.max(0, n - 3);
+      break;
+    default:
+      s = 0;
+  }
+  return nuc[Math.min(Math.max(0, s), n - 1)];
 }
 
 /** For each phoneme index: is it the stressed vowel? */
@@ -395,7 +451,7 @@ export function isValidWord(ph: Phonology, w: Word, opts: { harmony?: boolean } 
  * for daughter languages, whose phonotactics emerge from history rather than
  * from a template. `prev` supplies parameters that cannot be observed.
  */
-export function phonologyFromCorpus(words: Word[], roots: Word[], prev: Phonology, stress: StressRule): Phonology {
+export function phonologyFromCorpus(words: Word[], roots: Word[], prev: Phonology, stress: StressRule, opts: { quick?: boolean } = {}): Phonology {
   const cCount = new Map<string, number>();
   const onsetCount = new Map<string, number>();
   const codaCount = new Map<string, number>();
@@ -436,41 +492,53 @@ export function phonologyFromCorpus(words: Word[], roots: Word[], prev: Phonolog
     return run.length - 1;
   };
 
+  let nucBuf = new Int32Array(64);
   for (const w of words) {
-    const nuc = nuclei(w);
-    if (nuc.length === 0) continue;
+    // nuclei (allocation-free); single-consonant runs, the common case, take a fast path
+    if (nucBuf.length < w.length) nucBuf = new Int32Array(w.length * 2);
+    let nN = 0;
+    for (let i = 0; i < w.length; i++) if (isVowel(w[i])) nucBuf[nN++] = i;
+    if (nN === 0) continue;
     for (const p of w) {
       if (isVowel(p)) inc(vCount, p);
       else inc(cCount, p);
     }
     finalWords++;
-    syllables += nuc.length;
-    const init = w.slice(0, nuc[0]);
-    if (init.length === 0) initialVowel++;
+    syllables += nN;
+    const n0 = nucBuf[0];
+    if (n0 === 0) initialVowel++;
     else {
       onsets++;
-      initialSeen.add(init[0]);
-      if (init.length === 1) inc(onsetCount, init[0]);
+      initialSeen.add(w[0]);
+      if (n0 === 1) inc(onsetCount, w[0]);
       else {
+        const init = w.slice(0, n0);
         clusterOnsets++;
         onsetCl.set(key(init), init);
         for (const p of init) inc(onsetCount, p, 0.3);
       }
     }
-    for (let i = 0; i + 1 < nuc.length; i++) {
-      const run = w.slice(nuc[i] + 1, nuc[i + 1]);
+    for (let i = 0; i + 1 < nN; i++) {
+      const a = nucBuf[i] + 1;
+      const b = nucBuf[i + 1];
       boundaries++;
-      if (run.length === 0) {
+      if (b === a) {
         hiatus = true;
         continue;
       }
-      if (run.length === 2 && run[0] === run[1]) {
+      if (b - a === 1) {
+        onsets++;
+        inc(onsetCount, w[a]);
+        continue;
+      }
+      if (b - a === 2 && w[a] === w[a + 1]) {
         geminates = true;
         gemN++;
-        inc(onsetCount, run[0]);
+        inc(onsetCount, w[a]);
         onsets++;
         continue;
       }
+      const run = w.slice(a, b);
       const k = onsetSplit(run);
       const coda = run.slice(0, k);
       const onset = run.slice(k);
@@ -493,22 +561,24 @@ export function phonologyFromCorpus(words: Word[], roots: Word[], prev: Phonolog
         }
       }
     }
-    const fin = w.slice(nuc[nuc.length - 1] + 1);
-    if (!fin.length && nuc.length > 1) {
+    const lastNuc = nucBuf[nN - 1];
+    const finLen = w.length - lastNuc - 1;
+    if (finLen === 0 && nN > 1) {
       openFinals++;
-      inc(finalVCount, vowelQuality(w[nuc[nuc.length - 1]]));
+      inc(finalVCount, vowelQuality(w[lastNuc]));
     }
-    if (fin.length) {
+    if (finLen === 1) {
       finalCoda++;
       codaN++;
-      if (fin.length === 1) {
-        finals.add(fin[0]);
-        inc(codaCount, fin[0]);
-        inc(finalCount, fin[0]);
-      } else {
-        codaClusterN++;
-        finalCl.set(key(fin), fin);
-      }
+      finals.add(w[lastNuc + 1]);
+      inc(codaCount, w[lastNuc + 1]);
+      inc(finalCount, w[lastNuc + 1]);
+    } else if (finLen > 1) {
+      const fin = w.slice(lastNuc + 1);
+      finalCoda++;
+      codaN++;
+      codaClusterN++;
+      finalCl.set(key(fin), fin);
     }
   }
   const consonants = [...cCount.keys()];
@@ -578,8 +648,8 @@ export function phonologyFromCorpus(words: Word[], roots: Word[], prev: Phonolog
     const keep = prev.banned.filter(([c, v]) => cCount.has(c) && !present.has(c + "+" + v));
     if (keep.length) ph.banned = keep;
   }
-  // Harmony survives only if most roots still obey it.
-  if (ph.harmony !== "none") {
+  // Harmony survives only if most roots still obey it (skipped for quick interim estimates).
+  if (ph.harmony !== "none" && !opts.quick) {
     let ok = 0;
     let n = 0;
     for (const r of roots) {

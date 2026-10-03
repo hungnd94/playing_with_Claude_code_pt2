@@ -223,13 +223,20 @@ export class OverlayEngine {
         }
         hb.set(tmp);
       }
-      const lo = Math.log(60), hi = Math.log(Math.max(2000, maxPop * 0.35));
+      // Scale by the distribution of peopled cells (log), so the ramp spans sparse → teeming.
+      const vals: number[] = [];
+      for (let c = 0; c < n; c++) if (hb[c] > 1 && land[c]) vals.push(hb[c]);
+      vals.sort((a, b) => a - b);
+      const q = (f: number): number => vals[Math.min(vals.length - 1, Math.floor(vals.length * f))] ?? 1;
+      const lo = Math.log(Math.max(1, q(0.15))), hi = Math.log(Math.max(q(0.15) * 4, q(0.995)));
       for (let c = 0; c < n; c++) {
         const v = hb[c];
-        if (v < 60 || !land[c] || lakes[c] >= 0) continue;
-        const t = (Math.log(v) - lo) / (hi - lo);
-        put(c, heat(t), Math.round(Math.max(0.25, Math.min(1, 0.25 + t)) * 255), 0);
+        if (v <= 1 || !land[c] || lakes[c] >= 0) continue;
+        const t = Math.max(0, Math.min(1, (Math.log(v) - lo) / (hi - lo)));
+        if (t <= 0.02) continue;
+        put(c, heat(t), Math.round(Math.min(1, 0.18 + 0.95 * Math.sqrt(t)) * 255), 0);
       }
+      void maxPop;
       opacity = 0.85;
       borderWidth = 0;
       wash = 0.4;

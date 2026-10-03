@@ -25,7 +25,7 @@ const CODA_BASE: Record<string, number> = {
 };
 const VOWEL_BASE: Record<string, number> = { a: 10, i: 8, u: 7, e: 7, o: 6, ə: 4.5, ɨ: 3.5, ɛ: 4, ɔ: 3.5, y: 3, ø: 2.5, æ: 3.5, ɯ: 3, ɑ: 3, ʊ: 3 };
 
-function baseWeight(table: Record<string, number>, p: string, dflt: number): number {
+function baseWeight(table: Record<string, number>, p: string, dflt: number, longFreq = 0.32): number {
   if (table[p] !== undefined) return table[p];
   const f = cf(p);
   if (f) {
@@ -36,7 +36,7 @@ function baseWeight(table: Record<string, number>, p: string, dflt: number): num
   const v = vf(p);
   if (v) {
     const q = vowelQuality(p);
-    return (table[q] ?? dflt) * (v.long ? 0.32 : 1) * (v.nasal ? 0.3 : 1);
+    return (table[q] ?? dflt) * (v.long ? longFreq : 1) * (v.nasal ? 0.3 : 1);
   }
   return dflt;
 }
@@ -83,7 +83,8 @@ function buildInventory(style: SoundStyle, rng: Rng): string[] {
   }
   // Mutation: languages of the same style should not be clones.
   if (rng.chance(0.35)) {
-    const cand = MUTATION_EXTRAS.filter((p) => !set.includes(p) && plausibleExtra(p, set));
+    const extras = style.extras !== undefined ? style.extras.split(/\s+/).filter((p) => features(p)) : MUTATION_EXTRAS;
+    const cand = extras.filter((p) => !set.includes(p) && plausibleExtra(p, set));
     if (cand.length) add(rng.pick(cand));
   }
   if (rng.chance(0.3) && set.length > 12) {
@@ -117,8 +118,11 @@ function buildVowels(style: SoundStyle, rng: Rng): string[] {
   if (style.long > 0 && rng.chance(style.long)) {
     const partial = style.long < 0.6 && rng.chance(0.5);
     for (const v of sys) {
-      if (v === "ə" || v === "ɨ" && partial) continue;
-      if (!partial || ["a", "e", "i", "o", "u"].includes(v) && rng.chance(0.75)) out.push(lengthen(v));
+      // lax and central vowels are characteristically short (no ɛː ɔː əː in proto-systems),
+      // and back ɑ beside a has no long partner of its own (Persian ā is the long a)
+      if (["ə", "ɨ", "ɛ", "ɔ", "ɪ", "ʊ"].includes(v)) continue;
+      if (v === "ɑ" && sys.includes("a")) continue;
+      if (!partial || (["a", "e", "i", "o", "u"].includes(v) && rng.chance(0.75))) out.push(lengthen(v));
     }
   }
   if (style.nasal && rng.chance(style.nasal)) for (const v of sys) if (["a", "e", "i", "o", "u"].includes(v) && rng.chance(0.7)) out.push(modify(v, { nasal: true })!);
@@ -308,7 +312,7 @@ export function phonologyFromStyle(style: SoundStyle, rng: Rng): Phonology {
   const spread = rng.range(0.35, 0.7);
   const wOnset = zipf(consonants, (p) => baseWeight(ONSET_BASE, p, 2), rng, spread, boost);
   const wCoda = zipf(codas, (p) => baseWeight(CODA_BASE, p, 2), rng, spread, boost);
-  const wVowel = zipf(vowels, (p) => baseWeight(VOWEL_BASE, p, 3), rng, 0.35, new Map());
+  const wVowel = zipf(vowels, (p) => baseWeight(VOWEL_BASE, p, 3, style.longFreq), rng, 0.35, new Map());
 
   const initialBanned: string[] = [];
   for (const [c, p] of parseWeighted(style.noInitial)) if (has(c) && rng.chance(p)) initialBanned.push(c);

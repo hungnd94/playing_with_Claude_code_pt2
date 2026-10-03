@@ -25,7 +25,10 @@ export interface GenerateOptions {
   style?: HeraldryStyle | StyleName;
   /** Charges that cant on the bearer's name; one becomes the principal charge (see `motifChance`). */
   motifs?: ChargeId[];
-  /** Probability of using a motif when given. Default 0.85. */
+  /**
+   * Probability that the coat cants at all when motifs are given (default 0.92). A canting coat
+   * shows exactly one of the motifs — the first most often — as its principal charge where it can.
+   */
   motifChance?: number;
   /** Tinctures to favour (a liege's or a city's colours). */
   colours?: Tint[];
@@ -62,10 +65,14 @@ class Gen {
   st: HeraldryStyle;
   cx: number;
   tw: Map<Tint, number> = new Map();
+  /** This coat cants on the bearer's name; `motifUsed` once a motif has been placed. */
+  cant: boolean;
+  motifUsed = false;
   constructor(rng: Rng, st: HeraldryStyle, public opts: GenerateOptions) {
     this.rng = rng;
     this.st = st;
     this.cx = opts.complexity ?? st.complexity;
+    this.cant = !!opts.motifs?.some((m) => CHARGES[m]) && rng.chance(opts.motifChance ?? 0.92);
     const fm = st.furs ?? 1;
     for (const t of TINCTURE_LIST) this.tw.set(t, BASE_TINT[t] * (st.tinctures?.[t] ?? 1) * (opts.colours?.includes(t) ? 3 : 1));
     for (const t of FUR_LIST) this.tw.set(t, BASE_FUR[t] * fm * (st.tinctures?.[t] ?? 1) * (opts.colours?.includes(t) ? 2 : 1));
@@ -140,8 +147,13 @@ class Gen {
   }
 
   pickCharge(ctx: Ctx, allowMotif: boolean): ChargeId {
-    const motifs = this.opts.motifs?.filter((m) => CHARGES[m] && this.chargeWeight(m, CHARGES[m], ctx) > 0) ?? [];
-    if (allowMotif && motifs.length && this.chance(this.opts.motifChance ?? 0.85)) return this.rng.pick(motifs);
+    if (allowMotif && this.cant && !this.motifUsed) {
+      const motifs = this.opts.motifs?.filter((m) => CHARGES[m] && this.chargeWeight(m, CHARGES[m], ctx) > 0) ?? [];
+      if (motifs.length && this.chance(0.92)) {
+        this.motifUsed = true;
+        return this.pickMotif(motifs);
+      }
+    }
     const pairs: [ChargeId, number][] = [];
     for (const id of ALL_CHARGE_IDS) {
       const def = CHARGES[id];
@@ -150,6 +162,11 @@ class Gen {
       if (w > 0) pairs.push([id, w]);
     }
     return this.rng.weighted(pairs);
+  }
+
+  /** A motif, the first-named (the head word of the name) most often. */
+  pickMotif(motifs: ChargeId[]): ChargeId {
+    return this.rng.weighted(motifs.map((m, i) => [m, i === 0 ? 2.5 : 1] as [ChargeId, number]));
   }
 
   pickCount(id: ChargeId, ctx: Ctx): number {
@@ -255,15 +272,20 @@ function onOrdinaryCount(g: Gen, kind: OrdinaryKind): number {
 
 function makeOrdinary(g: Gen, kind: OrdinaryKind, under: Tint[], allowCharged: boolean): Ordinary {
   const o: Ordinary = { kind, tincture: g.over(under, { furs: g.chance(0.08) }) };
-  const ln = kind === "orle" || kind === "fret" ? "straight" : g.line(0.24 + g.cx * 0.1);
+  let ln = kind === "orle" || kind === "fret" ? "straight" : g.line(0.24 + g.cx * 0.1);
+  // Dancetty's three great teeth only suit horizontal and diagonal bands.
+  if (ln === "dancetty" && kind !== "fess" && kind !== "bend" && kind !== "bendSinister" && kind !== "pale") ln = "indented";
   if (ln !== "straight") o.line = ln;
   if ((kind === "fess" || kind === "bend" || kind === "chevron" || kind === "pale") && g.chance(0.09)) {
     o.count = kind === "chevron" ? g.rng.pick([2, 3]) : g.rng.pick([2, 3]);
     if (kind === "fess" || kind === "pale") delete o.line;
   }
-  if (kind === "pile" && g.chance(0.25)) o.count = 3;
+  if (kind === "pile" && g.chance(0.25)) {
+    o.count = 3;
+    delete o.line;
+  }
   if ((kind === "bend" || kind === "fess") && !o.count && o.line === undefined && g.chance(0.07 + g.cx * 0.06)) o.cotised = true;
-  if (allowCharged && !o.count && kind !== "orle" && kind !== "fret" && kind !== "base" && g.chance(0.12 + g.cx * 0.22)) {
+  if (allowCharged && !o.count && kind !== "orle" && kind !== "fret" && kind !== "base" && g.chance((0.12 + g.cx * 0.22) * (g.st.chargedOrdinary ?? 1))) {
     const n = onOrdinaryCount(g, kind);
     if (n > 0) {
       const id = g.pickCharge("onOrdinary", false);
@@ -282,7 +304,8 @@ function additions(g: Gen, a: SimpleArms, busy: boolean): void {
   const pCanton = (busy ? 0.015 : 0.035) * k * (g.st.canton ?? 1);
   const canChief = !a.ordinary || ["fess", "bend", "bendSinister", "chevron", "saltire", "pale", "pile", "cross", "orle", "base"].includes(a.ordinary.kind);
   if (canChief && !(a.charges?.arrangement === "chief") && g.chance(pChief)) {
-    const t = g.over(under);
+    // A chief must not run into an ordinary of its own tincture.
+    const t = g.over(under, { avoid: a.ordinary ? [a.ordinary.tincture] : [] });
     a.chief = { tincture: t };
     const ln = g.line(0.2);
     if (ln !== "straight") a.chief.line = ln;
@@ -293,7 +316,8 @@ function additions(g: Gen, a: SimpleArms, busy: boolean): void {
     }
   }
   if (g.chance(pBord)) {
-    const t = g.over(under, { furs: g.chance(0.1) });
+    // A bordure must not run into a chief of the same tincture.
+    const t = g.over(under, { furs: g.chance(0.1), avoid: a.chief ? [a.chief.tincture] : [] });
     a.bordure = { tincture: t };
     const r = g.rng.next();
     if (r < 0.28) a.bordure.line = g.rng.pick(["engrailed", "engrailed", "indented", "wavy", "invected"] as Line[]);
@@ -362,17 +386,13 @@ export function generateArms(rng: Rng, opts: GenerateOptions = {}): SimpleArms {
       const content: "none" | "charges" | "ordinary" = three ? (r < 0.75 ? "none" : "ordinary") : r < 0.36 - g.cx * 0.12 ? "none" : r < 0.78 ? "charges" : "ordinary";
       const scheme = three || content === "none"
         ? "metalColour"
-        : g.rng.weighted([["counter", 58], ["colours", 30], ["metals", 8], ["fur", 4]] as [string, number][]);
+        : g.rng.weighted([["counter", 60], ["colours", 31], ["metals", 9]] as [string, number][]);
       let tints: Tint[];
       if (scheme === "colours") {
         const t0 = g.pickTint((t) => isColour(t), false);
         tints = [t0, g.pickTint((t) => isColour(t) && t !== t0 && t !== "sanguine" && !(t0 === "sanguine" && t === "gules"), false)];
       } else if (scheme === "metals") tints = g.rng.chance(0.5) ? ["or", "argent"] : ["argent", "or"];
-      else if (scheme === "fur") {
-        const fur = g.pickTint((t) => isFur(t) && t !== "vair" && t !== "countervair" && t !== "potent", true);
-        const other = g.over([fur], { avoid: [fur] });
-        tints = g.chance(0.5) ? [fur, other] : [other, fur];
-      } else {
+      else {
         const t0 = g.pickTint(() => true, g.chance(0.12));
         tints = [t0, g.over([t0], { avoid: [t0] })];
       }
@@ -389,7 +409,6 @@ export function generateArms(rng: Rng, opts: GenerateOptions = {}): SimpleArms {
       const overAll = (): Tint =>
         scheme === "colours" ? g.pickTint((t) => isMetal(t), false)
         : scheme === "metals" ? g.pickTint((t) => isColour(t), false)
-        : scheme === "fur" ? g.over(tints.filter((t) => !isFur(t)), { avoid: tints })
         : pickOverDivision(g, tints);
       if (content === "charges") {
         const id = g.pickCharge("principal", true);
@@ -399,12 +418,19 @@ export function generateArms(rng: Rng, opts: GenerateOptions = {}): SimpleArms {
         if (counter) grp.counterchanged = true;
         a.charges = grp;
       } else if (content === "ordinary") {
-        const kind = g.rng.weighted([["chevron", 4], ["fess", 3], ["bend", 3], ["cross", 2], ["saltire", 2], ["pale", 1.5]] as [OrdinaryKind, number][]);
+        const kind: OrdinaryKind = part === "tiercedInFess" ? "fess" : part === "tiercedInPale" ? "pale"
+          : g.rng.weighted([["chevron", 4], ["fess", 3], ["bend", 3], ["cross", 2], ["saltire", 2], ["pale", 1.5]] as [OrdinaryKind, number][]);
         const counter = scheme === "counter" && part !== "quarterly" && !(part === "perPale" && (kind === "pale" || kind === "cross")) && !(part === "perFess" && kind === "fess");
         const o: Ordinary = { kind, tincture: counter ? t0 : overAll() };
         if (counter) o.counterchanged = true;
         // On a tierced field the fess or pale lies on the middle tier: make it stand out from all three.
-        if (three) o.tincture = g.over(tints, { avoid: tints });
+        if (three) {
+          o.tincture = g.over(tints, { avoid: tints });
+          if (g.chance(0.3 * (g.st.chargedOrdinary ?? 1))) {
+            const id = g.pickCharge("onOrdinary", true);
+            o.charges = g.group(id, g.rng.weighted([[1, 6], [3, 3]] as [number, number][]), g.over([o.tincture]), [o.tincture], undefined, "onOrdinary");
+          }
+        }
         a.ordinary = o;
       }
       additions(g, a, !!a.charges || !!a.ordinary);
@@ -463,10 +489,75 @@ export function generateArms(rng: Rng, opts: GenerateOptions = {}): SimpleArms {
       break;
     }
   }
+  if (g.cant) ensureMotif(g, a);
   // A rare, deliberate breach of the rule of tincture (flagged).
   if (g.chance(st.exceptions ?? 0.012)) breakRule(g, a);
   if (!a.exception) repairTincture(g, a);
   return a;
+}
+
+/** Every group of charges on a coat. */
+function groupsOf(a: SimpleArms): ChargeGroup[] {
+  return [a.charges, a.secondary, a.ordinary?.charges, a.chief?.charges, a.canton?.charge, a.bordure?.charges].filter((x): x is ChargeGroup => !!x);
+}
+
+/**
+ * Make a canting coat show its motif: as the principal charges, on the ordinary,
+ * or on a chief — wherever the design has room — if the grammar did not place it.
+ */
+function ensureMotif(g: Gen, a: SimpleArms): void {
+  const motifs = (g.opts.motifs ?? []).filter((m) => CHARGES[m]);
+  if (!motifs.length) return;
+  if (groupsOf(a).some((x) => motifs.includes(x.charge)) || (a.semy && motifs.includes(a.semy.charge))) return;
+  const m = g.pickMotif(motifs);
+  const def = CHARGES[m];
+  const big = def.category === "beast" || def.category === "monster" || BIG_ONLY.includes(m);
+  const retarget = (grp: ChargeGroup, under: Tint[]): void => {
+    const count = big && grp.count > 3 ? 3 : grp.count;
+    const fresh = g.group(m, count, grp.tincture, under, grp.arrangement === "orle" ? "orle" : undefined, "minor");
+    if (grp.counterchanged) fresh.counterchanged = true;
+    for (const k of Object.keys(grp) as (keyof ChargeGroup)[]) delete grp[k];
+    Object.assign(grp, fresh);
+  };
+  const field = a.field.tinctures;
+  if (a.charges) return retarget(a.charges, field);
+  const o = a.ordinary;
+  if (o && !o.count && a.field.partition === "plain" && betweenCount(g, o.kind) > 0 && (big || g.chance(0.6))) {
+    // "a bend between two lions", "a chevron between three towers"
+    let n = betweenCount(g, o.kind);
+    if (big && n > 4) n = o.kind === "bend" || o.kind === "bendSinister" ? 2 : 3;
+    const same = !o.counterchanged && readable(o.tincture, field[0]) && !isFur(o.tincture) && g.chance(0.5);
+    a.charges = g.group(m, n, same ? o.tincture : g.over(field, { avoid: [o.tincture] }), field, undefined, "minor");
+    return;
+  }
+  if (o && !o.charges && !o.count && ["fess", "pale", "bend", "bendSinister", "chevron", "cross", "saltire", "pile"].includes(o.kind) && !big) {
+    const n = onOrdinaryCount(g, o.kind) || 1;
+    o.charges = g.group(m, n, g.over([o.tincture]), [o.tincture], undefined, "onOrdinary");
+    return;
+  }
+  const variation = ["paly", "barry", "bendy", "bendySinister", "chequy", "lozengy", "chevronny"].includes(a.field.partition);
+  const three = field.length > 2;
+  if (!o && !variation && !three && !a.semy) {
+    // The field (plain or divided) takes the motif as its principal charge.
+    const n = g.pickCount(m, "principal");
+    if (a.field.partition === "plain") a.charges = g.group(m, n, g.over(field), field);
+    else {
+      const metalColour = field.some((t) => isMetal(t)) && field.some((t) => isColour(t));
+      a.charges = g.group(m, n, metalColour ? field[0] : pickOverDivision(g, field), field);
+      if (metalColour) a.charges.counterchanged = true;
+    }
+    if (a.canton && a.charges.count !== 1) delete a.canton;
+    return;
+  }
+  if (a.chief) {
+    if (a.chief.charges) retarget(a.chief.charges, [a.chief.tincture]);
+    else a.chief.charges = g.group(m, big ? 1 : g.rng.pick([1, 3]), g.over([a.chief.tincture]), [a.chief.tincture], undefined, "chief");
+    return;
+  }
+  if (!a.canton) {
+    const t = g.over(field, { avoid: [...field, ...(o ? [o.tincture] : [])] });
+    a.chief = { tincture: t, charges: g.group(m, big ? 1 : g.rng.pick([1, 3, 3]), g.over([t]), [t], undefined, "chief") };
+  }
 }
 
 /** Tincture for an uncounterchanged charge over a divided field: a colour against the metal half, or a fur. */

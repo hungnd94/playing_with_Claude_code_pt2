@@ -33,6 +33,8 @@ export interface HeraldryStyle {
   canton?: number;
   /** Probability multiplier for furs. */
   furs?: number;
+  /** Multiplier for the chance that an ordinary is charged ("on a fess three…"). */
+  chargedOrdinary?: number;
   /** Probability of a deliberate breach of the rule of tincture (default 0.012). */
   exceptions?: number;
   /** The shield shape this tradition paints. */
@@ -128,6 +130,28 @@ export const STYLES = {
     chief: 0.3,
     bordure: 1.2,
     lines: { indented: 2, dancetty: 2 },
+  },
+  /**
+   * Blazons of a sultanate's officers, in the manner of the Mamluks: round shields,
+   * fields tierced in fess, the middle band charged with the badge of an office —
+   * a cup, a sword, a horn — and crescents, fleurs-de-lis, eagles and lions passant.
+   */
+  saracenic: {
+    name: "saracenic",
+    complexity: 0.2,
+    shape: "round",
+    tinctures: { or: 1.6, gules: 1.4, sable: 1.3, argent: 1.1, azure: 1.2, vert: 0.8 },
+    partitions: { tiercedInFess: 14, perFess: 2 },
+    ordinaries: { fess: 7, pale: 0.4, chevron: 0.2, saltire: 0.3, cross: 0.3, bend: 0.6 },
+    charges: { cup: 8, crescent: 4, sword: 3, horn: 3, fleurDeLis: 3, eagle: 2.5, lion: 1.4, rose: 2.5, star: 1.6, key: 1.2 },
+    categories: { cross: 0.05, beast: 0.5, monster: 0.3 },
+    plans: { ordinary: 1.6, divided: 1.2, variation: 0.2, semy: 0.1, charges: 1 },
+    chargedOrdinary: 4,
+    chief: 0.1,
+    bordure: 0.2,
+    canton: 0.05,
+    furs: 0.05,
+    lines: { straight: 3 },
   },
   /** Late, ornate heraldry: many charged ordinaries, chiefs, cantons and quarterings. */
   baroque: {

@@ -59,7 +59,7 @@ export function familyDiacritics(rng: Rng, family: Family): DiacriticKind[] {
     linear: ["dot", "bar", "dots2", "ring", "caron"],
     tally: ["dot", "tick", "bar"],
     featural: ["dot", "tick", "bar", "dots2"],
-    syllabic: ["dot", "ring", "bar", "dots2", "tick"],
+    syllabic: ["ring", "bar", "tick", "dots2", "dot"],
   };
   const list = base[family].slice();
   // A little shuffle so sibling scripts differ.

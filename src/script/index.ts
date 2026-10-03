@@ -11,6 +11,9 @@ export {
   scriptChartSVG,
   evolutionTableSVG,
   familyTreeSVG,
+  wordOutline,
+  textOutline,
+  type TextOutline,
   type SvgOptions,
   type ChartOptions,
   type EvolutionOptions,
@@ -19,3 +22,5 @@ export {
 export { spellWord, unwritable, type Cluster } from "./spell";
 export { classify, phonDistance, type PhonInfo } from "./ipa";
 export { deriveScript, adaptScript, type DeriveOptions, type AdaptOptions } from "./evolve";
+export { describeScript, type ScriptFacts, type DescribeOptions } from "./describe";
+export { confusables } from "./distinct";

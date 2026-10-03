@@ -34,6 +34,8 @@ const W = +(q.get("w") ?? 1600);
 const H = +(q.get("h") ?? 1100);
 const DPR = +(q.get("dpr") ?? 1);
 const histMode = q.get("history") ?? "auto";
+/** Re-render each plate this many times and report the minimum of every timing (steady state). */
+const benchRuns = +(q.get("bench") ?? 1);
 const status = document.getElementById("status")!;
 const host = document.getElementById("plates")!;
 const out = { done: false, timings: [] as Record<string, number>[], specs: [] as { name: string; style: string }[], error: "", history: "", labels: [] as number[] };
@@ -138,7 +140,7 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 0));
     const ctx = canvas.getContext("2d")!;
     ctx.scale(DPR, DPR);
-    const res = renderAtlasPlate(ctx, {
+    const input = {
       world,
       history: s.history ? history : null,
       year: s.plan.year,
@@ -149,7 +151,14 @@ async function main(): Promise<void> {
       seed,
       style: s.style,
       title: s.title,
-    });
+    };
+    let res = renderAtlasPlate(ctx, input);
+    for (let b = 1; b < benchRuns; b++) {
+      await new Promise((r) => setTimeout(r, 0));
+      const again = renderAtlasPlate(ctx, input);
+      for (const [key, v] of Object.entries(again.timings)) res.timings[key] = Math.min(res.timings[key] ?? Infinity, v);
+      res = { model: again.model, timings: res.timings };
+    }
     out.timings.push(res.timings);
     out.labels.push(res.model.labels.length);
     const v = s.plan.view;

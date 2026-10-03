@@ -4,7 +4,7 @@
  * (tested in Node); drawing uses only the standard 2D API.
  */
 import type { Pt } from "./contour";
-import type { Ctx2D } from "./paper";
+import { makeCanvas, type Ctx2D } from "./paper";
 import type { TerrainGlyph } from "./relief";
 import { rgba, type Palette } from "./style";
 
@@ -158,6 +158,8 @@ export interface GlyphEnv {
   k: number;
   /** Colourful styles tint shadows and trees. */
   colour: boolean;
+  /** Device scale for tree sprites (0 = draw trees as vectors). */
+  sprites?: number;
 }
 
 export function drawMountain(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "mtn" }>, env: GlyphEnv): void {
@@ -265,60 +267,117 @@ export function drawVolcano(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "volc" }>,
   }
 }
 
+/** Hill: a rounded hump, lit on the left, hatched on the right, with a heavier shadow flank. */
 export function drawHill(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "hill" }>, env: GlyphEnv): void {
   const { pal, k } = env;
   const r = prng(g.v);
   const { x, y, w, h } = g;
-  const peak = x - w * (0.05 + 0.1 * r());
+  const peakX = x - w * (0.04 + 0.12 * r());
+  const lx = x - w / 2, rx = x + w / 2;
+  const c1x = lx + w * 0.12, c1y = y - h * 1.18;
+  const c2x = peakX + w * 0.28, c2y = y - h * 1.3;
+  const curve = () => {
+    ctx.moveTo(lx, y);
+    ctx.bezierCurveTo(c1x, c1y, c2x, c2y, rx, y);
+  };
   ctx.beginPath();
-  ctx.moveTo(x - w / 2, y);
-  ctx.bezierCurveTo(x - w * 0.32, y - h * 1.25, peak + w * 0.12, y - h * 1.3, x + w / 2, y);
+  curve();
   ctx.closePath();
   ctx.fillStyle = pal.paper;
   ctx.fill();
-  // Shading strokes on the right.
+  const bez = (t: number): Pt => {
+    const u = 1 - t;
+    return [u * u * u * lx + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * rx, u * u * u * y + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * y];
+  };
+  // Shadow wash on the right flank (a polygon inside the hump: no clipping needed).
   ctx.beginPath();
-  const n = 2 + Math.floor(r() * 2.5);
+  const s0 = bez(0.52);
+  ctx.moveTo(s0[0], s0[1]);
+  for (let t = 0.58; t <= 1.0001; t += 0.06) {
+    const p = bez(t);
+    ctx.lineTo(p[0], p[1]);
+  }
+  ctx.lineTo(x + w * 0.12, y);
+  ctx.quadraticCurveTo(x + w * 0.16, y - h * 0.5, s0[0], s0[1]);
+  ctx.fillStyle = rgba(pal.shadow, env.colour ? 0.3 : 0.22);
+  ctx.fill();
+  // Hatching: short strokes following the right flank.
+  ctx.beginPath();
+  const n = 3 + Math.floor(r() * 2);
   for (let q = 0; q < n; q++) {
-    const t = 0.58 + (q / n) * 0.3;
-    const bx = x - w / 2 + w * t;
-    const by = y - h * 0.92 * Math.sin(Math.PI * t) * 0.95;
-    ctx.moveTo(bx, by + 0.8 * k);
-    ctx.lineTo(bx - w * 0.06, by + h * 0.62);
+    const t = 0.6 + (q / n) * 0.32;
+    const p = bez(t);
+    const len = h * (0.55 - q * 0.08);
+    ctx.moveTo(p[0] - 0.4 * k, p[1] + 0.9 * k);
+    ctx.quadraticCurveTo(p[0] - w * 0.06, p[1] + len * 0.5, p[0] - w * 0.04, p[1] + len);
   }
   ctx.strokeStyle = rgba(pal.ink, 0.5);
-  ctx.lineWidth = 0.55 * k;
+  ctx.lineWidth = 0.5 * k;
+  ctx.lineCap = "round";
+  ctx.stroke();
+  // Outline: light on the lit side, heavier on the shadow side.
+  ctx.beginPath();
+  curve();
+  ctx.strokeStyle = pal.ink;
+  ctx.lineWidth = 0.75 * k;
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(x - w / 2, y);
-  ctx.bezierCurveTo(x - w * 0.32, y - h * 1.25, peak + w * 0.12, y - h * 1.3, x + w / 2, y);
-  ctx.strokeStyle = pal.ink;
-  ctx.lineWidth = 0.85 * k;
-  ctx.lineCap = "round";
+  const p0 = bez(0.55);
+  ctx.moveTo(p0[0], p0[1]);
+  for (let t = 0.6; t <= 1.0001; t += 0.05) {
+    const p = bez(t);
+    ctx.lineTo(p[0], p[1]);
+  }
+  ctx.lineWidth = 1.15 * k;
   ctx.stroke();
 }
 
 // --- Vegetation -------------------------------------------------------------
 
-function crown(ctx: Ctx2D, cx: number, cy: number, rx: number, ry: number, lobes: number, r: () => number): void {
-  // Scalloped round crown.
+/** Unit cloud-crown outlines (union of three or four circles), cached per variant. */
+const crownCache = new Map<number, Pt[]>();
+function crownShape(variant: number, lobes: number): Pt[] {
+  const key = variant * 8 + lobes;
+  const hit = crownCache.get(key);
+  if (hit) return hit;
+  const r = prng((variant + 0.5) / 17 + lobes * 0.013);
+  // Circles in unit space: the crown sits in [-0.5, 0.5] × [-1, 0].
+  const circles: [number, number, number][] = [[0, -0.62, 0.3 + 0.04 * r()]];
+  if (lobes >= 3) {
+    circles.push([-0.2 - 0.04 * r(), -0.42, 0.25 + 0.04 * r()]);
+    circles.push([0.2 + 0.04 * r(), -0.42, 0.26 + 0.04 * r()]);
+  }
+  if (lobes >= 4) circles.push([0.04 * (r() - 0.5), -0.3, 0.24]);
+  const cx = 0, cy = -0.5;
+  const N = 36;
   const pts: Pt[] = [];
-  const n = lobes * 3;
-  const ph = r() * Math.PI * 2;
-  for (let q = 0; q < n; q++) {
-    const a = (q / n) * Math.PI * 2;
-    const bump = 1 + 0.13 * Math.cos(a * lobes + ph);
-    pts.push([cx + Math.cos(a) * rx * bump, cy + Math.sin(a) * ry * bump]);
+  for (let q = 0; q < N; q++) {
+    const a = (q / N) * Math.PI * 2;
+    const dx = Math.cos(a), dy = Math.sin(a);
+    let best = 0;
+    for (const [ox, oy, rr] of circles) {
+      // Farthest intersection of the ray (cx,cy)+t(dx,dy) with the circle.
+      const fx = cx - ox, fy = cy - oy;
+      const b = fx * dx + fy * dy;
+      const c = fx * fx + fy * fy - rr * rr;
+      const disc = b * b - c;
+      if (disc < 0) continue;
+      const t = -b + Math.sqrt(disc);
+      if (t > best) best = t;
+    }
+    pts.push([cx + dx * best, cy + dy * best]);
   }
-  ctx.moveTo((pts[0][0] + pts[n - 1][0]) / 2, (pts[0][1] + pts[n - 1][1]) / 2);
-  for (let q = 0; q < n; q++) {
-    const p = pts[q], nx = pts[(q + 1) % n];
-    ctx.quadraticCurveTo(p[0], p[1], (p[0] + nx[0]) / 2, (p[1] + nx[1]) / 2);
-  }
+  crownCache.set(key, pts);
+  return pts;
+}
+
+function tracePoly(ctx: Ctx2D, pts: Pt[], x: number, y: number, sx: number, sy: number): void {
+  ctx.moveTo(x + pts[0][0] * sx, y + pts[0][1] * sy);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(x + pts[i][0] * sx, y + pts[i][1] * sy);
   ctx.closePath();
 }
 
-export function drawTree(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "tree" }>, env: GlyphEnv): void {
+function drawTreeVector(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "tree" }>, env: GlyphEnv): void {
   const { pal, k } = env;
   const r = prng(g.v);
   const { x, y, s } = g;
@@ -330,33 +389,31 @@ export function drawTree(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "tree" }>, en
     case "decid":
     case "shrub": {
       const shrub = g.kind === "shrub";
-      const rx = s * (shrub ? 0.42 : 0.46) * (0.9 + 0.2 * r());
-      const ry = rx * (shrub ? 0.8 : 0.92);
-      const cy = y - (shrub ? ry * 0.95 : s * 0.42 + ry);
-      if (!shrub) {
+      const crown = crownShape(Math.floor(g.v * 16), shrub ? 3 : g.v > 0.5 ? 4 : 3);
+      const cw = s * (shrub ? 0.95 : 1.05) * (0.92 + 0.16 * r());
+      const ch = s * (shrub ? 0.75 : 1.08);
+      const top = y - (shrub ? 0 : s * 0.22);
+      if (!shrub && g.edge) {
         ctx.beginPath();
         ctx.moveTo(x, y);
-        ctx.lineTo(x + 0.3 * k, cy + ry * 0.6);
+        ctx.lineTo(x + 0.2 * k, top - ch * 0.2);
         ctx.strokeStyle = ink;
         ctx.lineWidth = lw;
         ctx.stroke();
       }
       ctx.beginPath();
-      crown(ctx, x, cy, rx, ry, shrub ? 4 : 5, r);
-      ctx.fillStyle = env.colour ? mixFill(pal.paper, pal.forestTint, 0.35) : pal.paper;
+      tracePoly(ctx, crown, x, top, cw, ch);
+      ctx.fillStyle = env.colour ? mixFill(pal.paper, pal.forestTint, g.edge ? 0.32 : 0.22) : pal.paper;
       ctx.fill();
-      // shade the right/lower half
-      ctx.save();
-      ctx.clip();
+      // Shade: the crown shape, smaller, towards the lower right (stays inside the crown).
       ctx.beginPath();
-      ctx.ellipse(x + rx * 0.55, cy + ry * 0.35, rx * 0.85, ry * 0.9, 0, 0, Math.PI * 2);
-      ctx.fillStyle = rgba(pal.shadow, env.colour ? 0.38 : 0.28);
+      tracePoly(ctx, crown, x + cw * 0.17, top - ch * 0.08, cw * 0.62, ch * 0.62);
+      ctx.fillStyle = rgba(pal.shadow, (env.colour ? 0.36 : 0.26) * (g.edge ? 1 : 0.75));
       ctx.fill();
-      ctx.restore();
       ctx.beginPath();
-      crown(ctx, x, cy, rx, ry, shrub ? 4 : 5, prng(g.v));
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = lw;
+      tracePoly(ctx, crown, x, top, cw, ch);
+      ctx.strokeStyle = g.edge ? ink : rgba(pal.ink, 0.62);
+      ctx.lineWidth = g.edge ? lw : lw * 0.8;
       ctx.stroke();
       break;
     }
@@ -393,8 +450,8 @@ export function drawTree(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "tree" }>, en
       ctx.fill();
       ctx.beginPath();
       path(ctx, pts, true);
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = lw;
+      ctx.strokeStyle = g.edge ? ink : rgba(pal.ink, 0.62);
+      ctx.lineWidth = g.edge ? lw : lw * 0.8;
       ctx.stroke();
       break;
     }
@@ -416,15 +473,27 @@ export function drawTree(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "tree" }>, en
       ctx.closePath();
       ctx.fillStyle = env.colour ? mixFill(pal.paper, pal.forestTint, 0.55) : pal.paper;
       ctx.fill();
-      ctx.save();
-      ctx.clip();
+      const outline = () => {
+        ctx.beginPath();
+        ctx.arc(x - rx * 0.45, cy + ry * 0.15, rx * 0.55, Math.PI * 0.55, Math.PI * 1.5);
+        ctx.arc(x, cy - ry * 0.3, rx * 0.6, Math.PI * 1.05, Math.PI * 1.95);
+        ctx.arc(x + rx * 0.45, cy + ry * 0.15, rx * 0.55, Math.PI * 1.5, Math.PI * 0.45);
+        ctx.closePath();
+      };
+      // Shade: a smaller cloud to the lower right.
       ctx.beginPath();
-      ctx.ellipse(x + rx * 0.6, cy + ry * 0.4, rx * 0.9, ry, 0, 0, Math.PI * 2);
+      {
+        const sx = x + rx * 0.22, sy = cy + ry * 0.22, f = 0.6;
+        ctx.arc(sx - rx * 0.45 * f, sy + ry * 0.15 * f, rx * 0.55 * f, Math.PI * 0.55, Math.PI * 1.5);
+        ctx.arc(sx, sy - ry * 0.3 * f, rx * 0.6 * f, Math.PI * 1.05, Math.PI * 1.95);
+        ctx.arc(sx + rx * 0.45 * f, sy + ry * 0.15 * f, rx * 0.55 * f, Math.PI * 1.5, Math.PI * 0.45);
+        ctx.closePath();
+      }
       ctx.fillStyle = rgba(pal.shadow, env.colour ? 0.42 : 0.3);
       ctx.fill();
-      ctx.restore();
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = lw;
+      outline();
+      ctx.strokeStyle = g.edge ? ink : rgba(pal.ink, 0.62);
+      ctx.lineWidth = g.edge ? lw : lw * 0.8;
       ctx.stroke();
       break;
     }
@@ -551,6 +620,56 @@ export function drawIce(ctx: Ctx2D, g: { x: number; y: number; s: number; v: num
   ctx.strokeStyle = rgba(pal.waterInk, 0.45);
   ctx.lineWidth = 0.5 * k;
   ctx.stroke();
+}
+
+// --- Tree sprites --------------------------------------------------------------
+
+/**
+ * Trees are by far the most numerous glyphs: each (kind, variant, size bucket,
+ * edge, palette, device scale) is drawn once into a small offscreen canvas and
+ * stamped with drawImage. Variants (16) and half-pixel size buckets keep the
+ * hand-drawn variety.
+ */
+interface Sprite {
+  cv: HTMLCanvasElement | OffscreenCanvas;
+  /** Anchor (tree base) inside the sprite, CSS px. */
+  ox: number;
+  oy: number;
+  w: number;
+  h: number;
+}
+const spriteCache = new Map<string, Sprite | null>();
+
+function treeSprite(g: Extract<TerrainGlyph, { t: "tree" }>, env: GlyphEnv, scale: number): Sprite | null {
+  const variant = Math.floor(g.v * 16);
+  const sq = Math.round(g.s * 2) / 2;
+  const key = `${g.kind}|${variant}|${sq}|${g.edge ? 1 : 0}|${env.colour ? 1 : 0}|${env.pal.ink}|${env.pal.paper}|${env.pal.forestTint}|${env.k.toFixed(3)}|${scale.toFixed(2)}`;
+  const hit = spriteCache.get(key);
+  if (hit !== undefined) return hit;
+  const pad = 2 * env.k;
+  const w = Math.ceil(sq * 1.9 + 2 * pad), h = Math.ceil(sq * 2.1 + 2 * pad);
+  let sp: Sprite | null = null;
+  try {
+    const cv = makeCanvas(w * scale, h * scale);
+    const c2 = cv.getContext("2d") as Ctx2D | null;
+    if (c2) {
+      c2.scale(scale, scale);
+      const ox = w / 2, oy = h - pad - sq * 0.25;
+      drawTreeVector(c2, { ...g, x: ox, y: oy, s: sq, v: (variant + 0.5) / 16 }, env);
+      sp = { cv, ox, oy, w, h };
+    }
+  } catch {
+    sp = null;
+  }
+  if (spriteCache.size > 6000) spriteCache.clear();
+  spriteCache.set(key, sp);
+  return sp;
+}
+
+export function drawTree(ctx: Ctx2D, g: Extract<TerrainGlyph, { t: "tree" }>, env: GlyphEnv): void {
+  const sp = env.sprites ? treeSprite(g, env, env.sprites) : null;
+  if (sp) ctx.drawImage(sp.cv as CanvasImageSource, g.x - sp.ox, g.y - sp.oy, sp.w, sp.h);
+  else drawTreeVector(ctx, g, env);
 }
 
 export function drawTerrainGlyph(ctx: Ctx2D, g: TerrainGlyph, env: GlyphEnv): void {

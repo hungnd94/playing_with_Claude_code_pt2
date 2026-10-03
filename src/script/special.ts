@@ -48,7 +48,7 @@ function basicManner(g: PlaceGroup): string[] {
     case "sibilant":
       return ["fricative"];
     case "laryngeal":
-      return ["stop", "fricative"];
+      return ["stop"];
     case "liquid":
       return ["lateral", "trill", "tap", "approximant"];
     case "glide":
@@ -457,6 +457,9 @@ export function cursiveAssign(rng: Rng, phonemes: string[], ctx: GenCtx, factory
   // Vowel-ish letters prefer alif/waw/ya-like skeletons.
   const patterns = ["", "a1", "b1", "a2", "b2", "a3", "b3", "i1"];
   let si = 0;
+  // Dot patterns already given to each skeleton: a reused skeleton (once the
+  // pool runs out) must not repeat one, or two letters would be identical.
+  const usedPats = new Map<CursiveSkel, Set<string>>();
   for (const g of groups) {
     let base: Shape | null = null;
     let tries = 0;
@@ -474,10 +477,15 @@ export function cursiveAssign(rng: Rng, phonemes: string[], ctx: GenCtx, factory
     }
     si++;
     if (!base) base = cursiveSkeleton(kind, rng, ctx);
+    const used = usedPats.get(kind) ?? new Set<string>();
+    usedPats.set(kind, used);
     const pats = rng.shuffle(patterns.slice(1));
     const order = g.length === 1 ? [rng.chance(0.5) ? "" : pats[0]] : [rng.chance(0.6) ? "" : pats[pats.length - 1], ...pats];
     g.forEach((ph, i) => {
-      const s = addDots(base!, order[i] ?? pats[i], ctx.p.tooth);
+      let pat = order[i] ?? pats[i];
+      if (used.has(pat)) pat = patterns.find((q) => !used.has(q)) ?? pat;
+      used.add(pat);
+      const s = addDots(base!, pat, ctx.p.tooth);
       factory.register(s);
       out.set(ph, s);
     });

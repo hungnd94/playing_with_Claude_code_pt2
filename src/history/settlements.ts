@@ -74,13 +74,14 @@ export function foundSettlement(sim: Sim, cell: number, culture: number, o: Foun
   const s: SetS = {
     id, rec, cell, alive: true, pop: o.pop, cap: o.pop * 1.5, food: sim.g.food[cell], urban: 0, culture, religion, owner: o.owner, occupier: -1, occWar: -1,
     loyalty: 0.8, loyaltyTarget: 0.8, ownerSince: sim.year, cultureSince: sim.year, walls: false, port: false, wealth: 0, devast: 0, lastPlague: -999,
-    name, nbrs: [], catchStart: 0, catchLen: 0, rank: 0, nextFoundTry: sim.year + rng.int(10, 30), capDist: 0, holy: false, seat: id, lastSack: -999, routes: [],
+    name, nbrs: [], catchStart: 0, catchLen: 0, rank: 0, nextFoundTry: sim.year + rng.int(10, 30), capDist: 0, holy: false, seat: id, lastSack: -999, routes: [], lastRevolt: -999,
   };
   s.urban = urbanOf(sim, s);
   sim.S.push(s);
   sim.setAt[cell] = id;
   lastAt(sim)[cell] = id;
   sim.setsDirty = true;
+  sim.setChanges++;
   sim.cellSet[cell] = id;
   if (!o.quiet) {
     const data = {
@@ -118,6 +119,7 @@ export function abandonSettlement(sim: Sim, sid: number, cause: "decline" | "sac
   s.rec.endReason = cause === "sacked" || cause === "war" ? "sacked" : cause === "disaster" ? "disaster" : cause === "plague" ? "plague" : "abandoned";
   sim.setAt[s.cell] = -1;
   sim.setsDirty = true;
+  sim.setChanges++;
   const owner = s.owner;
   if (!quiet) sim.emit("settlementAbandoned", s.rank >= 2 ? 3 : s.rank >= 1 ? 2 : 1, s.cell, { settlements: [sid], polities: [owner] }, { settlement: sid, cause, pop: Math.round(s.urban), polity: owner });
   // Owner bookkeeping happens in the yearly membership rebuild; a capital must move.
@@ -202,7 +204,7 @@ export function tickExpansion(sim: Sim): void {
       continue;
     }
     if (!foundDaughter(sim, s)) {
-      if (!tryColony(sim, s)) s.nextFoundTry = sim.year + rng.int(25, 60);
+      if (!tryColony(sim, s)) s.nextFoundTry = sim.year + rng.int(30, 80);
       else s.nextFoundTry = sim.year + rng.int(10, 30);
     } else s.nextFoundTry = sim.year + rng.int(5, 15);
   }
@@ -212,22 +214,36 @@ function foundDaughter(sim: Sim, s: SetS): boolean {
   const rng = sim.rng.settle;
   const C = sim.C[s.culture];
   const owner = s.owner;
-  const R = 300 + 50 * C.tech + (C.archetype === "steppe" ? 100 : 0);
+  const { adjStart, adj } = sim.w.mesh;
   let best = -1;
   let bestScore = -Infinity;
-  sim.search.run([s.cell], R, (c, d) => {
+  const gen = ++sim.stampGen;
+  const stamp = sim.stamp;
+  const consider = (c: number) => {
+    if (stamp[c] === gen) return;
+    stamp[c] = gen;
     if (c === s.cell || !isFreeSite(sim, c, owner)) return;
     const site = sim.g.site[c];
     if (site < 0.35) return;
+    const d = sim.distKm(s.cell, c);
     // Pastoral peoples keep to open country; farmers prefer fertile land.
-    let sc = site - 0.0012 * d + rng.range(0, 0.35);
+    let sc = site - 0.0015 * d + rng.range(0, 0.35);
     if (C.archetype === "steppe") sc += sim.g.steppe[c] ? 0.4 : -0.3;
     if (sim.cellCulture[c] >= 0 && sim.cellCulture[c] !== s.culture) sc -= 0.25;
     if (sc > bestScore) {
       bestScore = sc;
       best = c;
     }
-  });
+  };
+  // The town's own catchment and the unclaimed land just beyond it.
+  for (let i = s.catchStart; i < s.catchStart + s.catchLen; i++) {
+    const c = sim.catchCells[i];
+    consider(c);
+    for (let k = adjStart[c]; k < adjStart[c + 1]; k++) {
+      const j = adj[k];
+      if (sim.g.land[j] && sim.cellSet[j] < 0) consider(j);
+    }
+  }
   if (best < 0) return false;
   const moved = Math.max(600, s.pop * rng.range(0.15, 0.25));
   s.pop -= moved * 0.7;
@@ -241,14 +257,17 @@ function tryColony(sim: Sim, s: SetS): boolean {
   if (!(sim.g.coastal[s.cell] || sim.g.lakeside[s.cell])) return false;
   if (C.tech < 0.8 && C.values.seafaring < 0.65) return false;
   const rng = sim.rng.settle;
-  if (!rng.chance(0.08 + 0.5 * C.values.seafaring)) return false;
-  const range = (120 + 500 * C.values.seafaring) * (1 + 0.55 * C.tech) * (C.tech >= 5.5 ? 3 : 1);
+  if (!rng.chance(0.04 + 0.3 * C.values.seafaring)) return false;
+  // Coastal hopping early, open-sea crossings late (sea costs are ~0.3 per km).
+  const range = (100 + 260 * C.values.seafaring) * (1 + 0.35 * C.tech) * (C.tech >= 6 ? 2 : 1);
   const myLm = sim.w.landmassOf[s.cell];
   let best = -1, bestScore = -Infinity, bestD = 0;
   const owner = s.owner;
+  let seen = 0;
   sim.search.run([s.cell], range, (c, d) => {
     if (!sim.g.land[c] || c === s.cell) return;
     if (!isFreeSite(sim, c, owner)) return;
+    if (++seen > 60) return false;
     const site = sim.g.site[c];
     if (site < 0.5) return;
     let sc = site - 0.0006 * d + rng.range(0, 0.4);

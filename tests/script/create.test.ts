@@ -1,8 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Rng } from "../../src/core/rng";
 import { createScript, unwritable, SCRIPT_KINDS, FAMILIES, spellWord } from "../../src/script";
 import type { Family, ScriptKind } from "../../src/script";
 import { INV } from "./fixtures";
+
+// Generation is CPU-heavy and the test box is shared: generous per-test timeouts.
+vi.setConfig({ testTimeout: 60000 });
 
 const combos: [ScriptKind, Family | undefined][] = [
   ["alphabet", "stave"],

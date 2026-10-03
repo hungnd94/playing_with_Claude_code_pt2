@@ -89,6 +89,10 @@ export interface SoundStyle {
   long: number;
   /** Probability of nasal vowels. */
   nasal?: number;
+  /** Frequency of long vowels relative to short ones (default 0.32). */
+  longFreq?: number;
+  /** Consonants a language of this style may pick up by mutation (default: a generic list). */
+  extras?: string;
   harmony?: [Harmony, number][];
   /** Onset cluster families with per-member inclusion probability. */
   onsets?: [OnsetFamily, number][];
@@ -134,6 +138,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "finnic",
     note: "long vowels and geminates, front–back harmony, few clusters, vowel-final words",
+    extras: "d ŋ ʃ",
     weight: 1,
     flavours: { forest: 3, tundra: 3, coast: 1.2, plains: 0.6, river: 0.8 },
     core: "p t k m n s h l r j v",
@@ -191,6 +196,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "celtic",
     note: "lenited fricatives (dd, ff, ll, ch), w and y as vowels, verb-first",
+    longFreq: 0.14,
     weight: 1,
     flavours: { coast: 2.2, forest: 1.6, islands: 1.6, mountains: 1.2 },
     core: "p b t d k g f v s h m n l r w j",
@@ -244,6 +250,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "japonic",
     note: "open syllables with moraic n, five vowels, sh/ch/ts, long ō",
+    extras: "ɸ ts",
     weight: 1,
     flavours: { islands: 3, coast: 1.4, mountains: 1.2, river: 0.6 },
     core: "k g s z t d n h b p m j r w",
@@ -272,6 +279,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "nahuan",
     note: "tl, tz, ch, x and kw; words in -tl and -li",
+    extras: "kʷ h",
     weight: 1,
     flavours: { jungle: 2.2, mountains: 1.8, river: 1.4, plains: 1 },
     core: "p t k kʷ ts tʃ tɬ s ʃ m n l j w ʔ",
@@ -295,6 +303,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "polynesian",
     note: "very few consonants, strictly open syllables, glottal stop and long vowels",
+    extras: "ŋ f v r s",
     weight: 1,
     flavours: { islands: 6, coast: 1, jungle: 0.6 },
     core: "p t k m n h w ʔ",
@@ -313,7 +322,7 @@ export const SOUND_STYLES: SoundStyle[] = [
     schools: [["polynesian", 6]],
     morph: { order: [["VSO", 3], ["SVO", 1]], suffix: 0.6, caseMarking: 0.05, articles: 0.9, defPos: [["before", 1]], adjFirst: 0.05, genFirst: 0.1, gender: 0 },
     naming: { person: [["descriptive", 2], ["dithematic", 1.5], ["monothematic", 1]], patronymic: [["none", 2], ["particle", 1]], dynasty: [["house", 2]] },
-    drift: "polynesian-shift:8 s-debuccalization:3 debuccalization:3 rhotic-change:2 apocope:0.02 final-reduction:0.1 final-consonant-loss:0 syncope:0.05 umlaut:0.1 breaking:0.1 nasal-velarization:0 metathesis:0 intervocalic-voicing:0.3 velar-palatalization:0.3 contraction:2 glide-fortition:1 h-loss:2 prothesis:0",
+    drift: "polynesian-shift:22 s-debuccalization:3 debuccalization:3 rhotic-change:2 apocope:0.02 final-reduction:0.1 final-consonant-loss:0 syncope:0.05 umlaut:0.1 breaking:0.1 nasal-velarization:0 metathesis:0 intervocalic-voicing:0.3 velar-palatalization:0.3 contraction:2 glide-fortition:1 h-loss:2 prothesis:0",
   },
   {
     id: "kartvelian",
@@ -453,6 +462,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "bantu",
     note: "prenasalised stops (mb, nd, ng), open syllables, noun-class prefixes",
+    extras: "ts x",
     weight: 1,
     flavours: { jungle: 3, plains: 2.2, river: 1.6, coast: 1 },
     core: "p b t d k g m n ɲ ŋ s z f v ʃ tʃ dʒ l w j h",
@@ -477,6 +487,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "mayan",
     note: "CVC roots, ejectives written with an apostrophe, x and tz, final stress",
+    extras: "q r",
     weight: 0.9,
     flavours: { jungle: 3.4, mountains: 1.4, river: 0.8 },
     core: "p b t tʼ k kʼ ʔ ts tsʼ tʃ tʃʼ s ʃ x h m n l w j",
@@ -500,6 +511,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "sinitic",
     note: "monosyllabic roots, aspirated affricates, nasal codas only, glide medials",
+    extras: "w j ʐ",
     weight: 0.9,
     flavours: { river: 3.4, plains: 1.6, mountains: 0.8, coast: 0.8 },
     core: "p pʰ t tʰ k kʰ ts tsʰ tɕ tɕʰ ʂ ʈʂ ʈʂʰ ɕ s x f m n l ʐ",
@@ -607,6 +619,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "hellenic",
     note: "aspirated stops written ph/th/kh, pt- and kn- onsets, endings in -os/-on/-a",
+    extras: "ks ts",
     weight: 0.9,
     flavours: { coast: 2.4, islands: 1.8, mountains: 1.2 },
     core: "p pʰ b t tʰ d k kʰ g s z m n l r h",
@@ -663,6 +676,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "quechuan",
     note: "three vowels, uvular q, ll and ñ, plain/aspirated/ejective series",
+    extras: "ʃ x",
     weight: 0.8,
     flavours: { mountains: 3.6, plains: 0.8, jungle: 0.8 },
     core: "p t k q tʃ s h m n ɲ l ʎ r j w",
@@ -711,6 +725,7 @@ export const SOUND_STYLES: SoundStyle[] = [
   {
     id: "inuit",
     note: "three vowels, uvular q, long polysynthetic words, geminates, stop-final words",
+    extras: "ɬ ʁ h",
     weight: 0.8,
     flavours: { tundra: 6, coast: 0.6, islands: 0.6 },
     core: "p t k q m n ŋ s v ɣ l j",

@@ -6,7 +6,7 @@ import type { History } from "../history/types";
 import type { PhysicalWorld } from "../world/types";
 import { chaikin, type Pt } from "./contour";
 import { sampleAt, type FieldGrid } from "./field";
-import { capitalAt, nameAt, ownerOfSettlement, peakPop, polityAlive, popAt, settlementAlive } from "./hist";
+import { capitalAt, governmentAt, nameAt, ownerOfSettlement, peakPop, polityAlive, popAt, settlementAlive } from "./hist";
 import type { Projection } from "./projection";
 
 export type PlaceTier = "capital" | "city" | "town" | "village" | "ruin";
@@ -26,6 +26,8 @@ export interface PlaceMark {
   great: boolean;
   /** Realm whose capital this is (-1 if none); its colour flies on the pennant. */
   capitalOf: number;
+  /** Capital of a small realm (on this plate): drawn as a modest seat, not a castle. */
+  minor: boolean;
   /** Pennant colour (realm colour), RGB, for capitals. */
   color: [number, number, number] | null;
   holy: boolean;
@@ -48,6 +50,8 @@ export interface BattleMark {
   year: number;
   name: string;
   kind: string;
+  /** Men engaged (both sides), for ordering. */
+  size: number;
 }
 
 const OUT = { x: 0, y: 0 };
@@ -57,9 +61,9 @@ export const TOWN_POP = 5000;
 export const CITY_POP = 20000;
 export const GREAT_POP = 60000;
 
-export function iconHalfWidth(tier: PlaceTier, great: boolean, k: number): number {
+export function iconHalfWidth(tier: PlaceTier, great: boolean, k: number, minor = false): number {
   switch (tier) {
-    case "capital": return (great ? 8.5 : 7.5) * k;
+    case "capital": return minor ? 4.2 * k : (great ? 8.5 : 7.5) * k;
     case "city": return (great ? 7.5 : 6) * k;
     case "town": return 3.2 * k;
     case "village": return 2.1 * k;
@@ -69,9 +73,12 @@ export function iconHalfWidth(tier: PlaceTier, great: boolean, k: number): numbe
 
 export function selectPlaces(world: PhysicalWorld, h: History, year: number, proj: Projection, f: FieldGrid, k: number): PlaceMark[] {
   const rect = proj.rect;
+  // Seats of states (kingdoms and up) are drawn as castles; chiefs' and tribes' seats as towns.
   const capitals = new Map<number, number>();
   for (const p of h.polities) if (polityAlive(p, year)) {
     const c = capitalAt(p, year);
+    const gov = governmentAt(p, year);
+    if (gov === "tribe" || gov === "chiefdom") continue;
     if (c >= 0 && !capitals.has(c)) capitals.set(c, p.id);
   }
   // Sites re-occupied by a living settlement do not show their older ruins.
@@ -106,7 +113,7 @@ export function selectPlaces(world: PhysicalWorld, h: History, year: number, pro
     if (ruined) {
       const peak = peakPop(s);
       if (peak < TOWN_POP) continue;
-      marks.push({ id: s.id, x, y, tier: "ruin", pop: peak, name, owner: -1, port: false, walled: false, great: false, capitalOf: -1, color: null, holy, r: iconHalfWidth("ruin", false, k), rank: Math.log10(peak + 1) - 1.6 });
+      marks.push({ id: s.id, x, y, tier: "ruin", pop: peak, name, owner: -1, port: false, walled: false, great: false, capitalOf: -1, minor: false, color: null, holy, r: iconHalfWidth("ruin", false, k), rank: Math.log10(peak + 1) - 1.6 });
       continue;
     }
     const pop = popAt(h, s, year);
@@ -116,7 +123,7 @@ export function selectPlaces(world: PhysicalWorld, h: History, year: number, pro
     const walled = s.walled >= 0 && s.walled <= year;
     const rank = Math.log10(pop + 10) + (capOf >= 0 ? 2.2 : 0) + (walled ? 0.15 : 0) + (holy ? 0.3 : 0);
     const col = capOf >= 0 ? (h.polities[capOf].color as [number, number, number]) : null;
-    marks.push({ id: s.id, x, y, tier, pop, name, owner: ownerOfSettlement(s, year), port: s.port, walled, great, capitalOf: capOf, color: col, holy, r: iconHalfWidth(tier, great, k), rank });
+    marks.push({ id: s.id, x, y, tier, pop, name, owner: ownerOfSettlement(s, year), port: s.port, walled, great, capitalOf: capOf, minor: false, color: col, holy, r: iconHalfWidth(tier, great, k), rank });
   }
   marks.sort((a, b) => b.rank - a.rank || a.id - b.id);
   return marks;
@@ -140,12 +147,15 @@ export function selectRoutes(world: PhysicalWorld, h: History, year: number, pro
   return out;
 }
 
-/** Battles of the last `window` years before `year` (or of a war, when given). */
+/**
+ * Battles of the last `window` years before `year`, largest first (or every
+ * battle of a war, in order, when given).
+ */
 export function selectBattles(world: PhysicalWorld, h: History, year: number, proj: Projection, k: number, opts: { window?: number; war?: number } = {}): BattleMark[] {
   const out: BattleMark[] = [];
   const xyz = world.mesh.xyz;
   const rect = proj.rect;
-  const win = opts.window ?? 40;
+  const win = opts.window ?? 25;
   const m = 14 * k;
   for (const b of h.battles ?? []) {
     if (opts.war !== undefined && opts.war >= 0) {
@@ -154,8 +164,11 @@ export function selectBattles(world: PhysicalWorld, h: History, year: number, pr
     const c = b.cell;
     if (c < 0 || !proj.inCap(xyz[3 * c], xyz[3 * c + 1], xyz[3 * c + 2]) || !proj.forward(xyz[3 * c], xyz[3 * c + 1], xyz[3 * c + 2], OUT)) continue;
     if (OUT.x < rect.x + m || OUT.x > rect.x + rect.w - m || OUT.y < rect.y + m || OUT.y > rect.y + rect.h - m) continue;
-    out.push({ id: b.id, x: OUT.x, y: OUT.y, year: b.year, name: b.name, kind: b.kind });
+    const size = (b.attacker?.strength ?? 0) + (b.defender?.strength ?? 0);
+    const name = b.name.replace(/^the /, "");
+    out.push({ id: b.id, x: OUT.x, y: OUT.y, year: b.year, name: name[0] ? name[0].toUpperCase() + name.slice(1) : name, kind: b.kind, size });
   }
-  out.sort((a, b) => b.year - a.year || a.id - b.id);
+  if (opts.war !== undefined && opts.war >= 0) out.sort((a, b) => b.size - a.size || a.year - b.year || a.id - b.id);
+  else out.sort((a, b) => b.size - a.size || b.year - a.year || a.id - b.id);
   return out;
 }

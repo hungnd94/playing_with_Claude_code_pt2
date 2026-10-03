@@ -1,0 +1,436 @@
+/* Viewers: Atlas, Tongues, Scripts, Faiths, Heraldry. */
+
+/* ---------------------------------------------------------------- atlas */
+.atlas-pane > .art-head,
+.atlas-pane > .filters,
+.atlas-pane > .pane-hint {
+  max-width: 46rem;
+}
+
+.atlas-plate {
+  position: relative;
+  margin-top: 6px;
+  border: 1px solid var(--rule-2);
+  box-shadow: var(--shadow);
+  background: var(--bg-sunk);
+  line-height: 0;
+}
+
+.atlas-plate canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: pointer;
+}
+
+.atlas-plate.is-drawing canvas {
+  opacity: 0.35;
+  filter: blur(1px);
+}
+
+.atlas-plate.is-idle canvas {
+  opacity: 0;
+}
+
+.atlas-wait {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  line-height: 1.4;
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: 20px;
+  color: var(--ink-2);
+}
+
+.atlas-plate.is-full {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  margin: 0;
+  padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+  display: grid;
+  place-items: center;
+  background: var(--scrim);
+  border: 0;
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.atlas-plate.is-full canvas {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  box-shadow: var(--shadow);
+}
+
+.atlas-close {
+  z-index: 2;
+  background: var(--card);
+  border: 1px solid var(--rule-2);
+}
+
+.atlas-redraw {
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+}
+
+.atlas-controls .seg-btn .icon {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+
+/* ---------------------------------------------------------------- families */
+.family {
+  margin-bottom: 1.6em;
+}
+
+.family h2,
+.faiths h2,
+.tongue h2,
+.script-page h2 {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.family-living {
+  font-size: 16px;
+}
+
+.script-tree {
+  overflow-x: auto;
+  margin: 10px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.script-tree svg,
+.script-evo svg {
+  display: block;
+  max-width: none;
+  height: auto;
+}
+
+.script-evo {
+  overflow-x: auto;
+  max-height: 70vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 8px 0;
+}
+
+.script-list {
+  list-style: none;
+  padding: 0;
+  columns: 2 14rem;
+  font-size: 16px;
+}
+
+.fig-note {
+  font-size: 14.5px;
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+/* ---------------------------------------------------------------- tongues */
+.brief {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.brief li {
+  padding: 4px 0 4px 14px;
+  border-left: 2px solid var(--gilt-soft);
+  margin: 4px 0;
+}
+
+.laws {
+  padding-left: 1.4em;
+}
+
+.laws li {
+  margin: 6px 0;
+}
+
+.law-notation {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 6px;
+  background: var(--gilt-soft);
+  border-radius: 3px;
+  font-size: 15px;
+}
+
+.law-name {
+  font-weight: 500;
+}
+
+.law-desc {
+  color: var(--ink-2);
+}
+
+.lineage {
+  margin: 10px 0;
+  font-size: 15px;
+}
+
+.lineage summary {
+  cursor: pointer;
+  font-family: var(--f-ui-sc);
+  letter-spacing: 0.05em;
+  color: var(--ink-2);
+}
+
+.lineage ol {
+  font-family: var(--f-ipa);
+  font-size: 14px;
+}
+
+.vocab td {
+  vertical-align: middle;
+}
+
+.vocab-w {
+  font-size: 17px;
+}
+
+.vocab .ipa {
+  color: var(--ink-3);
+  font-size: 14px;
+}
+
+.vocab-script {
+  color: var(--glyph);
+}
+
+.vocab-script svg {
+  display: block;
+  height: auto;
+  max-width: 140px;
+}
+
+.vocab-origin {
+  font-size: 13px;
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.etyms {
+  list-style: none;
+  padding: 0;
+}
+
+.etyms li {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ety-gloss {
+  color: var(--ink-2);
+}
+
+.ety-etym {
+  color: var(--ink-3);
+  font-size: 15px;
+}
+
+.ety-now {
+  color: var(--ink-3);
+  font-size: 14px;
+}
+
+/* ---------------------------------------------------------------- faiths */
+.chart-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 0;
+  margin: 8px 0 0;
+  font-family: var(--f-ui);
+  font-size: 14px;
+}
+
+.chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-legend .legend-sw {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.legend-val {
+  color: var(--ink-3);
+}
+
+.chart-legend .legend-year {
+  color: var(--ink-3);
+}
+
+.faith-cards {
+  display: grid;
+  gap: 12px;
+}
+
+.faith-card {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--faith);
+  background: var(--card);
+}
+
+.faith-card h3 {
+  margin: 0;
+  font-family: var(--f-display);
+  font-weight: 400;
+  font-size: 21px;
+  letter-spacing: 0;
+}
+
+.faith-card p {
+  margin: 4px 0 0;
+  font-size: 15.5px;
+}
+
+.faith-native {
+  font-size: 15px;
+}
+
+.faith-tenets {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.faith-seal {
+  float: right;
+  margin: 0 0 12px 18px;
+  filter: var(--emblem-shadow);
+}
+
+.faith-symbol {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 1px solid var(--rule-2);
+  font-family: var(--f-ui-sc);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.pantheon {
+  margin: 0;
+}
+
+.god {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.god dt {
+  font-size: 18px;
+}
+
+.god-epithet {
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+.god dd {
+  margin: 2px 0 0;
+  color: var(--ink-3);
+  font-size: 15px;
+}
+
+/* ---------------------------------------------------------------- heraldry */
+.arms-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
+  gap: 14px 12px;
+}
+
+.arms-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 12px 8px 10px;
+  border: 1px solid var(--rule);
+  background: var(--card);
+  font-family: var(--f-ui);
+}
+
+.arms-art {
+  position: relative;
+  height: 112px;
+  display: flex;
+  align-items: center;
+}
+
+.arms-art .emblem {
+  filter: var(--emblem-shadow);
+}
+
+.arms-flag {
+  position: absolute;
+  right: -34px;
+  bottom: 2px;
+  line-height: 0;
+  filter: var(--emblem-shadow);
+}
+
+.arms-flag svg {
+  width: 40px;
+  height: auto;
+}
+
+.arms-name {
+  margin-top: 6px;
+  font-family: var(--f-display);
+  font-size: 16.5px;
+  line-height: 1.2;
+}
+
+.arms-dates {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.arms-blazon {
+  margin: 6px 0 0;
+  font-family: var(--f-read);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.arms-motto {
+  margin: 4px 0 0;
+  font-family: var(--f-read);
+  font-size: 13px;
+  color: var(--ink-3);
+}

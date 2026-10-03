@@ -50,7 +50,18 @@ export function glyphOf(s: Script, id: number): Glyph | undefined {
   return m.get(id);
 }
 
+/** The vowel modification(s) for consonant glyph `g` and vowel `v` (irregular forms first). */
+export function vowelOpsOf(s: Script, g: number, v: string): VowelOp[] {
+  return s.ortho.vowelOpsFor?.[`${g}|${v}`] ?? s.ortho.vowelOps[v] ?? [];
+}
+
 const formCache = new WeakMap<Script, Map<string, Form>>();
+
+/** Forget cached forms and glyph lookups (after glyphs were changed in place). */
+export function invalidateForms(s: Script): void {
+  formCache.delete(s);
+  glyphIndex.delete(s);
+}
 
 /** Resolve a form reference (plain glyph, fused vowel form, rotated form) to strokes. */
 export function formOf(s: Script, ref: FormRef): Form | null {
@@ -299,11 +310,11 @@ function spellFused(s: Script, word: string[]): Cluster[] {
   const opsFor = (v: string | null, host: Cluster): void => {
     if (!host.base) return;
     if (v === null) {
-      host.base = { ...host.base, ops: o.vowelOps[""] ?? [] };
+      host.base = { ...host.base, ops: vowelOpsOf(s, host.base.g, "") };
       return;
     }
     const [q, fm] = resolveVowel(s, v, o.vowelOps);
-    host.base = { ...host.base, ops: o.vowelOps[q] ?? [] };
+    host.base = { ...host.base, ops: vowelOpsOf(s, host.base.g, q) };
     for (const m of fm) attach(s, host, m);
     host.ph.push(v);
   };
@@ -333,7 +344,7 @@ function spellRotate(s: Script, word: string[]): Cluster[] {
   const out: Cluster[] = [];
   const rotFor = (v: string, host: Cluster): void => {
     const [q, fm] = resolveVowel(s, v, o.rotations);
-    const ops = o.vowelOps[q];
+    const ops = host.base ? vowelOpsOf(s, host.base.g, q) : [];
     if (host.base) host.base = ops?.length ? { ...host.base, rot: o.rotations[q] ?? 0, ops } : { ...host.base, rot: o.rotations[q] ?? 0 };
     for (const m of fm) attach(s, host, m);
     host.ph.push(v);

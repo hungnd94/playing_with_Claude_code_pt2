@@ -14,12 +14,24 @@ At resume: run produced settlements only (no polities, persons, wars, tech…);
 5.7 s for 3000 years.
 
 - [x] assessment (session 2)
-- [ ] polities (formation, provinces, government, loyalty, revolts, collapse, vassals)
-- [ ] persons/dynasties/succession/marriage/epithets
-- [ ] diplomacy & war (battles, sieges, peace, raids, migrations)
-- [ ] tech & scripts; religion; disasters & climate; trade; wonders & works
-- [ ] divergence (culture splits, language stages, assimilation, renames)
-- [ ] ages, query additions, tests, tuning, perf
+- [x] **v1 works** (session 2): every system at least basic; `simulateHistory` runs
+  3000 years in ~12 s (Node, shared box), `tools/history-run.ts` prints stats +
+  chronicle and writes political/culture/religion maps.
+  Systems: polities.ts (formation, provinces, government, loyalty, revolts,
+  collapse, vassals, unions, confederations), people.ts (persons, dynasties,
+  marriage, births, succession by law, regency, unions, civil wars, epithets,
+  regnal numbers), war.ts (opinion, declarations, alliances, battles, sieges,
+  sacks, peace/annexation/vassalage, names of wars/battles/treaties, raids,
+  migrations, civil/claim wars), tech.ts (levels, named inventions, writing
+  invented/adopted/derived), religion.ts (prophets, organised faiths, spread,
+  conversions, schisms, heresies, pilgrimages, miracles), disasters.ts (climate,
+  plague, eruptions, earthquakes, floods, famine, drought), trade.ts (routes with
+  paths/goods/names, wealth), wonders.ts (wonders, works, walls, golden/dark
+  ages), divergence.ts (language stages, culture splits, assimilation, conquest
+  renames, restorations).
+- [ ] tests (tests/history), query.ts additions, ages.ts
+- [ ] tuning: realm life cycles (cohesion), map colours, famines, counts
+- [ ] perf pass (< 15 s target with margin)
 
 ## Decisions
 - Provinces: every 10 years each polity's settlements are grouped into

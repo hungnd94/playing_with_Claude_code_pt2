@@ -195,34 +195,78 @@ export function spanOver(fr: Frame, y0: number, y1: number, margin = 0): [number
   return lo < hi ? [lo, hi] : null;
 }
 
+const insetCache = new WeakMap<readonly Pt[], Map<string, Pt[]>>();
+
 /**
- * Inset (offset inward) a closed polygon by distance d. Works for the convex-ish
- * shield outlines used here; vertices are offset along the bisector normals.
+ * Inset (offset inward; negative d offsets outward) a closed polygon by
+ * distance d. Robust for the concave and pointed outlines of real shields (the
+ * French shield's accolade point, the German bouche): the outline is
+ * resampled, every sample is pushed along its normal, and samples that end up
+ * closer than |d| to the original outline — the spikes and loops a naive
+ * offset produces — are dropped, the gaps closing with straight chords.
+ * Results are cached per polygon object.
  */
 export function insetPoly(poly: readonly Pt[], d: number): Pt[] {
-  const n = poly.length;
-  // orientation
-  let area = 0;
-  for (let i = 0; i < n; i++) {
-    const q = poly[(i + 1) % n];
-    area += poly[i][0] * q[1] - q[0] * poly[i][1];
-  }
-  const sgn = area > 0 ? 1 : -1; // >0: clockwise on screen
-  const out: Pt[] = [];
-  for (let i = 0; i < n; i++) {
-    const a = poly[(i + n - 1) % n], b = poly[i], c = poly[(i + 1) % n];
-    const e1x = b[0] - a[0], e1y = b[1] - a[1];
-    const e2x = c[0] - b[0], e2y = c[1] - b[1];
-    const l1 = Math.hypot(e1x, e1y) || 1, l2 = Math.hypot(e2x, e2y) || 1;
-    // inward normals (for clockwise-on-screen polygons the inside is to the right of travel)
-    const n1x = (-e1y / l1) * sgn, n1y = (e1x / l1) * sgn;
-    const n2x = (-e2y / l2) * sgn, n2y = (e2x / l2) * sgn;
-    let mx = n1x + n2x, my = n1y + n2y;
-    const ml = Math.hypot(mx, my) || 1;
-    mx /= ml; my /= ml;
-    const cos = mx * n1x + my * n1y;
-    const k = d / Math.max(0.35, cos);
-    out.push([b[0] + mx * k, b[1] + my * k]);
-  }
+  let cache = insetCache.get(poly);
+  if (!cache) insetCache.set(poly, (cache = new Map()));
+  const key = d.toFixed(4);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const out = offsetPoly(poly, d);
+  cache.set(key, out);
   return out;
+}
+
+function offsetPoly(poly: readonly Pt[], d: number): Pt[] {
+  const n0 = poly.length;
+  if (n0 < 3 || d === 0) return poly.slice() as Pt[];
+  let area = 0;
+  let perim = 0;
+  for (let i = 0; i < n0; i++) {
+    const q = poly[(i + 1) % n0];
+    area += poly[i][0] * q[1] - q[0] * poly[i][1];
+    perim += Math.hypot(q[0] - poly[i][0], q[1] - poly[i][1]);
+  }
+  const sgn = area > 0 ? 1 : -1;
+  // Resample (keeping the original corners) so that every stretch of outline is represented.
+  const step = Math.max(perim / 900, Math.min(Math.abs(d) * 0.18, perim / 240));
+  const pts: Pt[] = [];
+  for (let i = 0; i < n0; i++) {
+    const a = poly[i], b = poly[(i + 1) % n0];
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const k = Math.max(1, Math.ceil(L / step));
+    for (let j = 0; j < k; j++) pts.push([a[0] + ((b[0] - a[0]) * j) / k, a[1] + ((b[1] - a[1]) * j) / k]);
+  }
+  const n = pts.length;
+  const cand: Pt[] = [];
+  const ad = Math.abs(d);
+  for (let i = 0; i < n; i++) {
+    const a = pts[(i + n - 1) % n], b = pts[i], c = pts[(i + 1) % n];
+    const tx = c[0] - a[0], ty = c[1] - a[1];
+    const tl = Math.hypot(tx, ty) || 1;
+    // inward normal (clockwise-on-screen polygons have their inside to the right of travel)
+    const nx = (-ty / tl) * sgn, ny = (tx / tl) * sgn;
+    cand.push([b[0] + nx * d, b[1] + ny * d]);
+  }
+  // Keep only samples that really lie |d| away from the outline.
+  const keep: Pt[] = [];
+  const tol = ad * 0.985;
+  for (const p of cand) {
+    let ok = true;
+    for (let i = 0; i < n0 && ok; i++) {
+      const a = poly[i], b = poly[(i + 1) % n0];
+      if (segDist(p, a, b) < tol) ok = false;
+    }
+    if (ok) keep.push(p);
+  }
+  return keep.length >= 3 ? keep : cand;
+}
+
+function segDist(p: Pt, a: Pt, b: Pt): number {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const L2 = dx * dx + dy * dy;
+  let t = L2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const x = a[0] + dx * t - p[0], y = a[1] + dy * t - p[1];
+  return Math.sqrt(x * x + y * y);
 }

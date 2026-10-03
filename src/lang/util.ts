@@ -81,3 +81,16 @@ export function capitalize(s: string): string {
   if (!m) return s;
   return m[1] + m[2].toUpperCase() + m[3];
 }
+
+/** Crude English words and slurs a generated word must not spell (whole words). */
+const OBSCENE_WORDS = new Set(
+  "ass anal anus arse bitch boob butt cock crap cum cunt dick fag fart fuck gook homo jap kike nazi negro nig pee penis piss poo poop porn pube puke rape semen sex shit slut spic tit tits turd twat vagina wank whore".split(" "),
+);
+const OBSCENE_RE = /fuck|shit|cunt|nigg|fagg|nazi|porn|penis|whore|slut|bitch|twat|wank|kike/;
+
+/** Whether a romanised form spells an English obscenity or slur (as a word or inside one). */
+export function obscene(roman: string): boolean {
+  const a = asciiFold(roman).toLowerCase();
+  for (const w of a.split(/[\s-]+/)) if (OBSCENE_WORDS.has(w)) return true;
+  return OBSCENE_RE.test(a.replace(/[^a-z]/g, ""));
+}

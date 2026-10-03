@@ -25,16 +25,37 @@ import {
 } from "../src/lang";
 
 const n = Number(process.argv[2] ?? 30);
+// CPU time (user + system) rather than wall time: the dev container is shared and loaded.
+const cpuMs = () => {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1000;
+};
+const fmt = (ms: number) => (ms < 0.1 ? `${(ms * 1000).toFixed(1)} µs` : `${ms.toFixed(2)} ms`);
 const time = (label: string, count: number, f: () => void): number => {
-  const t = performance.now();
+  const t = cpuMs();
+  const w = performance.now();
   f();
-  const ms = (performance.now() - t) / count;
-  console.log(`${label.padEnd(28)} ${ms < 0.1 ? `${(ms * 1000).toFixed(1)} µs` : `${ms.toFixed(2)} ms`}`);
+  const ms = (cpuMs() - t) / count;
+  const wall = (performance.now() - w) / count;
+  console.log(`${label.padEnd(28)} cpu ${fmt(ms).padStart(9)}   wall ${fmt(wall).padStart(9)}`);
   return ms;
 };
 
-// warm-up (JIT)
-for (let i = 0; i < 3; i++) deriveLanguage(createProtoLanguage(new Rng("warm" + i)), new Rng("w" + i), 500);
+// warm-up (JIT): every code path once or twice
+{
+  const wr = createRegistry();
+  for (let i = 0; i < 8; i++) {
+    const p = createProtoLanguage(new Rng("warm" + i), { flavour: FLAVOURS[i % FLAVOURS.length] });
+    const d = deriveLanguage(p, new Rng("w" + i), 500);
+    deriveLanguage(d, new Rng("ws" + i), 800, { stage: true });
+    const wn = new Rng("wn" + i);
+    for (let k = 0; k < 30; k++) {
+      nameSettlement(d, wn, {}, { registry: wr });
+      namePerson(d, wn, { registry: wr });
+      nameFeature(d, wn, "river", {}, { registry: wr });
+    }
+  }
+}
 
 const protos: Language[] = [];
 time("proto-language", n, () => {

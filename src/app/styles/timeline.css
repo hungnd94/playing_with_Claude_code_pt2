@@ -1,0 +1,317 @@
+/* The timeline dial. */
+.timeline {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 168px;
+  align-items: stretch;
+  gap: 16px;
+  padding: 0 16px 0 12px;
+  background: var(--bg-raise);
+  border-top: 1px solid var(--rule);
+}
+
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 3px;
+  height: 1px;
+  background: var(--rule);
+  pointer-events: none;
+}
+
+.tl-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tl-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--ink-2);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.tl-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.tl-play {
+  width: 40px;
+  height: 40px;
+  color: var(--bg);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg-raise), 0 0 0 4px var(--rule-2);
+  margin: 0 4px;
+}
+
+.tl-play:hover:not(:disabled) {
+  background: var(--accent-2);
+  color: var(--bg);
+}
+
+.tl-speed {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-2);
+  font-size: 13px;
+  min-width: 70px;
+  justify-content: center;
+}
+
+.tl-speed:hover:not(:disabled) {
+  border-color: var(--rule-2);
+}
+
+.tl-speed-unit {
+  font-family: var(--f-ui-sc);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* the dial track */
+.tl-dial {
+  position: relative;
+  margin: 8px 0 7px;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: 2px;
+}
+
+.tl-dial[aria-disabled="true"] {
+  cursor: default;
+}
+
+.tl-dial:focus-visible {
+  outline-offset: 3px;
+}
+
+.tl-hist {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: calc(100% - 30px);
+  width: 100%;
+  display: block;
+}
+
+.tl-axis {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  height: 12px;
+  border-top: 1px solid var(--rule-2);
+}
+
+.tl-tick {
+  position: absolute;
+  top: -1px;
+  height: 5px;
+  border-left: 1px solid var(--rule-2);
+}
+
+.tl-tick .num {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--ink-3);
+}
+
+.tl-ages {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 17px;
+}
+
+.tl-age {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  background: var(--gilt-soft);
+  border-left: 1px solid var(--rule-2);
+  padding: 0 5px;
+  transition: background var(--t-fast);
+}
+
+.tl-age.is-odd {
+  background: transparent;
+}
+
+.tl-age.is-current {
+  background: var(--mark);
+}
+
+.tl-age-name {
+  font-family: var(--f-ui-sc);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-age.is-current .tl-age-name {
+  color: var(--ink);
+}
+
+.tl-thumb {
+  position: absolute;
+  top: -4px;
+  bottom: 0;
+  width: 0;
+  border-left: 2px solid var(--rubric);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.tl-thumb-head {
+  position: absolute;
+  top: -1px;
+  left: -6px;
+  width: 10px;
+  height: 10px;
+  background: var(--rubric);
+  transform: rotate(45deg);
+  box-shadow: 0 0 0 2px var(--bg-raise);
+}
+
+.tl-ghost {
+  position: absolute;
+  top: 0;
+  bottom: 18px;
+  width: 0;
+  border-left: 1px dashed var(--ink-3);
+  pointer-events: none;
+}
+
+.tl-ghost-label {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 1px 6px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font-size: 12px;
+  color: var(--ink-2);
+  box-shadow: var(--shadow);
+}
+
+.tl-ghost-label em {
+  font-family: var(--f-display);
+  color: var(--ink-3);
+}
+
+.timeline.is-waiting .tl-axis,
+.timeline.is-waiting .tl-ages {
+  opacity: 0.5;
+}
+
+/* readout */
+.tl-readout {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-end;
+  min-width: 0;
+  text-align: right;
+}
+
+.tl-year {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  line-height: 1;
+}
+
+.tl-year-label {
+  font-family: var(--f-display-sc);
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+.tl-year-num {
+  font-family: var(--f-display);
+  font-size: 34px;
+  color: var(--rubric);
+  min-width: 2.6ch;
+}
+
+.tl-age-now {
+  margin-top: 2px;
+  max-width: 100%;
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 760px) {
+  .timeline {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 8px;
+    padding: 0 10px 0 6px;
+  }
+
+  .tl-controls .tl-btn:not(.tl-play),
+  .tl-speed {
+    display: none;
+  }
+
+  .tl-play {
+    width: 36px;
+    height: 36px;
+  }
+
+  .tl-age-name,
+  .tl-tick .num {
+    font-size: 10px;
+  }
+
+  .tl-age-now {
+    display: none;
+  }
+
+  .tl-year-num {
+    font-size: 26px;
+  }
+
+  .tl-year-label {
+    display: none;
+  }
+
+  .tl-dial {
+    margin: 6px 0 5px;
+  }
+}

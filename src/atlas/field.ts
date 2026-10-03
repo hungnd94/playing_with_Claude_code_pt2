@@ -40,6 +40,10 @@ export interface FieldGrid {
   landCell: Int32Array;
   /** Smoothed elevation, km. */
   elev: Float32Array;
+  /** Unit vector of every node on the sphere (0,0,0 outside the projectable disc). */
+  ux: Float32Array;
+  uy: Float32Array;
+  uz: Float32Array;
 }
 
 const locatorCache = new WeakMap<object, CellLocator>();
@@ -94,6 +98,7 @@ export function sampleField(world: PhysicalWorld, proj: Projection, opts: FieldO
   const cell = new Int32Array(N).fill(-1);
   const landCell = new Int32Array(N).fill(-1);
   const elev = new Float32Array(N);
+  const ux = new Float32Array(N), uy = new Float32Array(N), uz = new Float32Array(N);
 
   const loc = locatorFor(world);
   const seed = world.params.seed;
@@ -141,6 +146,9 @@ export function sampleField(world: PhysicalWorld, proj: Projection, opts: FieldO
         continue;
       }
       let px = p[0], py = p[1], pz = p[2];
+      ux[k] = px;
+      uy[k] = py;
+      uz[k] = pz;
       let c = loc.find(px, py, pz, hint);
       hint = c;
       if (i === 0) rowHint = c;
@@ -172,7 +180,9 @@ export function sampleField(world: PhysicalWorld, proj: Projection, opts: FieldO
       for (let q = r0 - 1; q < r1; q++) {
         const u = q < r0 ? cc : adj[q];
         const dx = px - xyz[3 * u], dy = py - xyz[3 * u + 1], dz = pz - xyz[3 * u + 2];
-        const w = Math.exp(-(dx * dx + dy * dy + dz * dz) / sig2);
+        // Smooth compact kernel ≈ Gaussian(σ²) (cheaper than exp).
+        const q2 = 1 - (dx * dx + dy * dy + dz * dz) / (3.2 * sig2);
+        const w = q2 > 0 ? q2 * q2 * q2 + 1e-6 : 1e-6;
         ws += w;
         vs += w * land[u];
         es += w * world.elevation[u];
@@ -197,7 +207,9 @@ export function sampleField(world: PhysicalWorld, proj: Projection, opts: FieldO
     for (let i = 0; i < gx; i++) {
       const k = j * gx + i;
       if (coast[k] <= 0 || cell[k] < 0) continue;
-      proj.inverse(x0 + i * step, y0 + j * step, p);
+      p[0] = ux[k];
+      p[1] = uy[k];
+      p[2] = uz[k];
       // Bilinear warp.
       const fx = i / wStep, fy = j / wStep;
       const ix = Math.min(wgx - 2, Math.floor(fx)), iy = Math.min(wgy - 2, Math.floor(fy));
@@ -228,7 +240,7 @@ export function sampleField(world: PhysicalWorld, proj: Projection, opts: FieldO
     }
   }
 
-  return { gx, gy, step, x0, y0, coast, lake, cell, landCell, elev };
+  return { gx, gy, step, x0, y0, coast, lake, cell, landCell, elev, ux, uy, uz };
 }
 
 /** Bilinear sample of a node field at a screen position. */

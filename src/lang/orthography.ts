@@ -60,7 +60,7 @@ interface School {
 /** Generic consonant candidates, used after the school's own. */
 const DEFAULT: Record<string, string[]> = {
   p: ["p"], b: ["b"], t: ["t"], d: ["d"], ʈ: ["ṭ", "tt"], ɖ: ["ḍ", "dd"], c: ["ty", "ky", "ć"], ɟ: ["gy", "dy", "ǵ"],
-  k: ["k", "c"], g: ["g"], q: ["q"], ɢ: ["gq", "ġ"], ʔ: ["'", "ʻ", "ʾ"],
+  k: ["k", "c"], g: ["g"], q: ["q"], ɢ: ["g", "gh", "ġ"], ʔ: ["'", "ʻ", "ʾ"],
   pf: ["pf"], ts: ["ts", "tz", "c"], dz: ["dz", "z"], tʃ: ["ch", "tch", "č"], dʒ: ["j", "dj", "dž"],
   ʈʂ: ["zh", "tr"], ɖʐ: ["dr"], tɕ: ["ch", "ty", "ć"], dʑ: ["dy", "dź"], tɬ: ["tl", "tlh"],
   ɸ: ["f", "ph", "fh"], β: ["v", "bh", "w"], f: ["f", "ph"], v: ["v", "w"], θ: ["th", "þ"], ð: ["dh", "ð"],
@@ -75,7 +75,7 @@ const DEFAULT: Record<string, string[]> = {
 /** Generic candidates for vowel qualities: plain letters and digraphs before marked letters. */
 const VOWELS: Record<string, string[]> = {
   a: ["a"], e: ["e"], i: ["i"], o: ["o"], u: ["u"],
-  y: ["ü", "y", "ue", "yu"], ø: ["ö", "eu", "ø", "oe"], æ: ["ae", "ä", "æ"], ɛ: ["è", "ae", "ä", "ea"], ɔ: ["ò", "aw", "å", "oa"],
+  y: ["ü", "y", "yu", "ue"], ø: ["ö", "eu", "ø", "oe"], æ: ["ae", "ä", "æ"], ɛ: ["è", "ae", "ä", "ea"], ɔ: ["ò", "aw", "å", "oa"],
   ə: ["ë", "ă", "e", "a"], ɨ: ["y", "ï", "ı", "ui"], ɯ: ["ı", "ŭ", "ü"], ʉ: ["ü", "u"], ɑ: ["â", "ah", "å", "aa"], ɒ: ["å", "ò"],
   ɪ: ["i", "ĭ"], ʏ: ["ü"], ʊ: ["u", "ŭ"], ɘ: ["ë"], ɵ: ["ö"], ɤ: ["õ", "ë", "ŏ"], œ: ["œ", "ö", "oe"], ɜ: ["ë", "ö"],
   ʌ: ["ŭ", "ă", "u"], ɐ: ["a", "ă"],
@@ -300,7 +300,7 @@ const SCHOOLS: School[] = [
     map: {
       q: ["q"], ʎ: ["ll"], ɲ: ["ñ"], ʃ: ["sh"], tʃ: ["ch"], kʼ: ["k'"], qʼ: ["q'"], tʃʼ: ["ch'"], pʼ: ["p'"], tʼ: ["t'"],
       kʰ: ["kh"], qʰ: ["qh"], tʃʰ: ["chh"], pʰ: ["ph"], tʰ: ["th"], x: ["j", "h"], χ: ["j", "h"], j: ["y"], w: ["w"], ŋ: ["ng"],
-      ts: ["ts"], ə: ["e", "ë"], ɢ: ["gq"], ʁ: ["gh"],
+      ts: ["ts"], ə: ["e", "ë"], ɢ: ["g", "gh"], ʁ: ["gh"],
     },
     likes: ["q", "qʼ", "ʎ", "ɲ", "kʼ", "χ"],
     related: ["romance", "basque"],
@@ -450,7 +450,11 @@ function longCandidates(short: string, style: LongStyle, schoolId: string, q: st
   if (!single(short)) {
     // digraph vowel (ae, aw): a conventional long counterpart
     out.push(...(LONG_DIGRAPH[short] ?? [short + "h"]));
-  } else if (style === "double") out.push(short + short);
+  } else if (style === "double") {
+    // é (an e that gave its letter to a schwa) is doubled bare: ee, not éé
+    if (!plain && q === "e" && short === "é") out.push("ee");
+    out.push(short + short);
+  }
   else {
     const c = compose(short, COMBINING[style]);
     if (c) out.push(c);
@@ -536,20 +540,25 @@ export function buildOrthography(ph: Phonology, rng: Rng, opts: OrthographyOptio
     for (const m of markTypes(s)) usedMarks.add(m);
   };
   /** Cost of a spelling: list position plus a penalty for each mark the tradition does not use. */
+  let own: string[] = [];
   const cost = (s: string, i: number) => {
     let c = i;
+    // a tradition's own explicit spellings are native to it by definition (semitic ü, celtic ŷ)
+    if (own.includes(s)) return c;
     for (const m of markTypes(s)) {
       if (m === "ipa") c += 50;
       else if (banned.has(m)) c += 100;
-      else if (!native.has(m)) c += usedMarks.has(m) ? 2.5 : 6;
+      // acute (é) and diaeresis (ü ö ä) are read everywhere: lighter penalties than other foreign marks
+      else if (!native.has(m)) c += usedMarks.has(m) ? 2.5 : m === "m301" ? 3 : m === "m308" ? 2 : 6;
     }
     return c;
   };
-  const best = (cs: string[]): string | undefined => {
+  const best = (cs: string[], allowIpa = false): string | undefined => {
     let bs: string | undefined;
     let bc = Infinity;
     cs.forEach((s, i) => {
       if (used.has(s) || s === "") return;
+      if (!allowIpa && markTypes(s).includes("ipa")) return;
       const c = cost(s, i);
       if (c < bc) {
         bc = c;
@@ -558,9 +567,30 @@ export function buildOrthography(ph: Phonology, rng: Rng, opts: OrthographyOptio
     });
     return bs;
   };
-  // Keep the base orthography's spellings where possible (daughters).
+  // The commoner of e and ə gets the plain letter (French e/é): a schwa-heavy daughter
+  // writes its schwa "e" and respells its old e, rather than strewing "ë" over every word.
+  const wq = (q: string) => ph.vowels.reduce((t, v) => t + (vowelQuality(v) === q ? ph.wVowel[v] ?? 0 : 0), 0);
+  let schwaFirst = false;
+  if (inv.has("ə") && inv.has("e") && wq("ə") > wq("e") * 1.15 && !banned.has("m301")) {
+    schwaFirst = true;
+    take("ə", "e");
+  }
+  // Keep the base orthography's spellings where possible (daughters). A sound that
+  // newly arises and has an obvious letter (h from x) reclaims it from a phoneme
+  // that had borrowed it (a glottal stop written h), which is then respelled.
+  const reclaimed = new Set<string>();
+  if (opts.base) {
+    const holder = new Map(Object.entries(opts.base.map).map(([q, sp]) => [sp, q]));
+    for (const p of inv) {
+      if (!/^[a-z]$/.test(p) || opts.base.map[p] !== undefined || school.map[p]) continue;
+      const q = holder.get(p);
+      if (q && q !== p) reclaimed.add(q);
+    }
+  }
   if (opts.base) {
     for (const p of [...ph.consonants, ...new Set(ph.vowels.map(vowelQuality))]) {
+      if (map[p] !== undefined || reclaimed.has(p)) continue;
+      if (schwaFirst && p === "e") continue;
       const s = opts.base.map[p];
       if (s !== undefined && s !== "" && !used.has(s) && !markTypes(s).some((m) => banned.has(m))) take(p, s);
     }
@@ -569,6 +599,8 @@ export function buildOrthography(ph: Phonology, rng: Rng, opts: OrthographyOptio
   const shorts = [...ph.consonants, ...new Set(ph.vowels.map(vowelQuality))].filter((p) => map[p] === undefined);
   const freq = (p: string) => (ph.wOnset[p] ?? 0) + (ph.wCoda[p] ?? 0) + (ph.wVowel[p] ?? 0) * 2;
   const cands = new Map(shorts.map((p) => [p, candidates(p, school, variant[p])]));
+  // (the respelled e avoids the mark long vowels use: é with ā-style length, but ê or é, not ê/êê)
+  if (schwaFirst && cands.has("e")) cands.set("e", ["é", "ê", "è", "ei", "ee"].filter((x) => !MARK_OF_LONG[longStyle] || !markTypes(x).includes(MARK_OF_LONG[longStyle])));
   // Spanish-style r/rr when both a trill and a tap exist.
   if (inv.has("r") && inv.has("ɾ") && map.r === undefined && map["ɾ"] === undefined && !used.has("rr") && !used.has("r")) {
     take("r", "rr");
@@ -594,11 +626,15 @@ export function buildOrthography(ph: Phonology, rng: Rng, opts: OrthographyOptio
   ].filter((p) => map[p] === undefined);
   for (const p of ordered) {
     if (map[p] !== undefined) continue;
+    own = school.map[p] ?? [];
+    if (schwaFirst && p === "e") own = cands.get("e")!.slice(0, 1);
     let chosen = best(cands.get(p)!);
     if (chosen === undefined) {
-      // borrow a spelling from any tradition, then fall back to IPA-ish forms
+      // borrow a spelling from any tradition, then build one from a plain letter (vh, dd, z')
       const extra = SCHOOLS.flatMap((sc) => sc.map[p] ?? []);
-      chosen = best([...extra, p, p + "h", p + "'", p + p]) ?? p + p + p;
+      const plain = [...(DEFAULT[p] ?? []), ...(VOWELS[p] ?? [])].filter((x) => /^[a-z]+$/.test(x));
+      const made = plain.flatMap((x) => [x + "h", x + x, x + "'"]);
+      chosen = best([...extra, ...made]) ?? best([p, p + "h", p + "'", p + p], true) ?? p + p + p;
     }
     take(p, chosen);
   }
@@ -681,6 +717,8 @@ function finishOrthography(
   }
   // ŋ + k is "nk" wherever ŋ is a digraph (bank, Bangkok).
   if (inv.has("ŋ") && inv.has("k") && (map["ŋ"] ?? "").startsWith("ng") && map.k === "k" && !(school.pairs ?? {})["ŋ+k"]) add({ p: "ŋ+k", s: "nk" });
+  // A palatal nasal before a palatal affricate is plain n (nj, nch), as in Swahili and English.
+  for (const a of ["dʒ", "tʃ"]) if (inv.has("ɲ") && inv.has(a) && (map["ɲ"] ?? "").startsWith("ny") && map[a]) add({ p: "ɲ+" + a, s: "n" + map[a] });
   // n + g would read as ŋ: write n'g (as pinyin does in Xi'an).
   const gLike = Object.keys(map).find((p) => map[p] === "g");
   if (inv.has("ŋ") && map["ŋ"] === "ng" && inv.has("n") && gLike && school.id !== "bantu") add({ p: "n+" + gLike, s: "n'g" });
@@ -695,13 +733,14 @@ function finishOrthography(
 }
 
 /** Daughter orthography: inherit, spell new phonemes the school's way, and now and then reform coherently. */
-export function driftOrthography(parent: Orthography, ph: Phonology, rng: Rng): Orthography {
+export function driftOrthography(parent: Orthography, ph: Phonology, rng: Rng, opts: { stage?: boolean } = {}): Orthography {
   const inv = new Set([...ph.consonants, ...ph.vowels]);
   const school = SCHOOL_BY_ID[parent.school] ?? SCHOOLS[0];
   const longStyle = inferLong(parent, school, rng);
   const nasalStyle = (parent.nasal as NasalStyle | undefined) ?? school.nasal;
   const base: Orthography = { ...parent, map: { ...parent.map }, rules: parent.rules.slice() };
-  const r = rng.next();
+  // splits reform their spelling now and then; a people's own later stages keep their scribal tradition more often
+  const r = rng.next() / (opts.stage ? 0.45 : 1);
   if (r < 0.12) {
     // 1. Reform towards a related tradition (Old Norse → Danish-style, Latin → Romance).
     const opts = school.related.filter((id) => SCHOOL_BY_ID[id] && (!SCHOOL_BY_ID[id].requires || SCHOOL_BY_ID[id].requires!(inv)));

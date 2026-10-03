@@ -9,6 +9,7 @@ import { features, isVowel, lengthen, phonemeDistance, shorten, vf, vowelQuality
 import { isValidWord, medialRunOK, nuclei, tables } from "./phonology";
 import { ipaPhrase, romanizeName, romanizeWord } from "./orthography";
 import { applyChanges, applyChangesPhrase } from "./soundchange";
+import { CONCEPT_BY_ID } from "./concepts";
 import type { EtymStep, Language, LineageStep, Name, NamePart, Orthography, Word } from "./types";
 import { key } from "./util";
 
@@ -25,7 +26,7 @@ function segmentedFrom(parts: NamePart[], ortho: Orthography, words: Word[]): st
     const ps = parts.filter((p) => p.word === wi && p.phonemes.length);
     let s = "";
     ps.forEach((p, i) => {
-      if (i > 0 && p.role !== "link" && ps[i - 1].role !== "link") s += "-";
+      if (i > 0 && p.role !== "link") s += "-";
       s += romanizeWord(ortho, p.phonemes);
     });
     if (s) out.push(s.charAt(0).toUpperCase() + s.slice(1));
@@ -178,7 +179,8 @@ function mapSegments(word: Word, lang: Language): Word {
   const cons = ph.consonants;
   const vows = ph.vowels;
   const out: string[] = [];
-  for (const p of word) {
+  for (let wi = 0; wi < word.length; wi++) {
+    const p = word[wi];
     if (t.cons.has(p) || t.vows.has(p)) {
       out.push(p);
       continue;
@@ -206,6 +208,10 @@ function mapSegments(word: Word, lang: Language): Word {
       continue;
     }
     if ((p === "j" || p === "w") && !t.cons.has(p)) {
+      // a glide the language lacks: a vowel if that makes a legal syllable, else nothing (Ñaysu → Nasu)
+      const nextV = isVowel(word[wi + 1] ?? "");
+      const prevV = wi > 0 && isVowel(word[wi - 1]);
+      if (!ph.hiatus && (nextV || prevV)) continue;
       const v = p === "j" ? "i" : "u";
       if (t.vows.has(v)) {
         out.push(v);
@@ -270,7 +276,13 @@ export function repairWord(word: Word, lang: Language): Word {
         if (vowelQuality(w[a]) === vowelQuality(w[b])) {
           const L = lengthen(w[a]);
           w.splice(a, 2, ph.vowels.includes(L) ? L : w[a]);
-        } else w.splice(b, 0, glide);
+        } else {
+          // a glide that does not clash with the next vowel (no *ji, *wu)
+          const nv = vf(w[b])!;
+          const bad = (g: string) => (g === "j" && nv.back === 0 && !nv.round && nv.height <= 1) || (g === "w" && nv.back === 2 && nv.round && nv.height <= 1);
+          const g = [glide, "j", "w", "h", "ʔ", "n", "r", "l", "t"].find((c) => ph.consonants.includes(c) && !bad(c) && (ph.wOnset[c] ?? 0) > 0) ?? glide;
+          w.splice(b, 0, g);
+        }
         fixed = true;
         break;
       }
@@ -298,14 +310,31 @@ export function repairWord(word: Word, lang: Language): Word {
       else w.pop();
       continue;
     }
-    // something else (e.g. glide after a matching vowel, banned affricate-like sequence): drop the offender
+    // something else: glides next to their own vowel (ij, ji, uw, wu), j after a palatal,
+    // a banned consonant–vowel pair (Japanese-like *ti): drop or replace the offender
     let dropped = false;
-    for (let i = 0; i + 1 < w.length; i++) {
+    const t = tables(ph);
+    for (let i = 0; i + 1 < w.length && !dropped; i++) {
       const v = vf(w[i]);
+      const nv = vf(w[i + 1]);
       if (v && ((w[i + 1] === "j" && v.back === 0) || (w[i + 1] === "w" && v.back === 2))) {
         w.splice(i + 1, 1);
         dropped = true;
-        break;
+      } else if (nv && ((w[i] === "j" && nv.back === 0 && !nv.round) || (w[i] === "w" && nv.back === 2 && nv.round))) {
+        w.splice(i, 1);
+        dropped = true;
+      } else if (w[i + 1] === "j" && !v) {
+        const pl = features(w[i])?.kind === "C" ? (features(w[i]) as { place: string }).place : "";
+        if (pl === "palatal" || pl === "postalveolar" || pl === "alveolopalatal") {
+          w.splice(i + 1, 1);
+          dropped = true;
+        }
+      } else if (nv && !v && t.bannedCV.has(w[i] + "+" + vowelQuality(w[i + 1]))) {
+        const pool = ph.consonants.filter((c) => c !== w[i] && !t.bannedCV.has(c + "+" + vowelQuality(w[i + 1])) && (ph.wOnset[c] ?? 0) > 0);
+        if (pool.length) {
+          w[i] = nearest(w[i], pool);
+          dropped = true;
+        }
       }
     }
     if (!dropped) {
@@ -370,6 +399,50 @@ export function borrowName(name: Name, toLang: Language, opts: BorrowOptions = {
   if (name.meta) out.meta = { ...name.meta };
   out.etym = renderEtymology(out);
   return out;
+}
+
+/**
+ * The etymology of a word of the lexicon, as an encyclopedia would print it:
+ * "from Old Keshi *kaśtar, from Proto-Keshi *kaś-tabar 'stone ford'", or
+ * "compound of 'god' + 'house'", "borrowed from Ashkari", "of unknown origin".
+ * `resolve` maps engine language ids to language objects (the ancestors' words
+ * are not stored in a daughter); `label` names them (default: Proto-/Old X).
+ */
+export function wordEtymology(
+  lang: Language,
+  concept: string,
+  resolve: (engineId: string) => Language | undefined,
+  label: (l: Language) => string = (l) => ancestorLabel(l),
+): string {
+  const lx = lang.lexicon[concept];
+  if (!lx) return "";
+  const gloss = CONCEPT_BY_ID[concept]?.en ?? concept;
+  const quote = (l: Language, form: Word) => `${l.attested ? "" : "*"}${romanizeWord(l.orthography, form)}`;
+  const chain: string[] = [];
+  let cur: Language | undefined = lang;
+  // walk up while the word was inherited
+  while (cur && cur.lexicon[concept]?.origin.kind === "inherited") {
+    const o = cur.lexicon[concept].origin as { kind: "inherited"; from: string };
+    const anc = resolve(o.from);
+    if (!anc?.lexicon[concept]) break;
+    chain.push(`from ${label(anc)} ${quote(anc, anc.lexicon[concept].form)}`);
+    cur = anc;
+  }
+  const root = cur?.lexicon[concept];
+  let tail = "";
+  if (root && cur) {
+    const o = root.origin;
+    if (o.kind === "compound") tail = `a compound of ${o.parts.map((p) => `'${CONCEPT_BY_ID[p]?.en ?? p}'`).join(" and ")}`;
+    else if (o.kind === "derived") tail = `from '${CONCEPT_BY_ID[o.base]?.en ?? o.base}' with the ${o.affix} suffix`;
+    else if (o.kind === "shift") tail = `originally '${CONCEPT_BY_ID[o.from]?.en ?? o.from}'`;
+    else if (o.kind === "borrowed") tail = `borrowed from ${o.langName}`;
+    else if (o.kind === "coined" && chain.length === 0) tail = "of unknown origin";
+  }
+  if (chain.length) {
+    chain[chain.length - 1] += ` '${gloss}'`;
+    return [...chain, tail].filter(Boolean).join(", ");
+  }
+  return tail;
 }
 
 export interface EtymologyRenderOptions {

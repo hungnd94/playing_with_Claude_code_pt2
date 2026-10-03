@@ -41,7 +41,11 @@ function binEvents(h: History): Bins {
   b.dark = sm(b.dark);
   b.gold = sm(b.gold);
   b.other = sm(b.other);
-  for (let i = 0; i < n; i++) b.max = Math.max(b.max, b.war[i] + b.dark[i] + b.gold[i] + b.other[i]);
+  // Normalise by a high percentile so a few great wars don't flatten everything else.
+  const tot: number[] = [];
+  for (let i = 0; i < n; i++) tot.push(b.war[i] + b.dark[i] + b.gold[i] + b.other[i]);
+  tot.sort((x, y) => x - y);
+  b.max = Math.max(1, tot[Math.floor(tot.length * 0.97)] ?? 1);
   return b;
 }
 
@@ -79,16 +83,21 @@ export function Timeline() {
       const n = bins.war.length;
       const W = c.width, H = c.height;
       const cols = [token("--ev"), token("--golden"), token("--plague"), token("--war")];
+      const alpha = [0.35, 0.75, 0.75, 0.6];
       const bw = W / n;
       for (let i = 0; i < n; i++) {
         const parts = [bins.other[i], bins.gold[i], bins.dark[i], bins.war[i]];
+        const total = parts[0] + parts[1] + parts[2] + parts[3];
+        if (total <= 0) continue;
+        // Bar height ∝ sqrt(total density); split proportionally among kinds.
+        const full = Math.min(1, Math.sqrt(total / bins.max)) * H * 0.92;
         let y = H;
         for (let k = 0; k < 4; k++) {
-          const hgt = Math.sqrt(parts[k] / bins.max) * H * 0.95;
-          if (hgt < 0.2) continue;
+          const hgt = (full * parts[k]) / total;
+          if (hgt < 0.15) continue;
           g.fillStyle = cols[k];
-          g.globalAlpha = k === 0 ? 0.55 : 0.8;
-          g.fillRect(i * bw, y - hgt, Math.max(1, bw - 0.4 * dpr), hgt);
+          g.globalAlpha = alpha[k];
+          g.fillRect(i * bw, y - hgt, Math.max(1, bw - 0.6 * dpr), hgt);
           y -= hgt;
         }
       }

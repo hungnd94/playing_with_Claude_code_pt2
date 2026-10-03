@@ -153,6 +153,8 @@ export function randomStyle(rng: Rng, family: Family, tool: Tool, direction: Dir
     case "featural":
       width = r.range(0.85, 1.0);
       cornering = r.range(0, 0.35);
+      // Two to four letters share a syllable block: a light hand keeps it open.
+      weight *= 0.82;
       break;
     case "syllabic":
       width = r.range(0.72, 0.9);

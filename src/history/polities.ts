@@ -4,7 +4,7 @@
  * revolts, vassalage, unions, and the collapse of overstretched realms into
  * successor states.
  */
-import { makeEmblem, emblemTints } from "./emblems";
+import { makeEmblem, emblemTints, emblemArms } from "./emblems";
 import { generateFlag } from "../heraldry/flag";
 import type { Arms } from "../heraldry/types";
 import { siteConcepts } from "./names";
@@ -14,6 +14,7 @@ import type { PolS, SetS, Sim } from "./sim";
 import type { EventData, Government, Polity, RGB, SuccessionLaw } from "./types";
 import { clamp, hsl, remove } from "./util";
 import { startWar, endWarsOf } from "./war";
+import { conquestRename } from "./divergence";
 
 // ---------------------------------------------------------------------------
 // Basics
@@ -59,14 +60,21 @@ export function realmName(sim: Sim, culture: number, capital: number, how: strin
   const site = siteConcepts(sim, s.cell);
   const feature = site.find((x) => ["river", "mountain", "forest", "sea", "lake", "hill", "marsh", "island", "valley", "coast"].includes(x));
   const firstOfPeople = !sim.P.some((p) => p.rec.culture === culture);
+  const taken = new Set<string>();
+  for (const P of sim.P) if (P.alive) taken.add(P.name.roman);
   const r = rng.next();
-  if (r < 0.22 && how !== "faction") return s.name; // named after its capital, like a city-state
-  return sim.names.realm(C.lang, rng, {
-    people: firstOfPeople || rng.chance(0.15) ? (C.rec.name as unknown as LName) : undefined,
-    capital: s.name,
-    feature,
-    founder: founder >= 0 && rng.chance(0.3) ? (sim.Pe[founder].rec.name as unknown as LName) : undefined,
-  });
+  if (r < 0.22 && how !== "faction" && !taken.has(s.name.roman)) return s.name; // named after its capital, like a city-state
+  let n: LName = s.name;
+  for (let i = 0; i < 4; i++) {
+    n = sim.names.realm(C.lang, rng, {
+      people: (firstOfPeople && i === 0) || rng.chance(0.12) ? (C.rec.name as unknown as LName) : undefined,
+      capital: s.name,
+      feature,
+      founder: founder >= 0 && rng.chance(0.3) ? (sim.Pe[founder].rec.name as unknown as LName) : undefined,
+    });
+    if (!taken.has(n.roman)) break;
+  }
+  return n;
 }
 
 function hueDist(a: number, b: number): number {
@@ -159,7 +167,7 @@ export function createPolity(sim: Sim, o: NewPolity): PolS {
   const gloss = name.gloss ? [name.gloss] : [];
   const relSym = religion >= 0 ? sim.h.religions[religion].symbol : undefined;
   const liege = o.overlord !== undefined && o.overlord >= 0 ? sim.P[o.overlord] : o.parent >= 0 && o.how === "colony" ? sim.P[o.parent] : undefined;
-  const emblem = makeEmblem(rng.fork(`arms${id}`), { style: C.style, kind: C.rec.heraldicStyle, gloss, symbol: rng.chance(0.35) ? relSym : undefined, colours: liege ? emblemTints(liege.rec.emblem) : undefined });
+  const emblem = makeEmblem(rng.fork(`arms${id}`), { style: C.style, kind: C.rec.heraldicStyle, gloss, symbol: rng.chance(0.35) ? relSym : undefined, colours: liege ? emblemTints(liege.rec.emblem) : undefined, legend: name.roman });
   const rec: Polity = {
     id, names: [{ year: sim.year, name: name as never, reason: "founded" }], governments: [{ year: sim.year, gov: o.gov }], succession: [{ year: sim.year, law }],
     founded: sim.year, ended: -1, founder: -1, predecessors: o.parent >= 0 ? [o.parent] : [], successors: [], capitals: [{ year: sim.year, settlement: o.capital }],
@@ -167,13 +175,14 @@ export function createPolity(sim: Sim, o: NewPolity): PolS {
     emblem, color, wars: [], statStart: Math.ceil(sim.year / sim.h.sampleStep), stats: { pop: [], areaKm2: [], settlements: [], strength: [] }, peak: { areaKm2: 0, year: sim.year },
   };
   if (o.gov !== "tribe" && rng.chance(0.75)) rec.motto = sim.names.motto(C.lang, rng);
-  if (o.gov !== "tribe" && o.gov !== "chiefdom") rec.flag = makeFlag(sim, emblem.data as Arms, C.style.name, id);
+  if (o.gov !== "tribe" && o.gov !== "chiefdom") rec.flag = makeFlag(sim, emblemArms(emblem), C.style.name, id);
   if (o.parent >= 0) sim.h.polities[o.parent].successors.push(id);
   sim.h.polities.push(rec);
   const P: PolS = {
     id, rec, alive: true, culture: o.culture, capital: o.capital, gov: o.gov, law, ruler: -1, heir: -1, dynasty: -1, religion, overlord: o.overlord ?? -1, unionWith: -1,
     legitimacy: 0.7, prestige: 0, treasury: 0, warWeariness: 0, sets: [], provinces: new Map(), pop: 0, strength: 0, cells: 0, area: 0, allies: [], truces: new Map(),
     claims: new Map(), grudges: new Map(), ties: new Map(), wars: [], name, color, lastSuccession: sim.year, rebel: !!o.rebel, crisis: 0, goldenAge: 0, regent: -1, regentUntil: 0,
+    cohesion: o.how === "chiefdom" ? 0.95 : 1.05, decay: rng.range(0.55, 1.45),
     founded: sim.year, revolts: 0, lastWonder: sim.year, lastWar: -999, govSince: sim.year, conquests: 0, peakStrength: 0, cultureMix: new Map(),
   };
   sim.P.push(P);
@@ -217,7 +226,7 @@ export function createPolity(sim: Sim, o: NewPolity): PolS {
   return P;
 }
 
-function makeFlag(sim: Sim, arms: Arms, style: string, id: number): unknown {
+function makeFlag(sim: Sim, arms: Arms | undefined, style: string, id: number): unknown {
   try {
     return generateFlag(sim.rng.emblems.fork(`flag${id}`), { arms, style: style as never });
   } catch {
@@ -288,6 +297,7 @@ export function transfer(sim: Sim, sid: number, to: number, conquest: boolean): 
     const T = sim.P[to];
     T.claims.delete(sid);
     if (!T.sets.includes(sid)) T.sets.push(sid);
+    if (conquest) conquestRename(sim, sid, to);
     if (conquest) {
       s.loyalty = Math.min(s.loyalty, 0.35);
       T.conquests++;
@@ -302,10 +312,11 @@ export function transfer(sim: Sim, sid: number, to: number, conquest: boolean): 
 
 /** Rebuild membership lists, population and strength of all realms (yearly). */
 export function rebuildMembership(sim: Sim): void {
+  const mix = sim.year % 10 === 5;
   for (const P of sim.P) if (P.alive) {
     P.sets = [];
     P.pop = 0;
-    P.cultureMix.clear();
+    if (mix) P.cultureMix.clear();
   }
   for (const sid of sim.alive()) {
     const s = sim.S[sid];
@@ -317,7 +328,7 @@ export function rebuildMembership(sim: Sim): void {
     }
     P.sets.push(sid);
     P.pop += s.pop;
-    P.cultureMix.set(s.culture, (P.cultureMix.get(s.culture) ?? 0) + s.pop);
+    if (mix) P.cultureMix.set(s.culture, (P.cultureMix.get(s.culture) ?? 0) + s.pop);
   }
   for (const P of sim.P) {
     if (!P.alive) continue;
@@ -352,6 +363,7 @@ function strengthOf(sim: Sim, P: PolS): void {
     st += s.pop * m * (0.45 + 0.55 * s.loyalty) * far * (s.occupier >= 0 ? 0.2 : 1);
   }
   if (P.ruler >= 0) st *= 0.85 + 0.3 * sim.Pe[P.ruler].martial;
+  st *= 0.55 + 0.5 * P.cohesion;
   st *= 1 - 0.35 * Math.min(1, P.warWeariness);
   P.strength = st;
   if (st > P.peakStrength) P.peakStrength = st;
@@ -488,7 +500,7 @@ function changeGov(sim: Sim, P: PolS, to: Government, reason: string, imp = 3): 
   if (law !== P.law) sim.setLaw(P, law);
   sim.emit("governmentChanged", imp, capitalCell(sim, P), { polities: [P.id], persons: [P.ruler] }, { polity: P.id, from, to, reason });
   // Kingship brings arms and a flag if the realm had none worth the name.
-  if (!P.rec.flag && to !== "tribe" && to !== "chiefdom") P.rec.flag = makeFlag(sim, P.rec.emblem.data as Arms, sim.C[P.culture].style.name, P.id);
+  if (!P.rec.flag && to !== "tribe" && to !== "chiefdom") P.rec.flag = makeFlag(sim, emblemArms(P.rec.emblem), sim.C[P.culture].style.name, P.id);
 }
 
 function considerGovernment(sim: Sim, P: PolS): void {
@@ -574,6 +586,7 @@ function updateLoyalty(sim: Sim, P: PolS): void {
   const has = (t: string) => !!ruler && ruler.traits.includes(t as never);
   let rulerMod = (has("just") ? 0.04 : 0) + (has("kind") ? 0.03 : 0) + (has("charismatic") ? 0.04 : 0) - (has("cruel") ? 0.05 : 0) - (has("mad") ? 0.08 : 0) - (has("greedy") ? 0.03 : 0);
   rulerMod += (P.legitimacy - 0.6) * 0.2;
+  rulerMod += (P.cohesion - 0.6) * 0.3;
   if (P.regent >= 0) rulerMod -= 0.04;
   if (P.goldenAge > sim.year) rulerMod += 0.06;
   const stateRel = P.religion;
@@ -614,8 +627,11 @@ function checkRevolts(sim: Sim, P: PolS): void {
       w += sim.S[m].pop;
     }
     L /= w || 1;
-    if (L >= 0.36) continue;
-    if (!rng.chance((0.36 - L) * 1.6)) continue;
+    if (L >= 0.33) continue;
+    if (sim.year - sim.S[seat].lastRevolt < 40) continue;
+    // Revolts break out when the centre is distracted or weak.
+    const distracted = P.wars.some((wid) => sim.W[wid].active) || P.crisis > 3 || P.regent >= 0 || P.lastSuccession > sim.year - 3;
+    if (!rng.chance((0.33 - L) * (distracted ? 1.2 : 0.4))) continue;
     // Neighbouring disaffected provinces join.
     const rebelsSet = new Set(live);
     const seatS = sim.S[seat];
@@ -649,8 +665,9 @@ export function raiseRebellion(sim: Sim, P: PolS, members: number[], seat: numbe
   leader.polity = R.id;
   P.revolts++;
   P.crisis += 1;
+  for (const m of members) sim.S[m].lastRevolt = sim.year;
   const war = startWar(sim, R, P, "independence", { rebels: R.id, claimant: leader.id, quiet: true });
-  sim.emit("rebellion", members.length >= 8 || P.sets.length >= 20 ? 4 : 3, s.cell, { polities: [R.id, P.id], settlements: members.slice(0, 12), persons: [leader.id], wars: [war] }, {
+  sim.emit("rebellion", members.length >= 12 ? 4 : 3, s.cell, { polities: [R.id, P.id], settlements: members.slice(0, 12), persons: [leader.id], wars: [war] }, {
     rebels: R.id, against: P.id, settlements: members, leader: leader.id, cause,
   });
   void rng;
@@ -659,7 +676,7 @@ export function raiseRebellion(sim: Sim, P: PolS, members: number[], seat: numbe
 
 function checkCollapse(sim: Sim, P: PolS): void {
   const rng = sim.rng.polity;
-  if (P.provinces.size < 4 || P.sets.length < 14) return;
+  if (P.provinces.size < 6 || P.sets.length < 25) return;
   // Overextension and disloyalty feed the crisis.
   let L = 0, w = 0;
   for (const sid of P.sets) {
@@ -668,12 +685,14 @@ function checkCollapse(sim: Sim, P: PolS): void {
   }
   L /= w || 1;
   if (L < 0.55) P.crisis += (0.55 - L) * 4;
+  // Decadence of an old, sprawling realm.
+  if (P.cohesion < 0.5) P.crisis += (0.5 - P.cohesion) * Math.min(8, P.provinces.size / 4);
   if (P.ruler >= 0) {
     const tr = sim.Pe[P.ruler].rec.traits;
     if (tr.includes("mad") || tr.includes("foolish")) P.crisis += 0.4;
   }
-  if (P.crisis < 6) return;
-  if (!rng.chance(Math.min(0.5, (P.crisis - 6) * 0.07))) return;
+  if (P.crisis < 8) return;
+  if (!rng.chance(Math.min(0.5, (P.crisis - 8) * 0.06))) return;
   collapse(sim, P);
 }
 
@@ -683,7 +702,7 @@ export function collapse(sim: Sim, P: PolS): void {
   const S = sim.S;
   const seats = [...P.provinces.keys()].filter((x) => S[x].alive && S[x].owner === P.id);
   if (seats.length < 3) return;
-  const k = clamp(Math.round(seats.length / rng.range(3, 5)), 2, 6);
+  const k = clamp(Math.round(seats.length / rng.range(4, 6.5)), 2, 5);
   // Successor seeds: big provincial seats far from the capital and from each other.
   const capCell = capitalCell(sim, P);
   const seeds: number[] = [];
@@ -747,6 +766,16 @@ export function collapse(sim: Sim, P: PolS): void {
   sim.emit("polityCollapsed", peak > 2.5e6 ? 5 : 4, capCell, { polities: [P.id, ...successors], persons: [oldRuler] }, { polity: P.id, successors, causes, peakAreaKm2: Math.round(peak), age });
   P.crisis = 0;
   P.revolts = 0;
+  // The shock purges the old elite; a smaller realm regains some vigour.
+  P.cohesion = Math.min(1, P.cohesion + 0.35);
+  // Every successor remembers the old realm's lands as its own by right.
+  const allMembers: number[] = [];
+  for (const m of groups.values()) allMembers.push(...m);
+  for (const q of successors) {
+    const Q = sim.P[q];
+    for (const m of allMembers) if (sim.S[m].owner !== q) Q.claims.set(m, sim.year);
+  }
+  if (keepRump) for (const m of allMembers) if (sim.S[m].owner !== P.id) P.claims.set(m, sim.year);
   if (!keepRump) {
     endPolity(sim, P, "collapsed");
     for (const q of successors) if (!P.rec.successors.includes(q)) P.rec.successors.push(q);
@@ -843,6 +872,7 @@ export function tickPolities(sim: Sim): void {
     for (const P of sim.P) {
       if (!P.alive) continue;
       updateLoyalty(sim, P);
+      P.cohesion = Math.max(0.05, P.cohesion - 0.0032 * P.decay * (0.6 + P.provinces.size / 15) * (P.goldenAge > y ? 1.3 : 1));
       P.crisis *= 0.88;
       P.revolts *= 0.97;
       P.conquests *= 0.96;

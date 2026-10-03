@@ -277,55 +277,39 @@ function lionPassant(): ChargeArt {
 // Wolf
 
 function wolfHead(dx: number, dy: number, rot: number, k = 1): HeadArt {
+  // Canine profile: flat crown, a marked stop, a long tapering muzzle, jaws open.
   const head: SPt[] = [
-    [27, 2.5],
-    [20, 1.5],
-    [14, 3.4],
-    [9.5, 6],
-    [3, 8],
-    [-1.5, 9, 1],
-    [-1, 11.6],
-    [2.5, 12.6],
-    [8, 13.2],
-    [15.5, 14.5, 1],
-    [8, 16],
-    [2, 17.2],
-    [-0.5, 18.2, 1],
-    [1.5, 20.6],
-    [9, 21.4],
-    [17, 21.6],
-    [25, 20],
-    [31, 14],
-    [31.5, 7],
+    [30, 4], [24, 2.5], [17, 4.5], [12.5, 7.5], [6, 9], [0.5, 10.2, 1], [-1.2, 12.4, 1], [0.5, 14.2], [6, 14.4], [13, 15.6],
+    [17.5, 17, 1], [11, 17.6], [4, 18.6], [1, 19.6, 1], [2.5, 21.6], [9, 22.4], [16, 23], [23, 23.5], [30, 21], [34, 15], [34.5, 9],
   ];
-  const ear: SPt[] = [[19, 3], [21.5, -9, 1], [27.5, -2], [28.5, 4]];
+  const ear: SPt[] = [[21, 4.5], [26, -7.5, 1], [32.5, 0.5], [30.5, 6]];
   const tongue: [number, number, number][] = [
-    [13, 15.3, 3.6],
-    [6, 16, 3.6],
-    [1, 17.6, 3.2],
-    [-2.4, 20.6, 2.4],
-    [-3.2, 24.2, 1],
-    [-2.6, 25.6, 0.2],
+    [15, 17.2, 3.4],
+    [8, 18, 3.3],
+    [2, 18.8, 2.9],
+    [-3, 20.8, 2.2],
+    [-5, 24, 1.2],
+    [-4.2, 26, 0.2],
   ];
-  const teeth = "M1.8 12.4L2.8 15.4L4 12.7Z M7 13.1L7.7 14.8L8.5 13.3Z M1.6 17.1L2.6 14.8L3.6 17Z";
+  const teeth = "M2.6 14.2L3.6 17.1L4.8 14.4Z M8.6 14.7L9.4 16.6L10.2 14.9Z M3.4 18.7L4.4 16.5L5.4 18.5Z";
   const lines =
-    "M7.5 5.4Q11 4.2 14 5.2" + // brow
-    "M0.2 9.4Q1.4 8.4 2.6 9.6" + // nostril
-    "M15.8 14.6Q19 13.8 21 15.5" +
-    "M22.5 4Q24.5 0 25 -4" + // inner ear
-    "M24 17Q28 20 32 19M26 12Q30 14 33 13M25 8Q29 9 32 7"; // ruff hint
+    "M9.5 6.6Q13 5 16.5 6.4" + // brow
+    "M-0.4 11.4Q0.8 10.5 2 11.6" + // nostril
+    "M19.5 16.5Q23.5 18.6 27 17.6" + // cheek ruff
+    "M24 3Q25.5 -1.5 26 -4.5" + // inner ear
+    "M27 21.5Q31 23.5 35.5 22M29.5 15.5Q33.5 16.5 36.5 14.5M30 9.5Q33 9.5 35.5 7.5";
   return {
     head: smooth(xf(head, dx, dy, rot, k), true),
     ear: smooth(xf(ear, dx, dy, rot, k), true),
     tongue: limb(xfSpine(tongue, dx, dy, rot, k), { start: "round", end: "flat" }),
     lines: xfPath(lines, dx, dy, rot, k),
-    eye: smooth(xf([[11.6, 7.4, 1], [13.8, 5.9], [16.2, 6.6, 1], [13.9, 8]], dx, dy, rot, k), true),
+    eye: smooth(xf([[11.4, 10.2, 1], [13.6, 8.6], [16.2, 9.2, 1], [13.8, 10.8]], dx, dy, rot, k), true),
     teeth: xfPath(teeth, dx, dy, rot, k),
   };
 }
 
 function wolfRampant(): ChargeArt {
-  const H = wolfHead(14, 9, -24, 1.18);
+  const H = wolfHead(9, 9.5, -10, 1.2);
   const ruff = maneLocks([
     [40, 12, 49, 14, 8, -2],
     [42, 19, 51, 25, 8.5, -2],
@@ -335,21 +319,21 @@ function wolfRampant(): ChargeArt {
   ]);
   const torso = smooth(
     [
-      [32, 30],
-      [28, 41],
-      [31, 52],
-      [39, 60],
-      [47, 66],
-      [53, 75],
-      [59, 85],
-      [68, 89],
-      [77, 84],
-      [78, 73],
-      [71, 62],
-      [63, 52],
-      [57, 40],
-      [51, 30],
-      [43, 22],
+      [31, 28],
+      [26, 40],
+      [28, 52],
+      [36, 61],
+      [45, 68],
+      [52, 77],
+      [58, 86],
+      [68, 90],
+      [78, 85],
+      [79, 73],
+      [73, 61],
+      [66, 50],
+      [61, 38],
+      [54, 27],
+      [44, 20],
     ],
     true,
   );
@@ -556,25 +540,27 @@ function stagTrippant(): ChargeArt {
     true,
   );
   const ear = smooth([[25, 21], [33, 13, 1], [35, 18], [29, 24]], true);
-  // antlers (near and far): beam with tines
-  const antler = (ox: number, oy: number, k: number, lean: number) => {
-    const P = (x: number, y: number): [number, number] => [ox + (x + y * lean) * k, oy + y * k];
+  // Antlers ("attires"): two beams spreading in a lyre, each with a brow tine and
+  // three or four points along its front, as heraldic painters draw them.
+  const antler = (ox: number, oy: number, k: number, dirX: 1 | -1) => {
+    const P = (x: number, y: number): [number, number] => [ox + x * dirX * k, oy + y * k];
     const beam = limb(
       [
-        [...P(0, 0), 3.6 * k],
-        [...P(3, -10), 3.2 * k],
-        [...P(8, -20), 2.8 * k],
-        [...P(14, -30), 2.4 * k],
-        [...P(18, -38), 1.6 * k],
-        [...P(19, -43), 0.5],
+        [...P(0, 0), 4.2 * k],
+        [...P(3, -9), 3.6 * k],
+        [...P(8, -18), 3.2 * k],
+        [...P(12, -27), 2.8 * k],
+        [...P(14, -35), 2.2 * k],
+        [...P(13, -42), 0.6],
       ] as [number, number, number][],
       { start: "round", end: "flat" },
     );
-    const tine = (x0: number, y0: number, x1: number, y1: number, w: number) =>
-      limb([[...P(x0, y0), w * k], [...P((x0 + x1) / 2 - 1, (y0 + y1) / 2), w * 0.7 * k], [...P(x1, y1), 0.4]] as [number, number, number][], { start: "round", end: "flat" });
-    return beam + tine(1.5, -5, -7, -10, 2.6) + tine(5, -15, -3, -21, 2.4) + tine(10, -25, 4, -33, 2.2) + tine(15, -32, 24, -38, 2);
+    const tine = (t0x: number, t0y: number, x1: number, y1: number, w: number) =>
+      limb([[...P(t0x, t0y), w * k], [...P((t0x + x1) / 2 + 0.8, (t0y + y1) / 2 + 1), w * 0.66 * k], [...P(x1, y1), 0.5]] as [number, number, number][], { start: "round", end: "flat" });
+    return beam + tine(1.6, -4.5, -8, -9, 2.8) + tine(5.5, -13, -3.5, -21, 2.6) + tine(9.8, -22, 2.5, -31, 2.4) + tine(13, -30, 7.5, -38, 2.1);
   };
-  const antlers = antler(26, 20, 1, 0.02) + antler(22, 21, 0.95, -0.08);
+  const farAntler = antler(23, 19.5, 1.04, -1);
+  const nearAntler = antler(27, 19.5, 1.14, 1);
   const foreRaised = hoofLeg([[36, 58, 10], [30, 72, 7], [25, 79, 5.4], [21, 86, 4.4]], 19.5, 88, 120, 4.6);
   const foreStand = hoofLeg([[40, 60, 10.5], [40, 76, 6.6], [41, 88, 4.6], [40, 98, 4.2]], 39.6, 100, 95, 4.6);
   const foreFar = hoofLeg([[48, 60, 9], [49, 76, 6], [50, 88, 4.4], [49, 98, 4]], 48.6, 100, 95, 4.4);
@@ -583,19 +569,18 @@ function stagTrippant(): ChargeArt {
   const tail = smooth([[92, 47], [100, 41, 1], [97, 50]], true);
   return {
     layers: [
-      { role: "accent", d: antler(22, 21, 0.95, -0.08) },
+      { role: "accent", d: farAntler },
       { role: "body", d: hindFar.leg + foreFar.leg },
       { role: "body", d: hindFar.hoof + foreFar.hoof },
       { role: "body", d: tail + torso + neck + foreRaised.leg + foreStand.leg + hindNear.leg },
       { role: "body", d: foreRaised.hoof + foreStand.hoof + hindNear.hoof },
       { role: "line", d: foreRaised.line + foreStand.line + hindNear.line + hindFar.line + foreFar.line + "M36 56Q42 64 42 70M80 50Q86 56 88 64M56 64Q66 66 76 64", w: 1 },
       { role: "body", d: ear + head },
-      { role: "accent", d: antler(26, 20, 1, 0.02) },
+      { role: "accent", d: nearAntler },
       { role: "line", d: "M28 16Q31 16 32 18M6.5 28.5Q8 27.6 9.4 28.6M8 31Q12 30.6 15 31.5", w: 1 },
       { role: "ink", d: smooth([[15, 24.2, 1], [17.2, 22.9], [19.6, 23.8, 1], [17.3, 25.1]], true) },
     ],
   };
-  void antlers;
 }
 
 function boarPassant(): ChargeArt {
@@ -738,61 +723,44 @@ function horseSalient(): ChargeArt {
   };
 }
 
+
 function bullPassant(): ChargeArt {
+  // A heavy beast: high humped shoulders, deep chest, broad lowered head, crescent horns.
   const torso = smooth(
-    [
-      [26, 26],
-      [21, 38],
-      [24, 52],
-      [34, 60],
-      [52, 60],
-      [70, 59],
-      [86, 58],
-      [96, 50],
-      [98, 37],
-      [92, 27],
-      [76, 23],
-      [56, 22],
-      [42, 16],
-      [32, 17],
-    ],
+    [[30, 21], [39, 13.5], [52, 15.5], [68, 19.5], [83, 20.5], [94, 25.5], [99, 36], [97.5, 48], [91, 56], [78, 59.5], [62, 58], [46, 60], [34, 61], [25, 55], [20, 43], [22, 30]],
     true,
   );
-  const dewlap = smooth([[22, 40], [26, 50], [30, 56], [30, 44]], true);
+  const dewlap = smooth([[19, 41], [22, 52], [29, 61], [32, 48]], true);
   const head = smooth(
-    [
-      [27, 17],
-      [19, 16],
-      [12, 18],
-      [6.5, 24],
-      [3.5, 32, 1],
-      [4.5, 36],
-      [9, 38],
-      [15, 37],
-      [22, 34],
-      [29, 28],
-    ],
+    [[26.5, 19], [19, 16.5], [12.5, 18.5], [7.5, 24.5], [3.6, 33, 1], [3.4, 38.5], [6.4, 42.6], [12.5, 43.4], [18.5, 40.8], [24.5, 35], [28.5, 27]],
     true,
   );
-  const ear = smooth([[25, 21], [33, 19, 1], [28, 25]], true);
-  const horns = limb([[19, 17, 4.2], [16, 10, 3.2], [18.5, 3.5, 2.2], [23, 1, 0.4]], { start: "round", end: "flat" }) +
-    limb([[23, 17, 4], [25, 10, 3], [30, 6, 2], [34, 6.5, 0.4]], { start: "round", end: "flat" });
-  const foreRaised = hoofLeg([[30, 50, 12], [24, 62, 8.6], [20, 68, 6.4], [16, 74, 5.4]], 14.4, 76, 118, 5.6);
-  const foreStand = hoofLeg([[36, 52, 13], [36, 66, 8.4], [37, 76, 6.4]], 37, 80, 95, 5.8);
-  const foreFar = hoofLeg([[46, 52, 11], [46, 66, 7.8], [47.5, 76, 6]], 47.6, 80, 95, 5.4);
-  const hindFar = hoofLeg([[80, 48, 15], [76, 62, 9], [81, 72, 6.4], [80, 77, 5.6]], 79.6, 80, 95, 5.4);
-  const hindNear = hoofLeg([[89, 46, 16], [85, 62, 9.6], [90, 73, 6.6], [89, 78, 5.8]], 88.6, 81, 95, 5.8);
-  const tail = limb([[96, 36, 3.2], [101, 46, 2.8], [102, 58, 2.4], [101, 66, 2]], { start: "round", end: "round" }) + maneLocks([[101, 64, 98, 76, 6, 1.5], [102, 64, 104, 76, 5.5, -1.5]]);
+  const ear = smooth([[24.5, 23], [33.5, 20, 1], [35, 24.5], [27.5, 28]], true);
+  const hornNear = limb([[17.5, 19.5, 5.2], [12.5, 13.5, 4.2], [11.5, 6.5, 3.2], [14.5, 1.2, 2], [19.5, -1, 0.5]], { start: "round", end: "flat" });
+  const hornFar = limb([[23, 18, 4.6], [24, 10.5, 3.6], [28.5, 5, 2.4], [33.5, 4.2, 0.5]], { start: "round", end: "flat" });
+  const foreRaised = hoofLeg([[30, 50, 15], [24, 61, 10.5], [19.5, 67, 7.8], [15, 73, 6.6]], 13.4, 75, 120, 6.6);
+  const foreStand = hoofLeg([[37, 53, 15.5], [37.5, 67, 10], [38.5, 79, 7.6]], 38.5, 83, 93, 6.8);
+  const foreFar = hoofLeg([[48, 53, 13], [48, 67, 9], [49.5, 79, 7]], 49.6, 83, 93, 6.4);
+  const hindFar = hoofLeg([[80, 47, 18], [76.5, 62, 10.5], [81, 73, 7.4], [80.5, 79.5, 6.6]], 80.2, 83, 93, 6.4);
+  const hindNear = hoofLeg([[90, 45, 19], [86, 62, 11], [91, 74, 7.8], [90, 80.5, 6.8]], 89.8, 84, 93, 6.8);
+  const tail = limb([[97, 31, 3.6], [103, 41, 3], [104.5, 54, 2.6], [103, 63, 2.2]], { start: "round", end: "round" }) +
+    maneLocks([[103, 61, 99, 75, 6.5, 1.6], [104, 61, 106.5, 75, 6, -1.6], [103.5, 62, 103, 77, 5.5, 0.5]]);
   return {
     layers: [
+      { role: "accent", d: hornFar },
       { role: "body", d: hindFar.leg + foreFar.leg + hindFar.hoof + foreFar.hoof + tail },
       { role: "body", d: torso + dewlap + foreRaised.leg + foreStand.leg + hindNear.leg },
       { role: "body", d: foreRaised.hoof + foreStand.hoof + hindNear.hoof },
-      { role: "line", d: foreRaised.line + foreStand.line + hindNear.line + hindFar.line + foreFar.line + "M30 32Q36 40 34 50M82 30Q90 38 90 48M48 26Q58 30 66 28", w: 1 },
-      { role: "accent", d: horns },
+      {
+        role: "line",
+        d: foreRaised.line + foreStand.line + hindNear.line + hindFar.line + foreFar.line +
+          "M31 27Q38 38 35 51M83 26Q91 36 90 48M44 19Q56 23 66 22M24 47Q27 53 31 56M60 57Q66 52 76 55",
+        w: 1,
+      },
       { role: "body", d: ear + head },
-      { role: "line", d: "M5 33Q6.6 31.8 8 33.2M7 36.6Q10 36 12 37M13 22Q16 21 19 22.5", w: 1 },
-      { role: "ink", d: smooth([[13.4, 25.6, 1], [15.4, 24.4], [17.6, 25.2, 1], [15.5, 26.6]], true) },
+      { role: "accent", d: hornNear },
+      { role: "line", d: "M4.5 35.6Q6.4 34.2 8.2 35.8M6.5 40.4Q10.5 39.6 13.5 40.8M12.5 23Q16 21.6 20 23.4M17 29Q20 31 23.5 30", w: 1 },
+      { role: "ink", d: smooth([[12.8, 27.2, 1], [15.2, 25.6], [17.8, 26.6, 1], [15.4, 28.4]], true) },
     ],
   };
 }

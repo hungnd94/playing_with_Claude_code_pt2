@@ -60,22 +60,45 @@ export function textSVG(h: History, script: Id, words: string[][], size = 26): s
   return cached(`${tag(h)}t${script}:${size}:${words.map((w) => w.join(".")).join("|")}`, () => renderTextSVG(s, words, { size }));
 }
 
-export function chartSVG(h: History, script: Id, size = 34): string {
+/** Concrete theme colours for SVG generated as strings (CSS variables are not usable there). */
+export interface InkTheme {
+  ink: string;
+  label: string;
+  rule: string;
+}
+
+export function inkTheme(): InkTheme {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (k: string, d: string): string => cs.getPropertyValue(k).trim() || d;
+  return { ink: v("--glyph", "#1f160c"), label: v("--ink-3", "#6b5a45"), rule: v("--rule-2", "#b9a989") };
+}
+
+export function chartSVG(h: History, script: Id, size = 34, t: InkTheme = inkTheme(), columns = 8): string {
   const s = scriptData(h, script);
   if (!s) return "";
-  return cached(`${tag(h)}c${script}:${size}`, () =>
-    scriptChartSVG(s, { size, color: "currentColor", labelColor: "currentColor", ruleColor: "currentColor", columns: 8 }),
+  return cached(`${tag(h)}c${script}:${size}:${columns}:${t.ink}${t.label}${t.rule}`, () =>
+    scriptChartSVG(s, { size, color: t.ink, labelColor: t.label, ruleColor: t.rule, columns }),
   );
 }
 
-export function evolutionSVG(h: History, ids: Id[], size = 30): string {
+/** Glyph evolution table across a lineage of scripts (ancestor first). */
+export function evolutionSVG(h: History, ids: Id[], size = 30, t: InkTheme = inkTheme()): string {
   const list = ids.map((i) => scriptData(h, i)).filter((s): s is SScript => !!s);
   if (list.length < 2) return "";
-  return cached(`${tag(h)}e${ids.join(",")}:${size}`, () => evolutionTableSVG(list, { size } as never));
+  const headings = ids.filter((i) => scriptData(h, i)).map((i) => `${h.scripts[i].name} (${h.scripts[i].born})`);
+  return cached(`${tag(h)}e${ids.join(",")}:${size}:${t.ink}${t.label}`, () =>
+    evolutionTableSVG(list, { size, color: t.ink, labelColor: t.label, ruleColor: t.rule, headings, maxRows: 24, layout: "rows" }),
+  );
 }
 
-export function scriptTreeSVG(h: History, ids: Id[]): string {
+/** Family tree of scripts, each node with a few glyphs in its own hand. */
+export function scriptTreeSVG(h: History, ids: Id[], t: InkTheme = inkTheme()): string {
   const list = ids.map((i) => scriptData(h, i)).filter((s): s is SScript => !!s);
   if (!list.length) return "";
-  return cached(`${tag(h)}f${ids.join(",")}`, () => familyTreeSVG(list, {} as never));
+  const labels: Record<string, string> = {};
+  for (const i of ids) {
+    const d = scriptData(h, i);
+    if (d) labels[d.id] = `${h.scripts[i].name} (${h.scripts[i].born})`;
+  }
+  return cached(`${tag(h)}f${ids.join(",")}:${t.ink}${t.label}`, () => familyTreeSVG(list, { color: t.ink, labelColor: t.label, lineColor: t.rule, labels, size: 24 }));
 }

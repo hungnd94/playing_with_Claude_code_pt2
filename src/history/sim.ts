@@ -88,6 +88,8 @@ export interface SetS {
   lastSack: number;
   /** Trade routes touching the town (ids). */
   routes: number[];
+  /** Year of the last revolt it took part in. */
+  lastRevolt: number;
 }
 
 export interface PolS {
@@ -141,6 +143,14 @@ export interface PolS {
   rebel: boolean;
   /** Accumulated crisis (succession troubles, lost wars, plague, revolts); collapse when high. */
   crisis: number;
+  /**
+   * Group feeling of the ruling elite (Ibn Khaldun's asabiyya), ~0..1.1: high in
+   * young realms, eroded by size, luxury and time, renewed by new dynasties,
+   * victories and danger. Low cohesion loosens loyalty and breeds crises.
+   */
+  cohesion: number;
+  /** Personal rate at which this realm's cohesion erodes (×). */
+  decay: number;
   /** Year the current golden age ends (or 0). */
   goldenAge: number;
   regent: number;
@@ -307,6 +317,11 @@ export class Sim {
 
   /** Living persons (ids), compacted periodically. */
   living: number[] = [];
+  /** Members (ids, possibly dead or moved to another house) of each dynasty, for succession. */
+  dynMembers = new Map<number, number[]>();
+  /** Settlements founded or lost since the last catchment recomputation. */
+  setChanges = 0;
+  lastCatchments = -999;
   /** Alive settlements (ids), rebuilt when it changes. */
   aliveSets: number[] = [];
   setsDirty = true;
@@ -340,6 +355,18 @@ export class Sim {
   techFirst = 0;
   /** Event ids since last live snapshot. */
   recentEvents: number[] = [];
+  /** Small per-run counters and flags used by systems (script inventions, world firsts, used names…). */
+  counters: Record<string, number> = {};
+  flags = new Set<string>();
+  /** Deferred actions (scripture written decades after a founding, …), run in insertion order when due. */
+  agenda: { year: number; run: () => void }[] = [];
+  /** Cross-system callbacks filled in by modules (avoids import cycles). */
+  hooks: { scripture?: (sim: Sim, religion: number) => void } = {};
+  /** Prophets born and awaiting their calling. */
+  prophecies: { person: number; city: number; culture: number; due: number }[] = [];
+  /** Scratch per-cell stamp for de-duplicating cell visits (bump `stampGen` before use). */
+  stamp: Int32Array;
+  stampGen = 0;
 
   constructor(w: PhysicalWorld, rng: Rng, opts: SimOptions) {
     this.w = w;
@@ -356,6 +383,7 @@ export class Sim {
     this.cellCulture = new Int32Array(this.n).fill(-1);
     this.cellReligion = new Int32Array(this.n).fill(-1);
     this.catchCells = new Int32Array(this.n);
+    this.stamp = new Int32Array(this.n);
     this.h = {
       endYear: opts.years,
       sampleStep: SAMPLE_STEP,

@@ -330,6 +330,34 @@ export function governmentAt(h: History, polity: Id, year: number): Government {
   const p = h.polities[polity];
   return valueAt(p.governments, year, "gov", p.governments[0].gov);
 }
+/** Ruling culture of a realm at a year. */
+export function polityCultureAt(h: History, polity: Id, year: number): Id {
+  const p = h.polities[polity];
+  return p.cultures?.length ? valueAt(p.cultures, year, "culture", p.culture) : p.culture;
+}
+/** State religion of a realm at a year. */
+export function stateReligionAt(h: History, polity: Id, year: number): Id {
+  return valueAt(h.polities[polity].religions, year, "religion", -1);
+}
+/** Overlord of a realm at a year (-1 = independent). */
+export function overlordAt(h: History, polity: Id, year: number): Id {
+  return valueAt(h.polities[polity].overlords, year, "overlord", -1);
+}
+/** Whether a realm exists at a year. */
+export function polityAliveAt(h: History, polity: Id, year: number): boolean {
+  const p = h.polities[polity];
+  return p.founded <= year && (p.ended < 0 || p.ended > year);
+}
+/** The top of a realm's chain of overlords at a year (itself if independent). */
+export function sovereignAt(h: History, polity: Id, year: number): Id {
+  let p = polity;
+  for (let i = 0; i < 8; i++) {
+    const o = overlordAt(h, p, year);
+    if (o < 0) return p;
+    p = o;
+  }
+  return p;
+}
 export function techAt(h: History, culture: Id, year: number): number {
   return valueAt(h.cultures[culture].tech, year, "level", 0);
 }
@@ -343,6 +371,34 @@ export function scriptAt(h: History, culture: Id, year: number): Id {
 /** Polities alive at a year. */
 export function politiesAt(h: History, year: number): Polity[] {
   return h.polities.filter((p) => p.founded <= year && (p.ended < 0 || p.ended > year));
+}
+
+/** Independent polities alive at a year. */
+export function independentPolitiesAt(h: History, year: number): Polity[] {
+  return politiesAt(h, year).filter((p) => overlordAt(h, p.id, year) < 0);
+}
+
+/** Size class of a town by urban population: "village" < 2k ≤ "town" < 20k ≤ "city" < 60k ≤ "great city" < 150k ≤ "metropolis". */
+export function settlementRank(pop: number): "village" | "town" | "city" | "great city" | "metropolis" {
+  return pop >= 150000 ? "metropolis" : pop >= 60000 ? "great city" : pop >= 20000 ? "city" : pop >= 2000 ? "town" : "village";
+}
+
+/** Rulers of a dynasty (persons with a ruler role), in order of first accession. */
+export function dynastyRulers(h: History, dynasty: Id): Person[] {
+  return h.persons
+    .filter((p) => p.dynasty === dynasty && p.roles.some((r) => r.kind === "ruler"))
+    .sort((a, b) => (a.roles.find((r) => r.kind === "ruler")!.from - b.roles.find((r) => r.kind === "ruler")!.from) || a.id - b.id);
+}
+
+/** Wonders standing at a settlement in a year. */
+export function wondersAt(h: History, settlement: Id, year: number) {
+  return h.settlements[settlement].wonders.map((w) => h.wonders[w]).filter((w) => w.completed >= 0 && w.completed <= year && (w.destroyed < 0 || w.destroyed > year));
+}
+
+/** Is a settlement occupied by an enemy at a year? Returns the occupier or -1. */
+export function occupierAt(h: History, settlement: Id, year: number): Id {
+  for (const o of h.settlements[settlement].occupations) if (o.from <= year && year < o.to) return o.by;
+  return -1;
 }
 
 /** Settlements alive at a year. */
@@ -373,7 +429,58 @@ export function eventData<K extends EventType>(e: HEvent & { type: K }): EventDa
   return e.data as unknown as EventData[K];
 }
 
-/** Events touching an entity (by reference arrays), optionally filtered by importance. */
-export function eventsFor(h: History, kind: "polities" | "persons" | "settlements" | "cultures" | "religions" | "wars" | "dynasties" | "features", id: Id, minImportance = 1): HEvent[] {
+export type RefKind = "polities" | "persons" | "settlements" | "cultures" | "religions" | "wars" | "battles" | "dynasties" | "wonders" | "works" | "disasters" | "features" | "languages" | "scripts";
+
+/** Events touching an entity (by reference arrays), optionally filtered by importance. Linear scan; see `EventIndex` for repeated lookups. */
+export function eventsFor(h: History, kind: RefKind, id: Id, minImportance = 1): HEvent[] {
   return h.events.filter((e) => e.importance >= minImportance && (e[kind] as Id[] | undefined)?.includes(id));
+}
+
+/** Index of the first event with year ≥ `year` (events are sorted by year). */
+export function firstEventAt(h: History, year: number): number {
+  let lo = 0, hi = h.events.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (h.events[m].year < year) lo = m + 1;
+    else hi = m;
+  }
+  return lo;
+}
+
+/** Events in [from, to] (inclusive years), optionally filtered by importance. */
+export function eventsBetween(h: History, from: number, to: number, minImportance = 1): HEvent[] {
+  const out: HEvent[] = [];
+  for (let i = firstEventAt(h, from); i < h.events.length && h.events[i].year <= to; i++) if (h.events[i].importance >= minImportance) out.push(h.events[i]);
+  return out;
+}
+
+/**
+ * Inverted index from entities to the events that reference them, built once
+ * (≈ 50 ms for a default history) for encyclopedia pages and filters.
+ */
+export class EventIndex {
+  private maps = new Map<RefKind, Map<Id, number[]>>();
+  constructor(private h: History) {
+    const kinds: RefKind[] = ["polities", "persons", "settlements", "cultures", "religions", "wars", "battles", "dynasties", "wonders", "works", "disasters", "features", "languages", "scripts"];
+    for (const k of kinds) this.maps.set(k, new Map());
+    for (const e of h.events) {
+      for (const k of kinds) {
+        const ids = e[k] as Id[] | undefined;
+        if (!ids) continue;
+        const m = this.maps.get(k)!;
+        for (const id of ids) {
+          let l = m.get(id);
+          if (!l) m.set(id, (l = []));
+          l.push(e.id);
+        }
+      }
+    }
+  }
+  /** Events referencing an entity, in chronological order. */
+  of(kind: RefKind, id: Id, minImportance = 1): HEvent[] {
+    const l = this.maps.get(kind)?.get(id) ?? [];
+    const out: HEvent[] = [];
+    for (const i of l) if (this.h.events[i].importance >= minImportance) out.push(this.h.events[i]);
+    return out;
+  }
 }

@@ -49,6 +49,30 @@ export function emblemSVG(e: Emblem, size: number, finish: EmblemFinish = "rich"
   return svg;
 }
 
+const sealCache = new Map<string, Emblem>();
+/**
+ * An emblem for a faith that has none of its own: a seal bearing its holy
+ * symbol (a heraldic charge), in a material chosen from its id.
+ */
+export function faithSeal(id: number, symbol: string, legend: string): Emblem {
+  const key = `${id}:${symbol}:${legend}`;
+  let e = sealCache.get(key);
+  if (!e) {
+    const materials = ["gold", "bronze", "vermilion", "redWax", "greenWax", "lead"] as const;
+    const seal: Seal = {
+      shape: id % 5 === 3 ? "vesica" : "round",
+      material: materials[id % materials.length],
+      device: { kind: "charge", charge: symbol as never },
+      legend: legend.toUpperCase(),
+      border: id % 2 ? "beaded" : "cabled",
+      field: id % 3 === 0 ? "stars" : "plain",
+    };
+    e = { kind: "seal", data: seal, blazon: `A seal bearing a ${symbol}` };
+    sealCache.set(key, e);
+  }
+  return e;
+}
+
 export function flagSVG(flag: unknown, size: number): string {
   if (!flag || typeof flag !== "object") return "";
   let m = cache.get(flag);

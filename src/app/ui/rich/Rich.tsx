@@ -6,7 +6,7 @@
 import type { JSX } from "preact";
 import type { Inline, Ref, Rich } from "../../../narrative/types";
 import type { WName } from "../../../history/types";
-import { openRef, setYear } from "../../state/app";
+import { openRef, setYear, type TabId } from "../../state/app";
 import { interruptGenesis } from "../../state/playback";
 import { pingRef } from "../stage/bus";
 import { showNameCard, hideNameCard } from "./NameCard";
@@ -25,11 +25,11 @@ export function activate(e: KeyboardEvent, fn: () => void): void {
   }
 }
 
-export function EntityLink(props: { ref_: Ref; children: JSX.Element | string | (JSX.Element | string)[]; class?: string; title?: string }) {
+export function EntityLink(props: { ref_: Ref; children: JSX.Element | string | (JSX.Element | string)[]; class?: string; title?: string; tab?: TabId }) {
   const r = props.ref_;
   const open = (): void => {
     hoverRef(null);
-    openRef(r);
+    openRef(r, { tab: props.tab });
   };
   return (
     <a

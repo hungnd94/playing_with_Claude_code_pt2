@@ -427,13 +427,26 @@ export function mutateShape(shape: Shape, op: MutationOp, rng: Rng, ctx: MutateC
     case "deHorizontal":
       return keep(deHorizontalStrokes(body.map(angularStroke), rng));
     case "rotate": {
-      const a = rng.pick([Math.PI / 2, -Math.PI / 2, Math.PI]);
+      // A stem-like letter on its side would read as a dash: only a half turn.
+      const thin = bb.x1 - bb.x0 < 0.4 * (bb.y1 - bb.y0);
+      const a = thin ? Math.PI : rng.pick([Math.PI / 2, -Math.PI / 2, Math.PI]);
       const m = mul(translate(cx, 0.5), mul(rotate(a), translate(-cx, -cy)));
       let st = transformStrokes(body, m);
-      const nb = strokesBBox(st);
+      let nb = strokesBBox(st);
       // squeeze into the body height
       const h = nb.y1 - nb.y0;
       if (h > 1.1) st = transformStrokes(st, mul(translate(0, 0.5), mul(scale(1, 1 / h), translate(0, -(nb.y0 + nb.y1) / 2))));
+      // A tall letter laid on its side must not become a long bar: shrink it
+      // to a letter's width, keeping its proportions.
+      nb = strokesBBox(st);
+      const maxW = Math.max(0.9, w * 1.25);
+      const bw = nb.x1 - nb.x0;
+      if (bw > maxW) {
+        const k = maxW / bw;
+        const my = (nb.y0 + nb.y1) / 2;
+        st = transformStrokes(st, mul(translate(nb.x0, my), mul(scale(k, k), translate(-nb.x0, -my))));
+        nb = strokesBBox(st);
+      }
       return keep(st, Math.max(0.35, nb.x1 - nb.x0 + 0.05));
     }
     case "reflect":

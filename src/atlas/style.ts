@@ -57,8 +57,8 @@ export const PALETTES: Record<AtlasStyle, Palette> = {
     red: "#9a3524",
   },
   political: {
-    paper: "#efe3c9",
-    paperDark: "#d8c39c",
+    paper: "#eee1c4",
+    paperDark: "#d9c49b",
     ink: "#33261a",
     inkSoft: "#64503d",
     water: "#b3c8c6",
@@ -78,8 +78,8 @@ export const PALETTES: Record<AtlasStyle, Palette> = {
     red: "#9a3524",
   },
   relief: {
-    paper: "#ece0c6",
-    paperDark: "#d4bf98",
+    paper: "#eee1c4",
+    paperDark: "#d9c49b",
     ink: "#36291d",
     inkSoft: "#685441",
     water: "#a9c1c4",
@@ -107,6 +107,25 @@ export function font(size: number, opts: { italic?: boolean; sc?: boolean } = {}
   return `${opts.italic ? "italic " : ""}${size.toFixed(1)}px ${opts.sc ? FONT_SC : FONT_ROMAN}`;
 }
 
+/**
+ * Watercolour pigments for realm washes, chosen to sit on parchment and to
+ * stay distinct from the sea wash (no cyan-blues).
+ */
+export const PIGMENTS: readonly (readonly [number, number, number])[] = [
+  [196, 92, 74], // vermilion
+  [214, 172, 72], // gamboge
+  [118, 152, 82], // sap green
+  [150, 104, 160], // violet
+  [208, 128, 60], // orange ochre
+  [200, 116, 134], // rose madder
+  [92, 146, 128], // verdigris
+  [158, 150, 70], // olive
+  [168, 96, 68], // burnt sienna
+  [116, 112, 172], // blue-violet
+  [176, 74, 96], // carmine
+  [132, 166, 120], // celadon
+];
+
 /** Parse "#rrggbb" → [r, g, b]. */
 export function hexRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
@@ -119,7 +138,7 @@ export function rgba(c: [number, number, number] | string, a: number): string {
 }
 
 /** Mix two colours. */
-export function mix(a: [number, number, number], b: [number, number, number], t: number): [number, number, number] {
+export function mix(a: readonly number[], b: readonly number[], t: number): [number, number, number] {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
 

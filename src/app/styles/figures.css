@@ -1,0 +1,443 @@
+/* Figures inside articles. */
+.fig {
+  margin: 1.4em 0 1.6em;
+  clear: none;
+  display: flow-root;
+}
+
+.fig-map,
+.fig-chart,
+.fig-tree,
+.fig-cognates,
+.fig-phonemes,
+.fig-script {
+  clear: right;
+}
+
+.fig > figcaption,
+.vowel-chart figcaption {
+  margin-top: 6px;
+  font-family: var(--f-read);
+  font-style: italic;
+  font-size: 14.5px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+/* emblems */
+.emblem {
+  display: inline-block;
+  line-height: 0;
+}
+
+.emblem svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.fig-emblem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.fig-emblem .emblem {
+  filter: var(--emblem-shadow);
+}
+
+.blazon {
+  max-width: 30rem;
+  margin: 8px auto 0;
+  text-align: center;
+  font-style: italic;
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+
+/* charts */
+.charts {
+  display: grid;
+  gap: 10px;
+}
+
+.chart-title {
+  font-family: var(--f-ui-sc);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  margin-bottom: 2px;
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  cursor: crosshair;
+  font-family: var(--f-ui);
+}
+
+.chart-grid {
+  stroke: var(--rule);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.chart-base {
+  stroke: var(--rule-2);
+  stroke-width: 1;
+}
+
+.chart-ylab,
+.chart-xlab {
+  fill: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-now {
+  stroke: var(--rubric);
+  stroke-width: 1.2;
+}
+
+.chart-hover line {
+  stroke: var(--ink-3);
+  stroke-width: 1;
+}
+
+.chart-hover circle {
+  stroke: var(--bg);
+  stroke-width: 2;
+}
+
+.chart-tip {
+  fill: var(--card);
+  stroke: var(--rule-2);
+}
+
+.chart-tip-y {
+  fill: var(--ink-3);
+  font-size: 10.5px;
+}
+
+.chart-tip-v {
+  fill: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+/* mini map */
+.minimap {
+  position: relative;
+  margin: 0 auto;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 3px double var(--minimap-frame);
+  background: var(--sky);
+  line-height: 0;
+  min-height: 60px;
+  min-width: 200px;
+}
+
+.minimap canvas {
+  display: block;
+  max-width: 100%;
+}
+
+.minimap.is-waiting {
+  line-height: 1.4;
+  padding: 30px;
+  text-align: center;
+  color: var(--on-sky-3);
+  font-style: italic;
+  font-size: 14px;
+}
+
+.mm-mark {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transform: translate(-4px, -50%);
+  line-height: 1;
+  pointer-events: none;
+}
+
+.mm-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f4ead4;
+  box-shadow: 0 0 0 1.5px rgba(30, 20, 10, 0.75);
+}
+
+.mm-focus .mm-dot {
+  width: 10px;
+  height: 10px;
+  margin-left: -2px;
+  background: #e8c77a;
+  box-shadow: 0 0 0 2px rgba(30, 20, 10, 0.8), 0 0 0 5px rgba(232, 199, 122, 0.35);
+}
+
+.mm-label {
+  font-family: var(--f-display);
+  font-size: 13px;
+  color: #f6eedb;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 0 6px rgba(0, 0, 0, 0.7);
+  white-space: nowrap;
+}
+
+.mm-focus .mm-label {
+  font-size: 15px;
+  color: #ffe9b4;
+}
+
+.mm-fly {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--sky-glass-2);
+  border: 1px solid var(--sky-rule);
+  color: var(--on-sky);
+}
+
+/* trees */
+.tree-scroll {
+  overflow-x: auto;
+  padding: 4px 0 8px;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.tree {
+  position: relative;
+  font-family: var(--f-ui);
+  font-size: 13.5px;
+  line-height: 1.2;
+}
+
+.tree-lines {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.tree-lines path {
+  fill: none;
+  stroke: var(--tree-line);
+  stroke-width: 1.1;
+}
+
+.tree-lines path.is-dead {
+  stroke-dasharray: 3 3;
+}
+
+.tree-lines circle {
+  fill: var(--gilt);
+}
+
+.tree-lines circle.is-dead {
+  fill: var(--ink-4);
+}
+
+.tree-node {
+  position: absolute;
+  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.tree-node.is-here .lk {
+  color: var(--rubric);
+  font-weight: 700;
+}
+
+.tree-node.is-dead .lk {
+  color: var(--ink-2);
+}
+
+.tree-sub {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* script */
+.script-word {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  color: var(--glyph);
+  padding: 14px;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.script-ink svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.script-word-roman {
+  font-style: italic;
+  font-size: 20px;
+  color: var(--ink-2);
+}
+
+.script-chart {
+  color: var(--glyph);
+  overflow-x: auto;
+}
+
+.script-chart svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* phonemes */
+.phonemes {
+  display: grid;
+  gap: 8px;
+}
+
+.ipa-table {
+  font-family: var(--f-ipa) !important;
+}
+
+.ipa-table th[scope="col"] {
+  font-size: 11.5px;
+  text-align: center;
+  padding: 3px 4px;
+  hyphens: manual;
+}
+
+.ipa-table th[scope="row"] {
+  font-size: 12px;
+  white-space: nowrap;
+  padding-right: 8px;
+}
+
+.ipa-table td {
+  text-align: center;
+  padding: 4px 4px;
+  border: 1px solid var(--rule);
+  font-size: 17px;
+  min-width: 2.6em;
+}
+
+.ipa-table td.is-empty {
+  background: var(--bg-sunk);
+  opacity: 0.4;
+}
+
+.ipa-pair {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  min-width: 2.2em;
+}
+
+.ipa-vl {
+  text-align: right;
+}
+
+.ipa-vd {
+  text-align: left;
+}
+
+.ipa-note {
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.ipa {
+  font-family: var(--f-ipa);
+  font-style: normal;
+}
+
+.vowel-chart {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.vowel-chart svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.vc-frame {
+  fill: var(--card);
+  stroke: var(--ink-3);
+  stroke-width: 1.2;
+}
+
+.vc-grid {
+  stroke: var(--rule-2);
+  stroke-width: 1;
+}
+
+.vc-dot {
+  fill: var(--ink-2);
+}
+
+.vc-sym {
+  fill: var(--ink);
+  font-family: var(--f-ipa);
+  font-size: 18px;
+}
+
+.vc-axis {
+  fill: var(--ink-3);
+  font-family: var(--f-ui-sc);
+  font-size: 11px;
+}
+
+/* cognates */
+.cognates td {
+  font-family: var(--f-read);
+  font-size: 15.5px;
+}
+
+.cog-letter {
+  font-family: var(--f-ui-sc);
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-left: 2px;
+}
+
+.cog-0 {
+  background: var(--cog-0);
+}
+.cog-1 {
+  background: var(--cog-1);
+}
+.cog-2 {
+  background: var(--cog-2);
+}
+.cog-3 {
+  background: var(--cog-3);
+}
+.cog-4 {
+  background: var(--cog-4);
+}
+.cog-5 {
+  background: var(--cog-5);
+}
+
+.cognates td.is-empty {
+  color: var(--ink-4);
+  text-align: center;
+}

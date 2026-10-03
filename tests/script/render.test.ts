@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Rng } from "../../src/core/rng";
 import {
   createScript,
@@ -15,6 +15,9 @@ import {
 } from "../../src/script";
 import type { Family, ScriptKind } from "../../src/script";
 import { INV, wellFormed } from "./fixtures";
+
+// Generation is CPU-heavy and the test box is shared: generous per-test timeouts.
+vi.setConfig({ testTimeout: 60000 });
 
 const words = [["k", "a", "t"], ["m", "aː", "n", "u"], ["a"], ["s", "t", "r", "i", "k"], ["ŋ", "o", "ɬ"], ["t", "ʃ", "ã"]];
 

@@ -4,7 +4,7 @@
  * when their inputs change (the year ticks at 60 Hz while playing; the overlay
  * is rebuilt only when the timeline snapshot changes).
  */
-import { GlobeView, type GlobeLabel, type GlobeMarker, type GlobeLine } from "../../../render/index";
+import { GlobeView, type GlobeLabel, type GlobeMarker, type GlobeLine } from "../../../render/globe/GlobeView";
 import type { History, Id } from "../../../history/types";
 import type { PhysicalWorld } from "../../../world/types";
 import type { Ref } from "../../../narrative/types";
@@ -41,7 +41,7 @@ export class StageController {
   constructor(canvas: HTMLCanvasElement) {
     this.globe = new GlobeView(canvas, {
       autoRotate: 2.2,
-      view: { lat: 18, lon: 10, zoom: 1 },
+      view: { lat: 18, lon: 10, zoom: 0.84 },
       fontFamily: LABEL_FONT,
       labelTheme: "light",
       clouds: 0.5,
@@ -115,9 +115,21 @@ export class StageController {
     }
     const engine = this.ensureEngine(s);
     if (!engine) return;
+    // During the genesis replay, show peoples spreading until the first realm is founded.
+    if (s.genesis && s.history && s.layer === "realms") {
+      const own = engine.ownerAt(s.year);
+      let any = false;
+      if (own) for (let c = 0; c < own.length; c++) if (own[c] >= 0) { any = true; break; }
+      if (!any) s = { ...s, layer: "peoples" };
+    }
     this.updateOverlay(s, engine);
-    this.updateMarkers(s, engine);
     this.updateFocus(s, engine);
+    this.updateMarkers(s, engine);
+    // Genesis over: the globe settles to its full size (unless an article already flew it).
+    if (prev && prev.genesis && !s.genesis && !currentLoc(s).ref) {
+      const v = this.globe.getView();
+      if (v.zoom < 1) void this.globe.flyTo(v.lat, v.lon, 1, 900);
+    }
   }
 
   private updateOverlay(s: AppState, engine: OverlayEngine): void {
@@ -167,7 +179,7 @@ export class StageController {
       return;
     }
     const bucket = Math.floor(s.year / (s.playing ? 20 : 5));
-    const key = `${bucket}|${s.layer}|${s.show.settlements}|${s.show.labels}|${s.show.routes}|${s.show.battles}|${s.pickedCell}`;
+    const key = `${bucket}|${s.layer}|${s.show.settlements}|${s.show.labels}|${s.show.routes}|${s.show.battles}|${s.pickedCell}|${this.focusKey}`;
     if (key === this.markerKey) return;
     this.markerKey = key;
     const world = s.world;
@@ -192,12 +204,13 @@ export class StageController {
     }
     alive.sort((a, b) => b.pop - a.pop || a.id - b.id);
     if (s.show.settlements) {
-      const lim = Math.min(alive.length, 700);
+      const lim = Math.min(alive.length, 520);
       for (let i = 0; i < lim; i++) {
         const { id, pop } = alive[i];
         const st = h.settlements[id];
         const cap = capitals.get(id) ?? 0;
-        const size = Math.max(2.6, Math.min(9, 2.2 + 1.9 * Math.log10(Math.max(100, pop) / 300)));
+        if (!cap && pop < 1200 && i > 200) continue;
+        const size = Math.max(2.4, Math.min(9, 2 + 1.9 * Math.log10(Math.max(100, pop) / 300)));
         if (cap === 2) markers.push({ xyz: st.pos, size: size + 3.5, color: [232, 199, 122, 1], shape: "star" });
         else if (cap === 1) markers.push({ xyz: st.pos, size: size + 2, color: [232, 214, 170, 1], shape: "diamond" });
         else markers.push({ xyz: st.pos, size, color: pop < 2500 ? [243, 234, 214, 0.65] : [246, 238, 220, 0.95], shape: "circle" });
@@ -263,7 +276,12 @@ export class StageController {
         markers.push({ xyz: cellXYZ(world, b.cell), size: 7 + 4 * fade, color: [214, 84, 52, 0.35 + 0.6 * fade], shape: "triangle" });
       }
     }
-    if (s.pickedCell >= 0) markers.push({ xyz: cellXYZ(world, s.pickedCell), size: 15, color: [240, 214, 150, 1], shape: "ring" });
+    if (s.pickedCell >= 0 && currentLoc(s).sub === s.pickedCell) markers.push({ xyz: cellXYZ(world, s.pickedCell), size: 15, color: [240, 214, 150, 1], shape: "ring" });
+    const fp = this.focusTarget?.point;
+    if (fp) {
+      markers.push({ xyz: fp, size: 20, color: [240, 214, 150, 0.95], shape: "ring" });
+      markers.push({ xyz: fp, size: 7, color: [240, 214, 150, 1], shape: "circle" });
+    }
     this.baseMarkers = markers;
     this.routeLines = lines;
     this.globe.setMarkers(markers);
@@ -362,7 +380,7 @@ export class StageController {
     const t = locate(s.world, s.history, engine, ref, s.year);
     this.focusTarget = t;
     this.refreshHighlight(s);
-    if (t && moved && !s.genesis && ref.kind !== "world" && ref.kind !== "age" && ref.kind !== "language" && ref.kind !== "script") {
+    if (t && moved && !s.genesis && ref.kind !== "world" && ref.kind !== "age") {
       const v = this.globe.getView();
       const zoom = Math.max(v.zoom > 1.2 ? Math.min(v.zoom, t.zoom) : 1, Math.min(t.zoom, 4.5));
       this.globe.setAutoRotate(0);

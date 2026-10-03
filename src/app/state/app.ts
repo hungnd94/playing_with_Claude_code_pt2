@@ -159,13 +159,27 @@ export function tabFor(ref: Ref): TabId {
   }
 }
 
-export function openRef(ref: Ref): void {
+/** Viewer tab that has its own page for an entity kind. */
+const VIEWER: Partial<Record<Ref["kind"], TabId>> = { language: "tongues", script: "scripts", religion: "faiths" };
+
+/**
+ * Open an entity. Inside a viewer tab (Tongues, Scripts, Faiths) its own kind
+ * stays in the viewer; `opts.tab` forces a tab ("article" = the encyclopedia).
+ */
+export function openRef(ref: Ref, opts: { tab?: TabId } = {}): void {
   if (ref.kind === "year") {
     setYear(ref.id);
     navigate({ tab: "chronicle", sub: ref.id });
     return;
   }
-  navigate({ tab: tabFor(ref), ref: ref.kind === "world" ? undefined : ref });
+  const cur = currentLoc();
+  const viewer = VIEWER[ref.kind];
+  const tab = opts.tab ?? (viewer && cur.tab === viewer ? viewer : tabFor(ref));
+  if (tab === viewer) {
+    navigate({ tab, sub: ref.id, ref });
+    return;
+  }
+  navigate({ tab, ref: ref.kind === "world" ? undefined : ref });
 }
 
 export function setYear(y: number): void {

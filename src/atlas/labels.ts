@@ -55,6 +55,8 @@ export interface PlacedLabel {
   font: string;
   glyphs: PlacedGlyph[];
   boxes: Box[];
+  /** Collision-only boxes bridging the gaps between letter-spaced glyphs. */
+  gaps: Box[];
   /** Referenced entity for hit-testing (e.g. { type: "settlement", id }). */
   ref?: { type: string; id: number };
 }
@@ -115,8 +117,12 @@ export class BoxIndex {
 export interface Layout {
   glyphs: PlacedGlyph[];
   boxes: Box[];
+  /** Boxes bridging wide gaps between glyphs (collisions only; terrain is not cleared there). */
+  gaps: Box[];
   /** Max turn between consecutive glyphs (radians). */
   maxTurn: number;
+  /** Max deviation of a glyph from horizontal (radians, 0..π/2). */
+  maxTilt: number;
 }
 
 /**
@@ -206,8 +212,9 @@ export function layoutOnPath(path: Pt[], adv: Advances, spacingPx: number, size:
   if (s < 0 || s + adv.total > L + 0.01) return null;
   const glyphs: PlacedGlyph[] = [];
   const boxes: Box[] = [];
+  const gaps: Box[] = [];
   let prevA: number | null = null;
-  let maxTurn = 0;
+  let maxTurn = 0, maxTilt = 0;
   const hh = size * 0.36;
   for (let i = 0; i < adv.chars.length; i++) {
     const w = adv.w[i];
@@ -218,6 +225,9 @@ export function layoutOnPath(path: Pt[], adv: Advances, spacingPx: number, size:
       maxTurn = Math.max(maxTurn, d);
     }
     prevA = p.a;
+    let tilt = Math.abs(p.a) % Math.PI;
+    if (tilt > Math.PI / 2) tilt = Math.PI - tilt;
+    maxTilt = Math.max(maxTilt, tilt);
     glyphs.push({ ch: adv.chars[i], x: p.x, y: p.y, a: p.a, marks: adv.marks[i], w });
     if (adv.chars[i].trim() !== "") {
       const ca = Math.abs(Math.cos(p.a)), sa = Math.abs(Math.sin(p.a));
@@ -226,7 +236,18 @@ export function layoutOnPath(path: Pt[], adv: Advances, spacingPx: number, size:
     }
     s += w + spacingPx;
   }
-  return { glyphs, boxes, maxTurn };
+  if (spacingPx > size * 0.12) {
+    for (let i = 1; i < glyphs.length; i++) {
+      const a = glyphs[i - 1], b = glyphs[i];
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const hw = Math.max(1, (Math.hypot(b.x - a.x, b.y - a.y) - (a.w + b.w) / 2) / 2);
+      const ang = (a.a + b.a) / 2;
+      const ca = Math.abs(Math.cos(ang)), sa = Math.abs(Math.sin(ang));
+      const ex = hw * ca + hh * 0.8 * sa, ey = hw * sa + hh * 0.8 * ca;
+      gaps.push({ x0: mx - ex, y0: my - ey, x1: mx + ex, y1: my + ey });
+    }
+  }
+  return { glyphs, boxes, gaps, maxTurn, maxTilt };
 }
 
 /** Straight horizontal layout with the text's visual centre at (cx, cy). */
@@ -262,6 +283,7 @@ export class LabelPlacer {
       if (this.hard.hits(b, 0)) return false;
       if (this.labels.hits(b, pad)) return false;
     }
+    for (const b of layout.gaps) if (this.labels.hits(b, 0) || this.hard.hits(b, 0)) return false;
     return true;
   }
 
@@ -270,8 +292,9 @@ export class LabelPlacer {
     cands.sort((a, b) => a.cost - b.cost);
     for (const c of cands) {
       if (!this.fits(c.layout, pad)) continue;
-      const pl: PlacedLabel = { id, kind, text, style, font: styleFont(style), glyphs: c.layout.glyphs, boxes: c.layout.boxes, ref };
+      const pl: PlacedLabel = { id, kind, text, style, font: styleFont(style), glyphs: c.layout.glyphs, boxes: c.layout.boxes, gaps: c.layout.gaps, ref };
       for (const b of c.layout.boxes) this.labels.add(b);
+      for (const b of c.layout.gaps) this.labels.add(b);
       this.placed.push(pl);
       return pl;
     }
@@ -467,6 +490,17 @@ export function areaAxis(xs: ArrayLike<number>, ys: ArrayLike<number>): AreaAxis
   // Keep the curve gentle.
   const maxC = 0.6 / Math.max(1, span);
   c = Math.max(-maxC, Math.min(maxC, c));
+  // Keep the spine's tangent within ±42° of horizontal everywhere: the axis may
+  // already lean 40°, so the linear term must not tilt it further.
+  const lim = (42 * Math.PI) / 180;
+  const ang0 = Math.atan2(uy, ux);
+  const sMax = Math.tan(lim - ang0), sMin = Math.tan(-lim - ang0);
+  bb = Math.max(sMin, Math.min(sMax, bb));
+  for (const u of [u0, u1]) {
+    const slope = bb + 2 * c * u;
+    if (slope > sMax && u !== 0) c = (sMax - bb) / (2 * u);
+    else if (slope < sMin && u !== 0) c = (sMin - bb) / (2 * u);
+  }
   return { cx, cy, ux, uy, u0, u1, a, b: bb, c, half: (halfAcc / S0) * 1.7, count: n };
 }
 

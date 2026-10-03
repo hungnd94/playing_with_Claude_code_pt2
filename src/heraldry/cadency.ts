@@ -6,6 +6,7 @@ import type { Rng } from "../core/rng";
 import { EMBLEM_CONCEPTS, type EmblemConcept } from "../world/concepts";
 import type { Arms, CadencyMark, Difference, Line, MarshalledArms, MarshallingMethod, SimpleArms, Tint } from "./types";
 import { isFur, isMetal, readable, tinctureOk } from "./tinctures";
+import { markSpot } from "./render";
 
 export const DIFFERENCE_KINDS = ["auto", "label", "brisure", "bordure", "tincture", "line", "canton", "bendlet"] as const;
 export type DifferenceKind = (typeof DIFFERENCE_KINDS)[number];
@@ -49,12 +50,17 @@ export function differenceArms(arms: Arms, rng: Rng, kind: DifferenceKind = "aut
   };
   if (out.kind === "marshalled" && (k === "tincture" || k === "line" || k === "canton" || k === "bordure")) k = "label";
   if (k === "label") {
-    addDiff({ mark: "label", tincture: contrastAll(rng, under, labelAvoid(out)), points: rng.chance(0.75) ? 3 : 5 });
+    // A label lies across the top of the shield, on the chief if there is one.
+    const top = out.kind === "simple" ? (out.chief ? [out.chief.tincture] : [out.field.tinctures[0]]) : under;
+    addDiff({ mark: "label", tincture: contrastAll(rng, top, labelAvoid(out)), points: rng.chance(0.75) ? 3 : 5 });
     return out;
   }
   if (k === "brisure") {
     const n = son && son >= 2 && son <= 9 ? son : rng.int(2, 6);
-    addDiff({ mark: CADENCY_ORDER[n - 2], tincture: contrastAll(rng, under, labelAvoid(out)) });
+    if (out.kind === "simple") {
+      const spot = markSpot(out);
+      addDiff({ mark: CADENCY_ORDER[n - 2], tincture: contrastAll(rng, spot.under, labelAvoid(out)), at: spot.at });
+    } else addDiff({ mark: CADENCY_ORDER[n - 2], tincture: contrastAll(rng, under, labelAvoid(out)), at: "fess" });
     return out;
   }
   const a = out as SimpleArms;

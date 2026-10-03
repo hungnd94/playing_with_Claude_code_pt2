@@ -58,16 +58,89 @@ Demo: `npx tsx tools/lang-demo.ts <seed>`.
 - Daughter language names all share the parent's stem (Miden, Mide, Mideme, Midheni, Mize).
 - Grammar: article/adjective order bug ("hu mi man" = deep DEF river).
 
+## Done in session 3
+- Orthography rework (`orthography.ts`): schools declare native diacritic types (`marks`);
+  candidate spellings pay a penalty per foreign mark (acute lighter; raw IPA letters
+  never win); one long-vowel convention per language (`Orthography.long`), nasal vowels by
+  convention (`Orthography.nasal`: "an/am" French-style by default, ą ę Polish/Norse,
+  ã õ Romance), digraph vowels with conventional long forms (ae → ai, aw → au); rules
+  indexed per phoneme (faster romanisation); new SpellingRule envs (`before: labial|velar`,
+  `after: backvowel`); ŋk → nk, n+g → n'g; Welsh-style j → i before vowels.
+- The commoner of e/ə gets the plain letter "e" (French e/é): no more "ë"-strewn daughters.
+- Daughter reforms are coherent: shift to a related tradition (12%), drop one kind of
+  diacritic (12%), or a single local innovation (14%). Newly arisen natural sounds reclaim
+  their letter (h from x takes "h"; the glottal stop that had borrowed it becomes ').
+- No long lax vowels (ɛː ɔː əː) in proto-systems.
+- `repairWord` handles ji/wu, palatal+j and banned CV pairs.
+- Tools: `tools/lang-bench.ts` (timings), `tools/lang-ortho.ts` (spelling inspector).
+- Naming (`naming.ts` rewrite, same exports): candidates are cheap drafts, only the winner
+  is finalised (parts, IPA, gloss); compound elements of 3+ syllables use a clipped
+  combining form (per-language, cached); per-kind ideal/max syllables in scoring (opaque
+  drafts get a small penalty so length scoring does not favour them); shorter modifiers;
+  "Place of the Sun" for unique things; plural English glosses for ranges/hills;
+  distinguisher fallback keeps words separate; male ending never creates hiatus; epithet
+  before the name only 20% (AN languages). Mean syllables: settlements 2.9, features ~3,
+  religions 3.5 (were 3.2 / 3.7 / 4.2, with 5-7 syllable outliers).
+- `hyphenated()`/etymology segmentation attach linking vowels to the preceding morpheme.
+- Daughter languages get varied English names and endonyms (`setDaughterEndonym`): the
+  inherited self-name worn down by the split's sound changes, a landscape/direction
+  ("those of the coast", "forest people"), or a new opaque tribal name; never confusable
+  with parent/siblings (shared 3-letter prefix or small edit distance). `englishFrom`
+  builds stems from the first syllable(s); proto endonyms ≤ 3 syllables.
+- Sound change: cluster assimilation only between vowels (no word-initial geminates).
+- Borrowing: hiatus-repair glide never creates *ji/*wu (was an infinite ping-pong);
+  glides missing in the target are dropped next to vowels when hiatus is illegal.
+
+- Grammar: free articles/plural words frame the whole NP (DEF deep river, not deep DEF river).
+- Performance (wall, loaded shared container): proto ~4-7 ms, derive ~6.5 ms (was 12-14),
+  names 35-75 µs. How: template-weight `count()` stops once its threshold is settled and
+  is normalised to a 130-word calibration so candidate changes are evaluated on a 90-word
+  sample; `stressedVowel()` (one allocation-free pass) replaces stress masks in
+  `applyChange`; char-code `isVowel`; `phonologyFromCorpus` fast paths; no interim
+  phonology in `deriveLanguage` (replacement words use the parent's junction rules and
+  new adpositions are coined in parent shape and evolved — the daughter's phonotactics are
+  inferred from its finished lexicon anyway); name pools keep a cached spelling set and a
+  shared cumulative Zipf table; offensiveness checked only for accepted candidates.
+  `tools/lang-bench.ts` warms up the JIT and reports CPU and wall time.
+
+- Orthography: raw IPA letters can never be chosen while any generated spelling is free
+  (β → vh); a school's own listed spellings are exempt from the foreign-mark penalty
+  (semitic ü); a respelled e (after ə took "e") avoids the long-vowel mark (é vs ê/êê) and
+  its long form doubles bare (ee). Stages reform their spelling less often than splits.
+- Sound change: Hawaiian-type k > ʔ (t > k) now rare outside polynesian drift.
+- Lexical replacement: core (tier 1) words replaced a quarter as often; semantic shifts only
+  along a curated table of attested-type paths (head ← cup, year ← summer, town ← fort/farm,
+  god ← sky, spirit ← breath…), else coinage.
+- New API (additive): `wordEtymology(lang, concept, resolve, label?)` for lexicon words.
+- `src/lang/README.md`: full API documentation.
+
+- Obscenity sanitising: `obscene()` (util.ts); proto words that spell an English obscenity
+  are regenerated, daughter words replaced by coinages (taboo replacement); language names
+  and endonym sources checked too; names use `offensive()` = obscene + a joke-word list.
+- Tests: `tests/lang/quality.test.ts` (10 tests: no raw IPA in spellings, restrained
+  diacritics, long/nasal conventions, clean vocabulary, core vocabulary more stable,
+  lexicon etymologies, short names, distinct daughter names, stages, bridge). 32 total.
+
+- New API (additive): `loanwords` / `withLoanwords` (`contact.ts`): cultural vocabulary
+  borrowed from a donor, adapted to the borrower; test in quality.test.ts (33 tests).
+
+- Review fixes: diaeresis (ü ö ä) is a light foreign mark and y prefers ü (no Spanish-
+  looking "ue"); English language names lose doubled vowels (Aahaa → Aha); the generic
+  onset rule (used when a language has no opinion) only allows s+C and obstruent+liquid/
+  glide (no /ˈhm/ syllabifications); person names: style-dependent length ideal (compound
+  names 3-4 syllables), culture-flavoured descriptive adjectives, gentle short-word
+  preference; `choose()` accepts the first acceptable candidate on length/ugliness alone
+  (preserving the generator's opaque/transparent mix) and only ranks leftovers by opacity.
+
+- `SettlementSite.river?: Name` (additive): towns named after their river ("Avon Mouth",
+  "Bridge on the Avon"); 'beloved' no longer used in descriptive names ("Dear Deer").
+
 ## In progress (session 3)
 - Orthography coherence overhaul → name length/quality → daughter names → grammar fix →
   performance → README + tests → multi-seed review.
 
 ## Todo
-1. README.md (API).
-2. derive performance < 10 ms (profile: isVowel, applyChange env matching).
-3. Offensive-word sanitising of lexicon forms.
-4. Name quality pass (length, variety, glosses), persons, deities, features.
-5. More tests (styles, cognates, bridge, stage); final multi-seed review.
+1. Final multi-seed review (demo, all sections, many seeds).
 
 ## Decisions
 - Keep the existing data model (plain JSON `Language`, `Name`); extend, don't replace.

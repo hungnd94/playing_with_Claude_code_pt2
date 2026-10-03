@@ -142,7 +142,8 @@ function realizeNP(lang: Language, np: NP, role: NPRole): Token[] {
   if (np.dem) mods.push([rootMorph(lang, np.dem)]);
   if (np.num) mods.push([rootMorph(lang, np.num)]);
   for (const a of np.adj ?? []) mods.push([rootMorph(lang, a)]);
-  let core: Token[] = mo.adjOrder === "AN" ? [...mods, ...particles.before, head, ...particles.after] : [...particles.before, head, ...particles.after, ...mods];
+  // free articles and plural words frame the whole phrase: "the deep river", "river deep the"
+  let core: Token[] = mo.adjOrder === "AN" ? [...particles.before, ...mods, head, ...particles.after] : [...particles.before, head, ...mods, ...particles.after];
   if (np.poss) {
     const poss = realizeNP(lang, np.poss, "gen");
     core = mo.genOrder === "GN" ? [...poss, ...core] : [...core, ...poss];

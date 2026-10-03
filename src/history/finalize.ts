@@ -7,6 +7,8 @@
 import type { Language as LLang } from "../lang/index";
 import { deriveAges } from "./ages";
 import { finishPersons } from "./people";
+import { finishWars } from "./war";
+import { relocateCapital } from "./polities";
 import type { Sim } from "./sim";
 import type { History } from "./types";
 
@@ -55,6 +57,13 @@ export function nameLanguages(sim: Sim): void {
 
 export function finalize(sim: Sim): History {
   const h = sim.h;
+  finishWars(sim);
+  for (const P of sim.P) if (P.alive && (P.capital < 0 || !sim.S[P.capital].alive)) relocateCapital(sim, P, "lost");
+  // Occupations still in force at the end of the run.
+  for (const s of sim.S) {
+    if (s.occupier >= 0 && s.occWar >= 0) s.rec.occupations.push({ from: sim.W[s.occWar].occ.get(s.id) ?? sim.year, to: sim.endYear, by: s.occupier, war: s.occWar });
+  }
+  for (const R of sim.R) R.rec.ended = R.alive ? -1 : R.rec.ended;
   finishPersons(sim);
   nameLanguages(sim);
   h.ages = deriveAges(sim);

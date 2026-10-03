@@ -87,7 +87,7 @@ function handle(m: FromWorker): void {
     case "stage": {
       const s = app.get();
       const last = s.stages[s.stages.length - 1];
-      const stages = last && last.stage === m.stage && last.phase === m.phase ? s.stages : [...s.stages, { phase: m.phase, stage: m.stage, t: performance.now() - t0 }];
+      const stages = last && last.stage === m.stage && last.phase === m.phase ? s.stages : [...s.stages, { phase: m.phase, stage: m.stage, t: m.ms }];
       app.set({ stage: m.stage, stageFraction: m.fraction, stages, phase: s.phase === "ready" ? "ready" : m.phase });
       break;
     }

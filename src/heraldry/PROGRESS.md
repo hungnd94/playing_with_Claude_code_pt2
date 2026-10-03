@@ -24,17 +24,33 @@
 1. [x] `index.ts` public API (emblem.ts facade; banner `staff:false` compact mode + bannerAspect; differenceMon;
        marshalling method "single" = one coat + escutcheon over all).
 2. [x] tests/heraldry (arms.test.ts, emblems.test.ts, svgcheck.ts — 25 tests, ~4 s)
-3. [ ] tools/heraldry-demo.ts → out/heraldry/demo.html (showcase of everything).
+3. [x] tools/heraldry-demo.ts → out/heraldry/demo.html (15 sections; `--only=a,b`; groups have ids for
+       `tools/shot.mjs --selector=#roll-anglo` etc.). Builds in <1 s.
+3b. [x] Performance: render 11 ms → ~2 ms/coat (cached span tables in path.ts `polySpanBetween`; cached robust
+       `insetPoly` in shapes.ts, which also fixed bordure spikes on French/German shields).
+3c. [x] Layout: charges between chevron/saltire/cross/pall/pile/bend fill the actual compartments (layout.ts
+       `compartments` + `bestFit`), any shield shape; principal inside an orle; orle spacing at sharp corners.
+3d. [x] Ray ordinaries (cross/saltire/chevron/pall) with patterned lines rebuilt (geometry.ts `rayOrdinary`):
+       symmetric phase, parallel edges, true junctions; diagonal waves/zigzags auto-flattened (lines.ts).
+3e. [x] Fret interlaced properly; bordure compony segments follow normals.
+3f. [x] Canting reliable: coat decides once to cant (motifChance, default .92), motif used once, `ensureMotif`
+       inserts it (principal / on ordinary / on chief) if the grammar missed it.
 4. [~] Generator/blazon fixes — DONE: blazon rewritten around merging "pieces" (Woodville "a fess and a canton
        Gules", "within"/"all within", "Azure crusily and a lion Or", orle "within an orle"); divided fields tinctured
        by content (counterchanged / colour-colour + metal charge / metal-metal); no furs over divisions; vair-like
        furs unreadable under their own tinctures; additions on divisions differ from all parts.
-       TODO: wavy cross/saltire/chevron shapes, piles with lines.
-5. [ ] Charge art polish: wolf (cat-like), falcon (parrot), stag (one antler), bull (sheep), horse, lightning, flame,
-       tree (cloud), eagle displayed.
-6. [ ] Seal legends: short legends spread letter-by-letter around the ring (ugly) → fill with stops/ornament.
-7. [ ] Mon: canting motif honoured more reliably.
-8. [ ] README.md with API + design.
+       Piles ×3 never patterned; dancetty only on fess/bend/pale.
+5. [x] Charge art: stag (spread attires), falcon close (new, birds.ts `falconClose`), bull (humped, crescent horns),
+       wolf head (canine profile) + deeper rampant torso, flame (five tongues), lightning (bold bolt, "bolt of
+       lightning"; old winged `thunderbolt` kept exported), tree (layered foliage clumps), martlet (compact swallow).
+       Remaining weaker ones: horse salient (thin), bull head (a little ovine).
+       Cadency: brisures placed by `markSpot` (render.ts) at a free spot — middle chief / fess point / dexter chief —
+       tinctured against what lies under it; `Difference.at` stores it. `layoutSimple` factors slot layout.
+6. [x] Seal legends: short ones centred on top with pellets + rosette at the foot; long ones with word stops (·).
+7. [x] Mon/seal canting honoured more reliably (97 %).
+8. [x] README.md with API + design.
+9. [x] New style `saracenic` (Mamluk-like: round shields, tierced fields, charged fess with cups etc.);
+       HeraldryStyle.chargedOrdinary knob.
 
 ## Decisions
 - Emblem.data holds the module's plain JSON object (Arms | Mon | Seal | Banner); `renderEmblemSVG` dispatches on

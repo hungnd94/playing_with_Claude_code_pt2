@@ -137,6 +137,27 @@ export interface PatternOpts {
   scale?: number;
   /** Shift the phase by half a period (used to keep both edges of a band parallel). */
   halfShift?: boolean;
+  /**
+   * Lengthen the period of waves and zigzags on diagonal lines (default true): a
+   * wave steep enough to read well on a fess turns into a staircase at 45°.
+   */
+  autoStretch?: boolean;
+}
+
+/** Lines whose look depends on their steepness (smooth waves and zigzags). */
+const STRETCHY: readonly Line[] = ["wavy", "nebuly", "dancetty", "indented"];
+
+/** 0 for horizontal or vertical lines, up to 1 for 45° ones (length-weighted |sin 2θ| over segments). */
+function diagonality(pts: readonly Pt[]): number {
+  let wsum = 0, lsum = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
+    const L = Math.hypot(dx, dy);
+    if (!L) continue;
+    wsum += L * Math.abs((2 * dx * dy) / (L * L)); // |sin 2θ|
+    lsum += L;
+  }
+  return lsum ? wsum / lsum : 0;
 }
 
 /**
@@ -147,8 +168,9 @@ export function patternLine(pts: readonly Pt[], line: Line | undefined, o: Patte
   const spec = line ? lineSpec(line) : null;
   if (!spec || pts.length < 2) return pts.slice() as Pt[];
   const k = (o.scale ?? 1) * o.u;
-  let P = spec.period * k;
-  const A = spec.amp * k;
+  const dg = !o.closed && o.autoStretch !== false && STRETCHY.includes(line!) ? diagonality(pts) : 0;
+  let P = spec.period * k * (1 + 0.25 * dg);
+  const A = (spec.amp * k) / (1 + 0.35 * dg);
   const a = arc(pts, !!o.closed);
   if (o.closed) {
     const n = Math.max(6, Math.round(a.total / P));

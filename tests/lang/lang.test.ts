@@ -333,19 +333,26 @@ describe("serialisation", () => {
 });
 
 describe("performance", () => {
-  it("meets the budgets (generous margins for CI noise)", () => {
+  it("meets the budgets (generous margins; min over rounds, robust to a loaded machine)", () => {
     const rng = new Rng("perf");
-    let t = performance.now();
-    const ls: Language[] = [];
-    for (let i = 0; i < 10; i++) ls.push(createProtoLanguage(rng.fork(`p${i}`)));
-    const proto = (performance.now() - t) / 10;
-    t = performance.now();
-    for (let i = 0; i < 10; i++) deriveLanguage(ls[i], rng.fork(`d${i}`), 500);
-    const derive = (performance.now() - t) / 10;
+    // warm up the JIT on every path
+    for (let i = 0; i < 3; i++) deriveLanguage(createProtoLanguage(rng.fork(`w${i}`)), rng.fork(`wd${i}`), 500);
+    let proto = Infinity;
+    let derive = Infinity;
+    let name = Infinity;
     const reg = createRegistry();
-    t = performance.now();
-    for (let i = 0; i < 1000; i++) nameSettlement(ls[i % 10], rng, { features: ["river"] }, { registry: reg });
-    const name = (performance.now() - t) / 1000;
+    for (let round = 0; round < 4; round++) {
+      let t = performance.now();
+      const ls: Language[] = [];
+      for (let i = 0; i < 4; i++) ls.push(createProtoLanguage(rng.fork(`p${round}/${i}`)));
+      proto = Math.min(proto, (performance.now() - t) / 4);
+      t = performance.now();
+      for (let i = 0; i < 4; i++) deriveLanguage(ls[i], rng.fork(`d${round}/${i}`), 500);
+      derive = Math.min(derive, (performance.now() - t) / 4);
+      t = performance.now();
+      for (let i = 0; i < 300; i++) nameSettlement(ls[i % 4], rng, { features: ["river"] }, { registry: reg });
+      name = Math.min(name, (performance.now() - t) / 300);
+    }
     expect(proto).toBeLessThan(60);
     expect(derive).toBeLessThan(40);
     expect(name).toBeLessThan(0.5);

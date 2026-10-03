@@ -30,7 +30,7 @@ import {
   vf,
   vowelQuality,
 } from "./phoneme";
-import { nuclei, stressMask } from "./phonology";
+import { nuclei, stressedVowel } from "./phonology";
 import type { EnvItem, SoundChange, StressRule, Word } from "./types";
 import { key } from "./util";
 
@@ -74,7 +74,7 @@ function tokenMatch(tok: EnvItem, p: string | undefined, stressed: boolean): boo
   }
 }
 
-function matchRight(items: EnvItem[], w: Word, j: number, mask: boolean[] | null): boolean {
+function matchRight(items: EnvItem[], w: Word, j: number, si: number): boolean {
   let k = j;
   for (const it of items) {
     if (it === "C*") {
@@ -92,13 +92,13 @@ function matchRight(items: EnvItem[], w: Word, j: number, mask: boolean[] | null
       continue;
     }
     if (k >= w.length) return false;
-    if (!tokenMatch(it, w[k], mask ? mask[k] : false)) return false;
+    if (!tokenMatch(it, w[k], k === si)) return false;
     k++;
   }
   return true;
 }
 
-function matchLeft(items: EnvItem[], w: Word, j: number, mask: boolean[] | null): boolean {
+function matchLeft(items: EnvItem[], w: Word, j: number, si: number): boolean {
   let k = j; // index of the segment just before the target
   for (let n = items.length - 1; n >= 0; n--) {
     const it = items[n];
@@ -117,7 +117,7 @@ function matchLeft(items: EnvItem[], w: Word, j: number, mask: boolean[] | null)
       continue;
     }
     if (k < 0) return false;
-    if (!tokenMatch(it, w[k], mask ? mask[k] : false)) return false;
+    if (!tokenMatch(it, w[k], k === si)) return false;
     k--;
   }
   return true;
@@ -171,7 +171,7 @@ export function applyChange(ch: SoundChange, w: Word, stress: StressRule, tags?:
       }
     if (!any) return { word: w, tags: tg };
   }
-  const mask = ix.stress ? stressMask(w, stress) : null;
+  const si = ix.stress ? stressedVowel(w, stress) : -1;
   const out: string[] = [];
   const ot: number[] = [];
   const n = w.length;
@@ -180,7 +180,7 @@ export function applyChange(ch: SoundChange, w: Word, stress: StressRule, tags?:
     const ins = ch.map[""];
     if (!ins) return { word: w, tags: tg };
     for (let i = 0; i <= n; i++) {
-      if (matchLeft(ch.left, w, i - 1, mask) && matchRight(ch.right, w, i, mask)) {
+      if (matchLeft(ch.left, w, i - 1, si) && matchRight(ch.right, w, i, si)) {
         const t = track ? (tg[i] ?? tg[i - 1] ?? 0) : 0;
         did = true;
         for (const p of ins) {
@@ -205,12 +205,12 @@ export function applyChange(ch: SoundChange, w: Word, stress: StressRule, tags?:
             let vi = i;
             while (vi < i + ch.span && !isVowel(w[vi])) vi++;
             if (vi < i + ch.span) {
-              const st = mask ? mask[vi] : false;
+              const st = vi === si;
               ok = ch.stress === "stressed" ? st : !st;
             }
           }
           if (ok && ch.notAfter && i > 0 && ch.notAfter.includes(w[i - 1])) ok = false;
-          if (ok && matchLeft(ch.left, w, i - 1, mask) && matchRight(ch.right, w, i + ch.span, mask)) {
+          if (ok && matchLeft(ch.left, w, i - 1, si) && matchRight(ch.right, w, i + ch.span, si)) {
             for (let r = 0; r < rep.length; r++) {
               out.push(rep[r]);
               if (track) ot.push(tg[i + Math.min(r, ch.span - 1)]);
@@ -380,7 +380,16 @@ function feat(ps: string[], patch: Parameters<typeof modify>[1]): [string, Word]
 }
 
 /** Count corpus words containing a sequence matching pred at some position. */
-function count(c: ChangeCtx, pred: (w: Word, i: number) => boolean): number {
+/** Sample size the template thresholds ("at least 4 words") are calibrated for. */
+const CALIBRATION = 130;
+
+/**
+ * Number of corpus words with a match, normalised to a 130-word sample. Callers
+ * only ask "at least k?", so counting stops once that is settled.
+ */
+function count(c: ChangeCtx, pred: (w: Word, i: number) => boolean, cap = Infinity): number {
+  const scale = CALIBRATION / Math.max(1, c.corpus.length);
+  const rawCap = Math.ceil(cap / scale);
   let n = 0;
   for (const w of c.corpus) {
     for (let i = 0; i < w.length; i++)
@@ -388,8 +397,9 @@ function count(c: ChangeCtx, pred: (w: Word, i: number) => boolean): number {
         n++;
         break;
       }
+    if (n >= rawCap) return n * scale;
   }
-  return n;
+  return n * scale;
 }
 
 const plainStops = (c: ChangeCtx, voice: boolean) =>
@@ -497,7 +507,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "final-devoicing",
-    weight: (c) => (count(c, (w, i) => i === w.length - 1 && isObstruent(w[i]) && !!cf(w[i])?.voice) >= 3 ? 1.4 : 0),
+    weight: (c) => (count(c, (w, i) => i === w.length - 1 && isObstruent(w[i]) && !!cf(w[i])?.voice, 3) >= 3 ? 1.4 : 0),
     build: (c) => {
       const vs = cons(c).filter((p) => isObstruent(p) && cf(p)!.voice);
       return makeChange("final-devoicing", "Final devoicing", "Voiced obstruents became voiceless at the end of a word.", feat(vs, { voice: false, asp: false }), [], ["#"]);
@@ -505,7 +515,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "velar-palatalization",
-    weight: (c) => (count(c, (w, i) => isStop(w[i]) && cf(w[i])!.place === "velar" && isFrontVowel(w[i + 1] ?? "")) >= 4 ? 1.5 : 0),
+    weight: (c) => (count(c, (w, i) => isStop(w[i]) && cf(w[i])!.place === "velar" && isFrontVowel(w[i + 1] ?? ""), 4) >= 4 ? 1.5 : 0),
     build: (c) => {
       const style = c.rng.weighted<string>([
         ["tʃ", 0.65],
@@ -527,7 +537,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "assibilation",
-    weight: (c) => (count(c, (w, i) => (w[i] === "t" || w[i] === "s" || w[i] === "d") && (w[i + 1] === "i" || w[i + 1] === "iː" || w[i + 1] === "j")) >= 4 ? 1.0 : 0),
+    weight: (c) => (count(c, (w, i) => (w[i] === "t" || w[i] === "s" || w[i] === "d") && (w[i + 1] === "i" || w[i + 1] === "iː" || w[i + 1] === "j"), 4) >= 4 ? 1.0 : 0),
     build: (c) => {
       const v = c.rng.weighted<string>([
         ["tʃ", 0.45],
@@ -549,7 +559,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "apocope",
-    weight: (c) => (count(c, (w, i) => i === w.length - 1 && isVowel(w[i]) && i >= 2) > c.corpus.length * 0.25 ? 1.3 : 0.2),
+    weight: (c) => (count(c, (w, i) => i === w.length - 1 && isVowel(w[i]) && i >= 2, Math.floor(CALIBRATION * 0.25) + 1) > CALIBRATION * 0.25 ? 1.3 : 0.2),
     build: (c) => {
       let vs = shortVows(c);
       let which = "unstressed final vowels";
@@ -573,7 +583,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "final-reduction",
-    weight: (c) => (count(c, (w, i) => i === w.length - 1 && isVowel(w[i])) > c.corpus.length * 0.25 && !has(c, "ə") ? 1.0 : 0.2),
+    weight: (c) => (count(c, (w, i) => i === w.length - 1 && isVowel(w[i]), Math.floor(CALIBRATION * 0.25) + 1) > CALIBRATION * 0.25 && !has(c, "ə") ? 1.0 : 0.2),
     build: (c) => {
       const target = c.rng.chance(0.65) ? "ə" : c.rng.pick(["e", "a"]);
       const vs = shortVows(c).filter((v) => v !== target);
@@ -740,7 +750,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "umlaut",
-    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && (vf(w[i])!.back > 0) && w.slice(i + 1).some((p) => p === "i" || p === "j" || p === "iː")) > 8 ? 1.0 : 0),
+    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && (vf(w[i])!.back > 0) && w.slice(i + 1).some((p) => p === "i" || p === "j" || p === "iː"), 9) > 8 ? 1.0 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       const aT = c.rng.chance(0.6) ? "e" : "æ";
@@ -759,7 +769,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "nasal-assimilation",
-    weight: (c) => (count(c, (w, i) => isNasal(w[i]) && !!w[i + 1] && isObstruent(w[i + 1]) && cf(w[i])!.place !== cf(w[i + 1])!.place) >= 3 ? 1.2 : 0),
+    weight: (c) => (count(c, (w, i) => isNasal(w[i]) && !!w[i + 1] && isObstruent(w[i + 1]) && cf(w[i])!.place !== cf(w[i + 1])!.place, 3) >= 3 ? 1.2 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       const nasals = cons(c).filter((p) => isNasal(p));
@@ -776,20 +786,21 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "cluster-assimilation",
-    weight: (c) => (count(c, (w, i) => isStop(w[i]) && !!w[i + 1] && isObstruent(w[i + 1]) && w[i] !== w[i + 1] && !isVowel(w[i + 1])) >= 4 ? 1.0 : 0),
+    weight: (c) => (count(c, (w, i) => isStop(w[i]) && !!w[i + 1] && isObstruent(w[i + 1]) && w[i] !== w[i + 1] && !isVowel(w[i + 1]), 4) >= 4 ? 1.0 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       const stops = cons(c).filter((p) => isStop(p) && p !== "ʔ");
       for (const a of stops)
         for (const b of cons(c).filter((p) => isObstruent(p) && p !== a && p !== "h")) pairs.push([a + "+" + b, [b, b]]);
-      const ch = makeChange("cluster-assimilation", "Cluster assimilation", "In clusters, a stop assimilated completely to the following obstruent (kt > tt).", pairs, [], [], {}, 2);
-      if (ch) ch.notation = "*C₁C₂ > C₂C₂ (C₁ a stop)";
+      // only between vowels: word-initial or final geminates (*ttV-) are not a thing
+      const ch = makeChange("cluster-assimilation", "Cluster assimilation", "Between vowels, a stop assimilated completely to the following obstruent (kt > tt).", pairs, ["V"], ["V"], {}, 2);
+      if (ch) ch.notation = "*C₁C₂ > C₂C₂ / V_V (C₁ a stop)";
       return ch;
     },
   },
   {
     id: "degemination",
-    weight: (c) => (count(c, (w, i) => !isVowel(w[i]) && w[i] === w[i + 1]) >= 3 ? 1.1 : 0),
+    weight: (c) => (count(c, (w, i) => !isVowel(w[i]) && w[i] === w[i + 1], 3) >= 3 ? 1.1 : 0),
     build: (c) => {
       const pairs: [string, Word][] = cons(c).map((p) => [p + "+" + p, [p]] as [string, Word]);
       const ch = makeChange("degemination", "Degemination", "Double consonants were simplified.", pairs, [], [], {}, 2);
@@ -799,7 +810,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "initial-cluster-simplification",
-    weight: (c) => (count(c, (w) => w.length > 2 && !isVowel(w[0]) && !isVowel(w[1])) >= 4 ? 1.0 : 0),
+    weight: (c) => (count(c, (w) => w.length > 2 && !isVowel(w[0]) && !isVowel(w[1]), 4) >= 4 ? 1.0 : 0),
     build: (c) => {
       const seen = new Map<string, [string, string]>();
       for (const w of c.corpus) if (w.length > 2 && !isVowel(w[0]) && !isVowel(w[1])) seen.set(w[0] + "+" + w[1], [w[0], w[1]]);
@@ -849,7 +860,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "monophthongization",
-    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isGlide(w[i + 1] ?? "") && !isVowel(w[i + 2] ?? "")) >= 3 ? 1.3 : 0),
+    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isGlide(w[i + 1] ?? "") && !isVowel(w[i + 2] ?? ""), 3) >= 3 ? 1.3 : 0),
     build: (c) => {
       const long = c.rng.chance(0.65);
       const L = (v: string) => (long ? v + "ː" : v);
@@ -887,7 +898,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "compensatory-lengthening",
-    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && ["s", "h", "x", "r", "ɣ", "l"].includes(w[i + 1] ?? "") && !!w[i + 2] && !isVowel(w[i + 2])) >= 4 ? 1.0 : 0),
+    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && ["s", "h", "x", "r", "ɣ", "l"].includes(w[i + 1] ?? "") && !!w[i + 2] && !isVowel(w[i + 2]), 4) >= 4 ? 1.0 : 0),
     build: (c) => {
       const set = c.rng.weighted<string[]>([
         [["s", "z"], 1],
@@ -924,7 +935,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "final-consonant-loss",
-    weight: (c) => (count(c, (w, i) => i === w.length - 1 && !isVowel(w[i])) > c.corpus.length * 0.2 ? 0.9 : 0),
+    weight: (c) => (count(c, (w, i) => i === w.length - 1 && !isVowel(w[i]), Math.floor(CALIBRATION * 0.2) + 1) > CALIBRATION * 0.2 ? 0.9 : 0),
     build: (c) => {
       const variant = c.rng.weighted<string>([
         ["stops", 1],
@@ -941,7 +952,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "nasalization",
-    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isNasal(w[i + 1] ?? "") && !isVowel(w[i + 2] ?? "")) >= 5 ? 0.6 : 0),
+    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isNasal(w[i + 1] ?? "") && !isVowel(w[i + 2] ?? ""), 5) >= 5 ? 0.6 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       for (const v of vows(c)) {
@@ -1070,7 +1081,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "l-vocalization",
-    weight: (c) => (count(c, (w, i) => w[i] === "l" && i > 0 && isVowel(w[i - 1]) && !isVowel(w[i + 1] ?? "")) >= 4 ? 0.6 : 0),
+    weight: (c) => (count(c, (w, i) => w[i] === "l" && i > 0 && isVowel(w[i - 1]) && !isVowel(w[i + 1] ?? ""), 4) >= 4 ? 0.6 : 0),
     build: () => makeChange("l-vocalization", "L-vocalisation", "l became w after a vowel before a consonant or word end.", [["l", ["w"]]], ["V"], ["NV"]),
   },
   {
@@ -1116,7 +1127,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "prothesis",
-    weight: (c) => (count(c, (w) => (w[0] === "s" || w[0] === "ʃ") && !!w[1] && !isVowel(w[1])) >= 3 ? 0.8 : 0),
+    weight: (c) => (count(c, (w) => (w[0] === "s" || w[0] === "ʃ") && !!w[1] && !isVowel(w[1]), 3) >= 3 ? 0.8 : 0),
     build: (c) => {
       const v = ["e", "i", "ə", "a"].find((x) => has(c, x) && c.rng.chance(0.7)) ?? shortVows(c)[0];
       return makeChange("prothesis", "Prothesis", `A prothetic ${v} was added before initial s-clusters.`, [["", [v]]], ["#"], [["s", "ʃ"].filter((x) => has(c, x)), "C"], {}, 0);
@@ -1134,7 +1145,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "contraction",
-    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? "")) >= 3 ? 2.0 : 0),
+    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? ""), 3) >= 3 ? 2.0 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       const vs = vows(c);
@@ -1229,12 +1240,12 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "postnasal-voicing",
-    weight: (c) => (count(c, (w, i) => isNasal(w[i]) && isStop(w[i + 1] ?? "") && !cf(w[i + 1])!.voice) >= 4 ? 0.9 : 0),
+    weight: (c) => (count(c, (w, i) => isNasal(w[i]) && isStop(w[i + 1] ?? "") && !cf(w[i + 1])!.voice, 4) >= 4 ? 0.9 : 0),
     build: (c) => makeChange("postnasal-voicing", "Post-nasal voicing", "Voiceless stops became voiced after nasals.", feat(plainStops(c, false), { voice: true }), ["N"], []),
   },
   {
     id: "glide-formation",
-    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? "")) >= 3 ? 0.7 : 0),
+    weight: (c) => (count(c, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? ""), 3) >= 3 ? 0.7 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       if (has(c, "i") && has(c, "j")) pairs.push(["i", ["j"]]);
@@ -1244,7 +1255,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "final-epenthesis",
-    weight: (c) => (count(c, (w) => w.length > 2 && isObstruent(w[w.length - 2]) && (isLiquid(w[w.length - 1]) || isNasal(w[w.length - 1]))) >= 3 ? 0.8 : 0),
+    weight: (c) => (count(c, (w) => w.length > 2 && isObstruent(w[w.length - 2]) && (isLiquid(w[w.length - 1]) || isNasal(w[w.length - 1])), 3) >= 3 ? 0.8 : 0),
     build: (c) => {
       const v = has(c, "ə") ? "ə" : has(c, "e") ? "e" : shortVows(c)[0];
       const son = cons(c).filter((p) => isLiquid(p) || isNasal(p));
@@ -1266,12 +1277,13 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "final-m",
-    weight: (c) => (count(c, (w) => w[w.length - 1] === "m") >= 3 ? 0.5 : 0),
+    weight: (c) => (count(c, (w) => w[w.length - 1] === "m", 3) >= 3 ? 0.5 : 0),
     build: () => makeChange("final-m", "Final m > n", "Word-final m became n.", [["m", ["n"]]], [], ["#"]),
   },
   {
     id: "polynesian-shift",
-    weight: (c) => (has(c, "k") && has(c, "t") && !has(c, "ʔ") ? 0.25 : has(c, "k") && has(c, "ʔ") ? 0.15 : 0),
+    // rare outside Polynesian-type languages (whose drift multiplies it)
+    weight: (c) => (has(c, "k") && has(c, "t") && !has(c, "ʔ") ? 0.07 : has(c, "k") && has(c, "ʔ") ? 0.05 : 0),
     build: (c) => {
       // Hawaiian-like chain: k > ʔ, then t > k (simultaneous mapping keeps the two distinct)
       const pairs: [string, Word][] = [["k", ["ʔ"]]];
@@ -1296,7 +1308,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "gradation",
-    weight: (c) => (count(c, (w, i) => isStop(w[i]) && isVowel(w[i - 1] ?? "") && isVowel(w[i + 1] ?? "") && !!w[i + 2] && !isVowel(w[i + 2]) && !isVowel(w[i + 3] ?? "")) >= 4 ? 0.6 : 0),
+    weight: (c) => (count(c, (w, i) => isStop(w[i]) && isVowel(w[i - 1] ?? "") && isVowel(w[i + 1] ?? "") && !!w[i + 2] && !isVowel(w[i + 2]) && !isVowel(w[i + 3] ?? ""), 4) >= 4 ? 0.6 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       if (has(c, "p")) pairs.push(["p", [has(c, "v") || c.rng.chance(0.5) ? "v" : "β"]]);
@@ -1309,7 +1321,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "spirantization-high",
-    weight: (c) => (count(c, (w, i) => isStop(w[i]) && ["i", "u", "iː", "uː"].includes(w[i + 1] ?? "")) >= 6 ? 0.18 : 0),
+    weight: (c) => (count(c, (w, i) => isStop(w[i]) && ["i", "u", "iː", "uː"].includes(w[i + 1] ?? ""), 6) >= 6 ? 0.18 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       if (has(c, "k")) pairs.push(["k", ["s"]]);
@@ -1343,7 +1355,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "final-raising",
-    weight: (c) => (count(c, (w, i) => i === w.length - 1 && (w[i] === "e" || w[i] === "o")) >= 6 ? 0.8 : 0),
+    weight: (c) => (count(c, (w, i) => i === w.length - 1 && (w[i] === "e" || w[i] === "o"), 6) >= 6 ? 0.8 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [];
       if (has(c, "e") && has(c, "i")) pairs.push(["e", ["i"]]);
@@ -1353,7 +1365,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "r-lowering",
-    weight: (c) => ((has(c, "r") || has(c, "ɾ")) && count(c, (w, i) => (w[i] === "e" || w[i] === "i") && (w[i + 1] === "r" || w[i + 1] === "ɾ")) >= 5 ? 0.5 : 0),
+    weight: (c) => ((has(c, "r") || has(c, "ɾ")) && count(c, (w, i) => (w[i] === "e" || w[i] === "i") && (w[i + 1] === "r" || w[i + 1] === "ɾ"), 5) >= 5 ? 0.5 : 0),
     build: (c) => {
       const r = ["r", "ɾ"].filter((p) => has(c, p));
       const pairs: [string, Word][] = [];
@@ -1373,12 +1385,12 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "nasal-velarization",
-    weight: (c) => (count(c, (w) => w[w.length - 1] === "n") >= 6 && !has(c, "ŋ") ? 0.35 : count(c, (w) => w[w.length - 1] === "n") >= 6 ? 0.15 : 0),
+    weight: (c) => (count(c, (w) => w[w.length - 1] === "n", 6) >= 6 && !has(c, "ŋ") ? 0.35 : count(c, (w) => w[w.length - 1] === "n", 6) >= 6 ? 0.15 : 0),
     build: () => makeChange("nasal-velarization", "Final n > ŋ", "Word-final n became velar ŋ.", [["n", ["ŋ"]]], ["V"], ["#"]),
   },
   {
     id: "assibilation-u",
-    weight: (c) => (count(c, (w, i) => w[i] === "t" && (w[i + 1] === "u" || w[i + 1] === "uː")) >= 4 ? 0.35 : 0),
+    weight: (c) => (count(c, (w, i) => w[i] === "t" && (w[i + 1] === "u" || w[i + 1] === "uː"), 4) >= 4 ? 0.35 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [["t", ["ts"]]];
       if (has(c, "d") && c.rng.chance(0.6)) pairs.push(["d", ["dz"]]);
@@ -1388,7 +1400,7 @@ const TEMPLATES: Template[] = [
   },
   {
     id: "l-palatalization",
-    weight: (c) => (has(c, "l") && count(c, (w, i) => w[i] === "l" && (w[i + 1] === "i" || w[i + 1] === "j")) >= 5 ? 0.3 : 0),
+    weight: (c) => (has(c, "l") && count(c, (w, i) => w[i] === "l" && (w[i + 1] === "i" || w[i + 1] === "j"), 5) >= 5 ? 0.3 : 0),
     build: (c) => {
       const pairs: [string, Word][] = [["l", ["ʎ"]]];
       if (has(c, "n")) pairs.push(["n", ["ɲ"]]);
@@ -1546,14 +1558,14 @@ function repairs(ctx: ChangeCtx): SoundChange[] {
     if (f.height <= 1 && f.back === 0 && !f.round && has(ctx, "j")) gl.push(["j+" + v, [v]]);
     if (f.height <= 1 && f.back === 2 && f.round && has(ctx, "w")) gl.push(["w+" + v, [v]]);
   }
-  if (gl.length && count(ctx, (w, i) => gl.some(([k]) => k === w[i] + "+" + w[i + 1])) >= 1) {
+  if (gl.length && count(ctx, (w, i) => gl.some(([k]) => k === w[i] + "+" + w[i + 1]), 1) >= 1) {
     const ch = makeChange("glide-loss", "Glide loss", "j and w were lost before i and u.", gl, [], [], {}, 2);
     if (ch) {
       ch.notation = "*ji wu > i u";
       out.push(ch);
     }
   }
-  if (count(ctx, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? "") && vowelQuality(w[i]) === vowelQuality(w[i + 1])) >= 2 && !ctx.used.has("contraction")) {
+  if (count(ctx, (w, i) => isVowel(w[i]) && isVowel(w[i + 1] ?? "") && vowelQuality(w[i]) === vowelQuality(w[i + 1]), 2) >= 2 && !ctx.used.has("contraction")) {
     const ch = TEMPLATE_BY_ID.contraction.build(ctx);
     if (ch) out.push(ch);
   }
@@ -1585,7 +1597,7 @@ export function generateChanges(
   const minImpact = opts.minImpact ?? 0.3;
   const drift = opts.drift ?? {};
   // Evaluate candidates on a deterministic sample of the lexicon (speed).
-  const step = Math.max(1, Math.floor(corpus.length / 130));
+  const step = Math.max(1, Math.floor(corpus.length / 90));
   const sample = corpus.filter((_, i) => i % step === 0).map((w) => w.slice());
   const origKeys = sample.map((w) => key(w));
   const ctx: ChangeCtx = { rng, inv: new Set(inventory), stress, corpus: sample, used: new Set(), ancestral: new Set(ancestral) };

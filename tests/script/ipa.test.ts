@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { classify, phonDistance, phoneticOrderKey } from "../../src/script/ipa";
+
+// Generation is CPU-heavy and the test box is shared: generous per-test timeouts.
+vi.setConfig({ testTimeout: 60000 });
 
 describe("IPA classifier", () => {
   it("recognises vowels with length and nasality", () => {

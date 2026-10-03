@@ -211,8 +211,18 @@ export interface Orthography {
   digraphs: Record<string, string[]>;
   /** Abugida vowel signs / abjad pointing: vowel → mark glyph id (-1 = inherent, unwritten). */
   vowelSigns: Record<string, number>;
-  /** Abugida fused vowel modifications (vowelMode "fused"): vowel → op(s). */
+  /**
+   * Abugida fused vowel modifications (vowelMode "fused"): vowel → op(s); the
+   * key "" is the vowelless (killed) form. Syllabics (vowelMode "rotate") use
+   * it for vowels written as an orientation plus a mark.
+   */
   vowelOps: Record<string, VowelOp[]>;
+  /**
+   * Irregular forms: `${glyphId}|${vowel}` → op(s) replacing `vowelOps[vowel]`
+   * for that consonant, where the regular modification would be illegible on
+   * its shape (as Ethiopic has irregular ሙ, ሉ…). Absent in older scripts.
+   */
+  vowelOpsFor?: Record<string, VowelOp[]>;
   /** Abugida rotations (vowelMode "rotate"): vowel → orientation code 0..7. */
   rotations: Record<string, number>;
   /** Syllabary: `${C}|${V}` (C may be "") → glyph id. */

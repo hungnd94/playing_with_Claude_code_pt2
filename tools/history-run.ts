@@ -31,13 +31,15 @@ const t0 = performance.now();
 const world = generatePhysical({ ...DEFAULT_PARAMS, seed, years }, new Rng(seed));
 const tPhys = performance.now() - t0;
 const t1 = performance.now();
+const cpu0 = process.cpuUsage();
 let snaps = 0;
 const sim = runSimulation(world, new Rng(seed), { years, onSnapshot: () => snaps++ });
 const tHist = performance.now() - t1;
+const cpu = process.cpuUsage(cpu0);
 const h: History = sim.h;
 
 const fmt = (x: number) => Math.round(x).toLocaleString("en-US");
-console.log(`seed "${seed}": physical ${(tPhys / 1000).toFixed(2)} s, history ${(tHist / 1000).toFixed(2)} s (${snaps} live snapshots)`);
+console.log(`seed "${seed}": physical ${(tPhys / 1000).toFixed(2)} s, history ${(tHist / 1000).toFixed(2)} s wall / ${((cpu.user + cpu.system) / 1e6).toFixed(2)} s CPU (${snaps} live snapshots)`);
 console.log("timings (ms): " + Object.entries(sim.timings).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(", "));
 
 // ---------------------------------------------------------------- counts

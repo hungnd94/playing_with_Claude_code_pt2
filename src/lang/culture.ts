@@ -8,6 +8,7 @@ import type { Rng } from "../core/rng";
 import { conceptsWithTag } from "./concepts";
 import { clipWord } from "./morphology";
 import { nuclei } from "./phonology";
+import { isVowel } from "./phoneme";
 import type { NamingHints } from "./styles";
 import type { Lexeme, Morphology, NamingCulture, Phonology } from "./types";
 import { key } from "./util";
@@ -47,7 +48,14 @@ const FEMALE_ELEMENTS = conceptsWithTag("fem");
 export function generateNamingCulture(rng: Rng, mo: Morphology, hints: NamingHints = {}, ctx?: CultureContext): NamingCulture {
   // Short words make good name elements: toponymic heads and name themes are overwhelmingly monosyllables in real languages.
   const syl = (c: string) => (ctx?.lexicon[c] ? Math.max(1, nuclei(ctx.lexicon[c].form).length) : 2);
-  const shortW = (c: string) => 1 / Math.pow(syl(c), 1.7);
+  // Favourite elements are short and typical of the language's shape: in a language whose
+  // words mostly end in consonants (Old Norse), closed elements (-vik, -gard) are preferred.
+  const closedLang = (ctx?.phonology.pFinalCoda ?? 0) >= 0.5;
+  const closed = (c: string) => {
+    const f = ctx?.lexicon[c]?.form;
+    return !!f && f.length > 0 && !isVowel(f[f.length - 1]);
+  };
+  const shortW = (c: string) => (1 / Math.pow(syl(c), 1.7)) * (closedLang && closed(c) ? 2 : 1);
   const heads = weightedSample(rng, SETTLEMENT_HEADS, shortW, rng.int(7, 11));
   const settlementHeads: [string, number][] = heads.map((h, i) => [h, +(1 / Math.pow(i + 1, 0.5)).toFixed(3)]);
   const nameEls = conceptsWithTag("name");

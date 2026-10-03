@@ -209,6 +209,51 @@ function corvid(kind: "raven" | "falcon"): ChargeArt {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * A falcon close: upright, deep-chested, round-headed, with a short hooked beak,
+ * the dark "moustache" of the peregrine, its long wing folded over a barred
+ * breast, bells on its legs and jesses fluttering.
+ */
+function falconClose(): ChargeArt {
+  const head = smooth([[33, 4.5], [41, 6.5], [45.5, 12.5], [45, 19.5], [41, 25], [33, 27.5], [27, 24.5], [24.5, 18], [26, 10], [29, 6]], true);
+  const beak = smooth([[27, 11, 1], [21.5, 11.2], [17.6, 14.2], [17.2, 19.4, 1], [19.8, 17.6], [22.2, 18.6], [26, 19.5, 1]], true);
+  const body = smooth(
+    [[35, 22], [45, 23], [53, 29], [58, 40], [59, 54], [56, 66], [50, 75], [41, 79], [32, 77], [26, 70], [22.5, 59], [22.5, 46], [25, 34], [29, 26]],
+    true,
+  );
+  const wing = smooth(
+    [[40, 26, 1], [50, 28], [57, 36], [61, 48], [63, 62], [64.5, 76], [66, 91, 1], [60, 85], [54, 77], [47, 65], [41, 52], [37, 40], [36, 31]],
+    true,
+  );
+  const tail = smooth([[47, 71], [55, 73], [60, 86], [62, 97], [57, 98.5, 1], [53, 96.5], [48.5, 98.5, 1], [45, 86], [43, 76]], true);
+  const legs = limb([[35, 74, 6], [34, 83, 4.6], [33, 88, 4]], { start: "round", end: "round" }) + limb([[45, 75, 6], [45, 84, 4.6], [45.5, 89, 4]], { start: "round", end: "round" });
+  const feet = talons(33, 89, 172, 5.6) + talons(45.5, 90, 178, 5.6);
+  const bells = circleD(30.2, 83.5, 2.4) + circleD(49.2, 84, 2.4);
+  // breast barring, wing coverts and primaries
+  let lines = "M41 31Q50 40 54 56M45 33Q55 46 58 64M50 60Q57 70 61 84M53 70Q59 79 63 90";
+  for (const [x, y] of [[29, 38], [35, 36], [27, 46], [33, 45], [29, 54], [35, 53], [31, 62], [37, 61], [34, 69]] as [number, number][]) {
+    lines += `M${x - 2.2} ${y - 0.6}Q${x} ${y + 1.8} ${x + 2.2} ${y - 0.6}`;
+  }
+  lines += "M51 82L52.5 96M55 81L57 96";
+  return {
+    layers: [
+      { role: "body", d: tail },
+      { role: "accent", d: legs + feet },
+      { role: "body", d: body + head },
+      { role: "body", d: wing },
+      { role: "accent", d: bells },
+      { role: "line", d: "M28.3 84H32.1M47.3 84.5H51.1", w: 0.8 },
+      { role: "line", d: lines, w: 1 },
+      { role: "line", d: "M28 9.5Q33 7 38.5 9.5M26.5 16Q28.5 17 30 16.5", w: 1 },
+      { role: "accent", d: beak },
+      { role: "line", d: "M22 13.8Q20 15.6 19.6 18", w: 0.9 },
+      { role: "ink", d: circleD(32, 13, 2.3) },
+      // the peregrine's dark moustache under the eye
+      { role: "ink", d: smooth([[30.4, 16.4, 1], [32.2, 16.8], [32.4, 21.5], [31.2, 24.2, 1], [30.2, 21]], true) },
+    ],
+  };
+}
+
 function owl(): ChargeArt {
   const body = smooth([[50, 34], [66, 40], [74, 56], [72, 74], [62, 88], [50, 91], [38, 88], [28, 74], [26, 56], [34, 40]], true);
   const head = smooth(
@@ -292,22 +337,25 @@ function swan(): ChargeArt {
 }
 
 function martlet(): ChargeArt {
-  const body = smooth([[22, 26], [30, 22], [44, 26], [62, 34], [80, 40], [96, 38, 1], [86, 46], [98, 56, 1], [80, 52], [62, 50], [46, 48], [32, 44], [22, 38], [17, 32]], true);
-  const head = smooth([[25, 18], [32, 21], [33, 29], [28, 35], [20, 36], [14, 31], [15, 23], [19, 19]], true);
-  const beak = smooth([[15, 25, 1], [7, 28.5, 1], [15, 31, 1]], true);
-  const wing = smooth([[30, 30, 1], [46, 30], [64, 36], [84, 42], [99, 46, 1], [84, 47], [66, 46], [48, 44], [36, 40]], true);
+  // The heraldic martlet: a swallow without feet — tufts of feather where the legs
+  // would be — with a short beak, wings close and a deeply forked tail.
+  const body = smooth([[25, 30], [34, 27], [48, 30], [62, 37], [74, 43], [82, 47], [78, 54], [64, 55], [48, 54], [34, 50], [25, 44], [21, 37]], true);
+  const head = smooth([[27, 20], [35, 22], [37, 30], [33, 37], [25, 39], [18.5, 35], [18, 27], [21.5, 22]], true);
+  const beak = smooth([[18.6, 27.5, 1], [10.5, 30.6, 1], [18.4, 33.4, 1]], true);
+  const tail = smooth([[70, 44, 1], [86, 40], [99, 34, 1], [90, 45], [99, 58, 1], [85, 53], [72, 52, 1]], true);
+  const wing = smooth([[33, 32, 1], [46, 30], [60, 33], [76, 39], [93, 44, 1], [77, 47], [60, 46], [45, 43], [36, 40]], true);
   const tufts = maneLocks([
-    [38, 46, 34, 58, 5.5, 1.5],
-    [46, 48, 44, 60, 5.5, 1.5],
+    [43, 52, 39, 63, 6.5, 1.6],
+    [51, 53, 49.5, 64, 6.5, 1.6],
   ]);
   return {
     layers: [
-      { role: "body", d: tufts },
+      { role: "body", d: tufts + tail },
       { role: "body", d: body + head },
       { role: "body", d: wing },
-      { role: "line", d: "M44 36Q60 40 80 44M50 40Q66 43 88 46M24 34Q28 38 34 38", w: 1 },
+      { role: "line", d: "M46 36Q60 38 78 43M51 40Q64 42 84 45M26 37Q30 41 36 41M86 44L96 38M86 50L95 55", w: 1 },
       { role: "accent", d: beak },
-      { role: "ink", d: circleD(22.5, 27, 1.9) },
+      { role: "ink", d: circleD(25.5, 28.5, 2) },
     ],
   };
 }
@@ -315,7 +363,7 @@ function martlet(): ChargeArt {
 export const BIRDS: Partial<Record<ChargeId, ChargeDef>> = {
   eagle: { name: "eagle", plural: "eagles", category: "bird", attitudes: ["displayed"], armedTerm: "beaked and membered", accentDefault: "or", weight: 10, art: eagleDisplayed },
   raven: { name: "raven", plural: "ravens", category: "bird", attitudes: ["close"], armedTerm: "beaked and legged", accentDefault: "same", weight: 3, art: () => corvid("raven") },
-  falcon: { name: "falcon", plural: "falcons", category: "bird", attitudes: ["close"], armedTerm: "belled and jessed", accentDefault: "or", weight: 3, art: () => corvid("falcon") },
+  falcon: { name: "falcon", plural: "falcons", category: "bird", attitudes: ["close"], armedTerm: "belled and jessed", accentDefault: "or", weight: 3, art: falconClose },
   owl: { name: "owl", plural: "owls", category: "bird", armedTerm: "beaked and membered", accentDefault: "or", weight: 2, art: owl },
   swan: { name: "swan", plural: "swans", category: "bird", attitudes: ["rising"], armedTerm: "beaked and membered", accentDefault: "gules", weight: 2, art: swan },
   martlet: { name: "martlet", plural: "martlets", category: "bird", accentDefault: "same", weight: 5, art: martlet },

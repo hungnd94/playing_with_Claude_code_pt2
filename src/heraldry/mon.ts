@@ -812,7 +812,7 @@ function abstractMotif(rng: Rng): MonMotif {
 export function generateMon(rng: Rng, opts: MonOptions = {}): Mon {
   const motifs = (opts.motifs ?? []).filter((m) => CHARGES[m]);
   let motif: MonMotif;
-  if (motifs.length && rng.chance(1 - (opts.abstraction ?? 0.5) * 0.12)) {
+  if (motifs.length && rng.chance(1 - (opts.abstraction ?? 0.5) * 0.06)) {
     const cands = motifsFor(motifs[0], rng);
     motif = cands.length ? rng.weighted(cands) : abstractMotif(rng);
   } else if (!motifs.length && rng.chance(0.3 * (1 - (opts.abstraction ?? 0.5)) + 0.1)) {
